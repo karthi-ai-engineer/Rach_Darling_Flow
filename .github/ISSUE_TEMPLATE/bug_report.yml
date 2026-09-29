@@ -1,0 +1,33 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1. 
+        2. 
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: sst version or commit
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: e.g. Windows 11 24H2
+  - type: textarea
+    id: output
+    attributes:
+      label: Console output
+      render: text
