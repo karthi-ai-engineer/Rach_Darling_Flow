@@ -26,7 +26,7 @@ Rules for AI coding assistants (Claude Code) in this repository. Read `HANDOFF.m
 ## Project
 
 Local speech-to-text for Windows, like a small, private Wispr Flow. NVIDIA Parakeet runs on the CPU through
-sherpa-onnx, and nothing leaves the laptop. Main feature: `sst dictate`. Press Ctrl+Alt+D in any app and speak; the
+sherpa-onnx, and nothing leaves the laptop. Main feature: `sst dictate`. Hold Ctrl+Win in any app and speak; the
 text is typed at the cursor.
 
 ```

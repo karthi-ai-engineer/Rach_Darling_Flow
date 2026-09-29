@@ -12,6 +12,7 @@ _Last updated: 2026-09-29_
 | 1 | Dictate into any app with a global hotkey (`sst dictate`, Ctrl+Alt+D) | PR #2, waiting for merge |
 | setup | GitHub CI (lint, tests, CodeQL), Dependabot, templates, CLAUDE.md, this file | PR #4 (CI green), waiting for merge |
 | 2 | Windows installer (`Setup.exe`, no Python needed), CI app build, release pipeline | PR #6, waiting for a test on another laptop + merge |
+| 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | PR #8, waiting for a hands-on test + merge |
 
 ## Continue on another device
 
@@ -34,8 +35,22 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - **Engine:** Parakeet 0.6B "unified" English, int8, on the CPU via sherpa-onnx 1.13.8. It loads in about 2 s, and a
   3 s clip takes about 0.3 s. `sherpa-onnx-core` has to be listed explicitly, or Windows loads the older
   `System32\onnxruntime.dll` and the model fails.
-- **Hotkey Ctrl+Alt+D:** Ctrl+Alt+Space is already taken on the dev laptop (probably by the Claude desktop app).
-  Ctrl+Shift+Space and F9 would steal VS Code, JetBrains or Excel shortcuts. `--hotkey` changes it.
+- **Hotkey Ctrl+Win (phase 3), as in Wispr Flow.** Phase 1 used Ctrl+Alt+D; the owner's muscle memory is Ctrl+Win, and
+  Ctrl+Win+D opened new virtual desktops. Modifier-only keys need a low-level keyboard hook (`sst/hotkey.py`), not
+  RegisterHotKey:
+  - The hook thread only matches keys; the logic is the pure `Matcher` class, which is fully unit-tested.
+  - sherpa-onnx releases the GIL while decoding (another Python thread waited at most 21 ms during a 3 s decode), so
+    typing never lags during a transcription.
+  - Keys sst sends itself carry `dwExtraInfo = OUR_INPUT`, and the hook ignores them. Keys injected by other tools
+    (PowerToys remaps) are treated like real ones.
+  - A vkE8 "mask" key is sent on press, so releasing Win doesn't open Start (the same trick AutoHotkey uses).
+  - Another key during Ctrl+Win means a Windows shortcut such as Ctrl+Win+D or +←/→, so the recording is dropped
+    ("interrupt"). Space means hands-free and is hidden from Windows. The key-state tracking is re-checked with
+    GetAsyncKeyState, because the hook misses releases on the lock screen.
+  - Only one dictation can run (mutex `SST-Dictation-dictate`), and there's a warning if Wispr Flow is running.
+- **The dev laptop's PowerToys Keyboard Manager** remaps Menu (0x5D) to Ctrl+Win and the Copilot key (Win+Shift+F23)
+  to Ctrl+Win+Space, set up for Wispr Flow. With the default hotkey, both keys therefore work for sst as they are.
+  Don't use `--hotkey menu` there: which hook sees the key first depends on start order.
 - **Tap = hands-free, hold = push-to-talk** on the same key, split at 0.4 s. Esc cancels, and Esc is only taken from
   other apps while recording.
 - **Typing = clipboard + Ctrl+V.** The old clipboard is restored afterwards (every memory-block format) and dictated
@@ -76,18 +91,27 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
 - The console window is the only UI: there is no tray icon or on-screen recording indicator yet. A hotkey other
-  than Ctrl+Alt+D needs `sst.exe dictate --hotkey ...` in the shortcut; a settings file would be friendlier.
+  than Ctrl+Win needs `sst.exe dictate --hotkey ...` in the shortcut; a settings file would be friendlier.
+- Ctrl+Win itself wasn't sent through the real hook in tests (Wispr Flow was running and would have reacted). The
+  hook plumbing was tested with the Menu key, Esc and Ctrl+Alt+X; Ctrl+Win is covered by the Matcher unit tests and
+  needs a hands-on check.
 - English only. Punctuation and capitals come from the model as they are; there is no cleanup of filler words.
 
 ## Next steps
 
-1. Merge in order: #2, then #4, then #6 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the tag,
+1. Quit Wispr Flow, then test phase 3 by hand with `dictate.cmd`:
+   - hold Ctrl+Win and speak
+   - tap it for hands-free
+   - Ctrl+Win+Space (and the PowerToys Copilot key)
+   - the Menu key (PowerToys turns it into Ctrl+Win)
+   - Ctrl+Win+D and Ctrl+Win+← still switch desktops
+   - releasing Win doesn't open Start
+2. Merge in order: #2, #4, #6, then #8 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the tag,
    and the Release workflow publishes the first installer.
-2. Try `Setup.exe` on a second laptop. That is the one check not done yet (so far it was tested on the dev laptop only).
-3. Ideas for later phases, in rough order:
+3. Try `Setup.exe` on a second laptop. That is the one check not done yet (so far it was tested on the dev laptop only).
+4. Ideas for later phases, in rough order:
    - an on-screen recording indicator
    - a tray icon and start at login
-   - hold Ctrl+Win like Wispr Flow (needs a low-level keyboard hook)
    - spacing and capitals that fit the text around the cursor
    - cleanup of the transcript (filler words, punctuation)
    - a custom vocabulary
