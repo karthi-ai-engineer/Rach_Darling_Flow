@@ -13,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 
+from sst import __version__
 from sst.audio import list_input_devices, load_wav, record_until_enter, save_recording
 from sst.engines import ENGINES, load_engine
 
@@ -80,6 +81,7 @@ def cmd_web(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="sst", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--version", action="version", version=f"sst {__version__}")
     parser.add_argument("--engine", default="parakeet", choices=ENGINES)
     parser.add_argument("--device", type=int, default=None, help="microphone number from `sst devices`")
     sub = parser.add_subparsers(dest="command", required=True)

@@ -8,6 +8,7 @@ is typed where the cursor is.
 Transcription and pasting run on a worker thread, so a new recording can start right away.
 """
 import queue
+import sys
 import threading
 import time
 import winsound
@@ -29,8 +30,9 @@ def run(load_engine: Callable, hotkey: str = "ctrl+alt+d", device: int | None = 
     # Claim the hotkey before the slow model load, so a typo or a clash is reported straight away.
     modifiers, vk = parse_hotkey(hotkey)
     if not register(TOGGLE_ID, modifiers, vk):
+        command = "sst.exe" if getattr(sys, "frozen", False) else "uv run sst"
         raise SystemExit(f"{hotkey} is already used by another app (or sst dictate is already running).\n"
-                         "Pick another one, e.g.  uv run sst dictate --hotkey ctrl+alt+x")
+                         f"Pick another one, e.g.  {command} dictate --hotkey ctrl+alt+x")
     try:
         _listen(load_engine(), hotkey, vk, device, save)
     finally:

@@ -1,6 +1,6 @@
 [project]
 name = "sst"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Record from the microphone and transcribe it locally (Parakeet first, more engines later)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,9 @@ dev = ["pytest>=8", "ruff>=0.6"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "sst/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["sst"]

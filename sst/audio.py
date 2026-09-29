@@ -84,7 +84,7 @@ def save_wav(path: Path, audio: np.ndarray, rate: int) -> None:
 
 def save_recording(audio: np.ndarray, rate: int, text: str) -> str:
     """Save a recording and its transcript as recordings/<timestamp>.wav/.txt. Returns the stem."""
-    RECORDINGS_DIR.mkdir(exist_ok=True)
+    RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
     base = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     stem, n = RECORDINGS_DIR / base, 1
     while stem.with_suffix(".wav").exists():  # two recordings in the same second
