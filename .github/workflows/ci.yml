@@ -35,3 +35,21 @@ jobs:
         run: uv sync --locked
       - name: Pytest
         run: uv run pytest -v
+
+  app:
+    name: Build app (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Cache the Parakeet model
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: model-${{ hashFiles('scripts/download_model.py') }}
+      - name: Download the model (skipped when cached)
+        run: uv run --locked python scripts/download_model.py parakeet
+      - name: Build sst.exe and check that it transcribes
+        run: uv run --locked --group build python scripts/build_installer.py --no-installer

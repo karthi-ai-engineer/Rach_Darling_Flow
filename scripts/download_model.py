@@ -20,8 +20,9 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 def _progress(block_num: int, block_size: int, total: int) -> None:
     done = block_num * block_size
-    if total > 0:
-        pct = min(100, done * 100 // total)
+    pct = min(100, done * 100 // total) if total > 0 else -1
+    if pct != getattr(_progress, "last", None):  # once per percent, not per 8 KB block (keeps CI logs small)
+        _progress.last = pct
         print(f"\r  downloading... {pct:3d}%  ({done / 1e6:,.0f} / {total / 1e6:,.0f} MB)", end="", flush=True)
 
 
