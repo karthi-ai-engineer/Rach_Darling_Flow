@@ -14,7 +14,7 @@ Then click in any text box (Notepad, Chrome, Slack, VS Code...) and:
 | hold **Ctrl+Alt+D** while speaking | push-to-talk: types the text when you let go |
 | **Esc** while recording | cancels; nothing is typed |
 
-A high beep means recording started, a lower beep means it stopped.
+A high beep means recording started, a lower beep means it stopped. A recording stops by itself after 3 minutes and is typed as usual.
 The text is pasted where your cursor is, and whatever you had copied is put back on the clipboard afterwards.
 Dictated text is kept out of Windows clipboard history (Win+V). Keep the black window open; you can minimise it.
 

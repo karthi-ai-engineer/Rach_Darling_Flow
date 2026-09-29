@@ -21,7 +21,7 @@ from sst.paste import paste_text
 
 HOLD_SECONDS = 0.4   # key held longer than this = push-to-talk; a quicker tap = hands-free
 MIN_SECONDS = 0.3    # shorter recordings are treated as accidental presses
-MAX_SECONDS = 600    # a forgotten hands-free recording stops by itself after 10 minutes
+MAX_SECONDS = 180    # recordings stop by themselves after 3 minutes (the text is still typed)
 TOGGLE_ID, CANCEL_ID = 1, 2
 
 
