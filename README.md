@@ -5,6 +5,17 @@
 Record from the microphone and turn speech into text **locally** (nothing leaves the laptop).
 The first engine is **NVIDIA Parakeet (English)**. More engines, such as Whisper or the office gateway, can be added later.
 
+## Install on any laptop
+
+Download **`SST-Dictation-Setup-<version>.exe`** from [Releases](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases)
+and run it. It doesn't need administrator rights, Python or an internet connection (the ~650 MB speech model is inside).
+Windows 10/11, 64-bit.
+
+- Windows may say *"Windows protected your PC"*, because the installer isn't code-signed. Click **More info → Run anyway**.
+- Afterwards, open **SST Dictation** from the Start menu. The setup can also add a desktop shortcut and start it when you sign in.
+- Recordings of the installed app go to `%LOCALAPPDATA%\sst\recordings`. Uninstall from *Settings → Apps*.
+- Other commands work with the installed app too, e.g. `sst.exe devices` or `sst.exe --device 2 dictate` from its folder.
+
 ## Use
 
 **Dictate into any app:** double-click **`dictate.cmd`** (or `uv run sst dictate`) and wait for *Ready*.
@@ -59,6 +70,14 @@ uv run pytest           # tests (they use fakes: no keys pressed, no microphone 
 uv run ruff check .     # lint
 ```
 
+**Build the installer** yourself with **`build_installer.cmd`** (it needs the model downloaded and
+[Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`). It builds the app with PyInstaller,
+checks that the built `sst.exe` really transcribes, and writes `dist\SST-Dictation-Setup-<version>.exe`.
+
+**Release:** raise `__version__` in `sst/__init__.py`, merge, then tag `main` with `vX.Y.Z` and push the tag. The Release
+workflow builds the installer and publishes it on GitHub. It can also be started by hand from the Actions tab to get a
+test installer from any branch.
+
 Work happens phase by phase: an issue, a branch and a pull request into `main`, checked by CI.
 `CLAUDE.md` has the working rules, and `HANDOFF.md` says where things stand and what comes next.
 
@@ -69,11 +88,14 @@ sst/
 ├─ dictate.cmd                double-click: dictate into any app with Ctrl+Alt+D
 ├─ web.cmd                    double-click: web page
 ├─ start.cmd                  double-click: terminal version
+├─ build_installer.cmd        double-click: build dist\SST-Dictation-Setup-<version>.exe
 ├─ CLAUDE.md                  working rules (branches, PRs, authorship)
 ├─ HANDOFF.md                 current state and next steps, to resume on any device
 ├─ .github/                   CI, CodeQL, Dependabot, issue and PR templates
 ├─ tests/                     pytest suite
 ├─ scripts/download_model.py  fetches models into models/
+├─ scripts/build_installer.py PyInstaller -> add model -> smoke test -> Inno Setup
+├─ packaging/                 installer recipe: sst_app.py (entry point), sst.spec, installer.iss, icon, notices
 ├─ models/                    downloaded models (git-ignored)
 ├─ recordings/                your recordings + transcripts (git-ignored)
 └─ sst/
