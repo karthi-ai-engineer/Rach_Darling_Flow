@@ -20,19 +20,43 @@ def _pick_rate(device: int | None) -> int:
         return int(sd.query_devices(device, "input")["default_samplerate"])
 
 
+class Recorder:
+    """Records mono audio in the background between start() and stop()."""
+
+    def __init__(self, device: int | None = None):
+        self.device = device
+        self.rate = TARGET_RATE
+        self._chunks: list[np.ndarray] = []
+        self._stream: sd.InputStream | None = None
+
+    def start(self) -> None:
+        self.rate = _pick_rate(self.device)
+        self._chunks = []
+        self._stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32",
+                                      device=self.device, callback=self._on_audio)
+        self._stream.start()
+
+    def _on_audio(self, indata, frames, time, status):
+        self._chunks.append(indata[:, 0].copy())
+
+    def stop(self) -> np.ndarray:
+        """Stop recording and return the samples, in [-1, 1] at self.rate."""
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
+        chunks, self._chunks = self._chunks, []
+        return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+
+
 def record_until_enter(device: int | None = None) -> tuple[np.ndarray, int]:
     """Record mono audio until the user presses Enter. Returns (samples in [-1, 1], sample_rate)."""
-    rate = _pick_rate(device)
-    chunks: list[np.ndarray] = []
-
-    def on_audio(indata, frames, time, status):
-        chunks.append(indata[:, 0].copy())
-
-    with sd.InputStream(samplerate=rate, channels=1, dtype="float32", device=device, callback=on_audio):
+    recorder = Recorder(device)
+    recorder.start()
+    try:
         input()
-
-    audio = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
-    return audio, rate
+    finally:
+        audio = recorder.stop()
+    return audio, recorder.rate
 
 
 def split_at_pauses(audio: np.ndarray, rate: int, max_seconds: float, search_seconds: float = 5.0) -> list[np.ndarray]:

@@ -1,5 +1,6 @@
 """sst: record from the microphone and transcribe it locally.
 
+  uv run sst dictate               press Ctrl+Alt+D in any app, speak, the text is typed there
   uv run sst start                 record, press Enter to stop, print the text (repeats until you quit)
   uv run sst file <audio.wav>      transcribe an existing WAV file
   uv run sst devices               list microphones (* = default)
@@ -65,6 +66,12 @@ def cmd_devices(args) -> None:
     print("\n".join(list_input_devices()))
 
 
+def cmd_dictate(args) -> None:
+    from sst.dictate import run
+
+    run(lambda: _load(args.engine), hotkey=args.hotkey, device=args.device, save=not args.no_save)
+
+
 def cmd_web(args) -> None:
     from sst.web import serve
 
@@ -76,6 +83,9 @@ def main() -> None:
     parser.add_argument("--engine", default="parakeet", choices=ENGINES)
     parser.add_argument("--device", type=int, default=None, help="microphone number from `sst devices`")
     sub = parser.add_subparsers(dest="command", required=True)
+    p_dictate = sub.add_parser("dictate", help="type what you say into any app, using a hotkey")
+    p_dictate.add_argument("--hotkey", default="ctrl+alt+d", help="e.g. ctrl+alt+d (default), ctrl+alt+x, f8")
+    p_dictate.add_argument("--no-save", action="store_true", help="don't keep recordings in recordings/")
     sub.add_parser("start", help="record from the microphone and transcribe")
     p_file = sub.add_parser("file", help="transcribe a WAV file")
     p_file.add_argument("path")
@@ -86,10 +96,10 @@ def main() -> None:
 
     args = parser.parse_args()
     try:
-        {"start": cmd_start, "file": cmd_file, "devices": cmd_devices, "web": cmd_web}[args.command](args)
+        {"dictate": cmd_dictate, "start": cmd_start, "file": cmd_file, "devices": cmd_devices, "web": cmd_web}[args.command](args)
     except KeyboardInterrupt:
         print("\nStopped.")
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         sys.exit(str(e))
 
 

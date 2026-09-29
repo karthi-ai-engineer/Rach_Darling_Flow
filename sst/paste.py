@@ -1,0 +1,148 @@
+"""Type text into whichever app has keyboard focus: put it on the clipboard, press Ctrl+V,
+then put back whatever was on the clipboard before.
+
+Pasting is used instead of simulating each key press because it is instant for long text and
+code editors do not auto-close brackets or pop up suggestions halfway through.
+"""
+import ctypes
+import time
+from contextlib import contextmanager
+from ctypes import wintypes
+
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+user32.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+                                   ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID]
+user32.CreateWindowExW.restype = wintypes.HWND
+user32.DestroyWindow.argtypes = [wintypes.HWND]
+user32.OpenClipboard.argtypes = [wintypes.HWND]
+user32.EnumClipboardFormats.argtypes = [wintypes.UINT]
+user32.EnumClipboardFormats.restype = wintypes.UINT
+user32.GetClipboardData.argtypes = [wintypes.UINT]
+user32.GetClipboardData.restype = wintypes.HANDLE
+user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+user32.SetClipboardData.restype = wintypes.HANDLE
+user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+user32.RegisterClipboardFormatW.restype = wintypes.UINT
+user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+user32.GetAsyncKeyState.restype = ctypes.c_short
+kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalLock.restype = wintypes.LPVOID
+kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalSize.restype = ctypes.c_size_t
+kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class MOUSEINPUT(ctypes.Structure):  # only here so INPUT has the size SendInput expects
+    _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class INPUT(ctypes.Structure):
+    class _Union(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
+
+    _anonymous_ = ("u",)
+    _fields_ = [("type", wintypes.DWORD), ("u", _Union)]
+
+
+user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+
+INPUT_KEYBOARD, KEYEVENTF_KEYUP = 1, 0x2
+VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN, VK_V = 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x56
+CF_UNICODETEXT, GMEM_MOVEABLE, HWND_MESSAGE = 13, 0x2, wintypes.HWND(-3)
+# Content carrying this format is left out of Win+V clipboard history and cloud clipboard sync.
+CF_EXCLUDE_FROM_HISTORY = user32.RegisterClipboardFormatW("ExcludeClipboardContentFromMonitorProcessing")
+# Formats whose data is not a plain memory block (bitmaps, metafiles, palettes, GDI and private
+# handles) cannot be copied byte for byte. Windows recreates the common ones, e.g. bitmaps from CF_DIB.
+_NOT_MEMORY = {2, 3, 9, 14, 0x80, 0x82, 0x83, 0x8E}
+
+RESTORE_DELAY = 0.5  # seconds the target app gets to read the clipboard before the old content returns
+
+
+def paste_text(text: str) -> None:
+    """Paste `text` into the focused app, leaving the user's clipboard as it was."""
+    _wait_for_modifiers_released()
+    with _clipboard():
+        saved = _snapshot()
+        _put([(CF_UNICODETEXT, (text + "\0").encode("utf-16-le")), (CF_EXCLUDE_FROM_HISTORY, b"\0" * 4)])
+    ours = user32.GetClipboardSequenceNumber()
+    _press_ctrl_v()
+    time.sleep(RESTORE_DELAY)
+    if user32.GetClipboardSequenceNumber() == ours:  # skip if the user copied something new meanwhile
+        with _clipboard():
+            _put(saved + [(CF_EXCLUDE_FROM_HISTORY, b"\0" * 4)] if saved else [])
+
+
+def _wait_for_modifiers_released(timeout: float = 5.0) -> None:
+    # Ctrl+V pressed while the user still holds Alt from the hotkey would arrive as Ctrl+Alt+V.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and any(
+            user32.GetAsyncKeyState(vk) & 0x8000 for vk in (VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN)):
+        time.sleep(0.02)
+
+
+def _press_ctrl_v() -> None:
+    events = [(VK_CONTROL, 0), (VK_V, 0), (VK_V, KEYEVENTF_KEYUP), (VK_CONTROL, KEYEVENTF_KEYUP)]
+    inputs = (INPUT * len(events))(*(INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, dwFlags=flags))
+                                     for vk, flags in events))
+    user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
+
+
+@contextmanager
+def _clipboard():
+    # Setting clipboard data needs an owner window; a hidden message-only window is enough.
+    hwnd = user32.CreateWindowExW(0, "STATIC", None, 0, 0, 0, 0, 0, HWND_MESSAGE, None, None, None)
+    try:
+        for _ in range(50):  # another app may have the clipboard open for a moment
+            if user32.OpenClipboard(hwnd):
+                break
+            time.sleep(0.02)
+        else:
+            raise OSError("the clipboard is busy (another app is holding it open)")
+        try:
+            yield
+        finally:
+            user32.CloseClipboard()
+    finally:
+        user32.DestroyWindow(hwnd)
+
+
+def _snapshot() -> list[tuple[int, bytes]]:
+    """Copy every clipboard format that is a plain memory block (text, HTML, RTF, images as DIB, files...)."""
+    saved, fmt = [], 0
+    while fmt := user32.EnumClipboardFormats(fmt):
+        if fmt in _NOT_MEMORY or 0x200 <= fmt <= 0x3FF:
+            continue
+        handle = user32.GetClipboardData(fmt)
+        size = kernel32.GlobalSize(handle) if handle else 0
+        pointer = kernel32.GlobalLock(handle) if size else None
+        if pointer:
+            try:
+                saved.append((fmt, ctypes.string_at(pointer, size)))
+            finally:
+                kernel32.GlobalUnlock(handle)
+    return saved
+
+
+def _put(items: list[tuple[int, bytes]]) -> None:
+    """Replace the clipboard contents with the given (format, data) items."""
+    user32.EmptyClipboard()
+    for fmt, data in items:
+        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        pointer = kernel32.GlobalLock(handle)
+        ctypes.memmove(pointer, data, len(data))
+        kernel32.GlobalUnlock(handle)
+        if not user32.SetClipboardData(fmt, handle):  # on success Windows owns the memory
+            kernel32.GlobalFree(handle)
