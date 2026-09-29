@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speech to Text</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #ffffff; --text: #1d2330; --muted: #6b7385; --border: #e3e6ec;
+    --accent: #2f6fed; --rec: #e5484d; --level: #2e9e6b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --surface: #1a1e24; --text: #e8ebf0; --muted: #9aa3b2; --border: #2a3038;
+      --accent: #7aa5ff; --rec: #ff6369; --level: #4cc38a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 680px; margin: 0 auto; padding: 40px 16px 64px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 28px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0; }
+  .badge { font-size: 13px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+
+  .recorder { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 32px 24px 24px; text-align: center; }
+  #rec {
+    width: 96px; height: 96px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--rec); display: inline-grid; place-items: center; transition: transform .1s, opacity .2s;
+  }
+  #rec:hover { transform: scale(1.04); }
+  #rec:disabled { opacity: .45; cursor: default; transform: none; }
+  #rec .icon { width: 30px; height: 30px; background: #fff; border-radius: 50%; transition: border-radius .15s; }
+  #rec.recording .icon { width: 28px; height: 28px; border-radius: 5px; }
+  #rec.recording { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--rec) 45%, transparent); }
+    50% { box-shadow: 0 0 0 14px transparent; }
+  }
+  #status { margin-top: 16px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .meter { height: 6px; width: 220px; max-width: 100%; margin: 12px auto 0; background: var(--border); border-radius: 3px; overflow: hidden; visibility: hidden; }
+  .meter.on { visibility: visible; }
+  .meter > div { height: 100%; width: 0; background: var(--level); transition: width .08s linear; }
+  .hint { margin-top: 10px; font-size: 13px; color: var(--muted); }
+  #error { color: var(--rec); font-size: 14px; margin-top: 10px; }
+  #error:empty { display: none; }
+
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; margin: 36px 0 12px; }
+  .result { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; margin-bottom: 12px; }
+  .result p { margin: 0 0 10px; font-size: 17px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .result p.none { color: var(--muted); font-style: italic; }
+  .meta { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }
+  .meta button { font: inherit; font-size: 13px; color: var(--accent); background: none; border: 1px solid var(--border); border-radius: 8px; padding: 2px 10px; cursor: pointer; }
+  .empty { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Speech to Text</h1>
+    <span class="badge" id="engine">connecting…</span>
+  </header>
+
+  <section class="recorder">
+    <button id="rec" aria-label="Start recording"><span class="icon"></span></button>
+    <div id="status">Press to record</div>
+    <div class="meter" id="meter"><div></div></div>
+    <div class="hint">Space bar also starts and stops</div>
+    <div id="error"></div>
+  </section>
+
+  <h2>Transcripts</h2>
+  <div id="results"><p class="empty">Nothing yet. Record something above.</p></div>
+</main>
+
+<script>
+// Captures raw microphone samples; the page turns them into a WAV and sends it to the local server.
+const CAPTURE_WORKLET = `
+  class Capture extends AudioWorkletProcessor {
+    process(inputs) {
+      const channel = inputs[0][0];
+      if (channel) this.port.postMessage(channel.slice(0));
+      return true;
+    }
+  }
+  registerProcessor('capture', Capture);`;
+
+const $ = (id) => document.getElementById(id);
+const recBtn = $('rec'), statusEl = $('status'), meterEl = $('meter'), errorEl = $('error');
+
+let state = 'idle';          // idle | recording | transcribing
+let ctx, stream, source, node, chunks, startedAt, level = 0, frame;
+
+fetch('/api/info').then(r => r.json())
+  .then(info => $('engine').textContent = `${info.engine[0].toUpperCase()}${info.engine.slice(1)} · on this laptop`)
+  .catch(() => $('engine').textContent = 'server offline');
+
+recBtn.addEventListener('click', () => { recBtn.blur(); toggle(); });
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !e.repeat && !(e.target instanceof HTMLButtonElement)) { e.preventDefault(); toggle(); }
+});
+
+function toggle() {
+  if (state === 'idle') startRecording();
+  else if (state === 'recording') stopRecording();
+}
+
+function setState(next, text) {
+  state = next;
+  recBtn.classList.toggle('recording', next === 'recording');
+  recBtn.disabled = next === 'transcribing';
+  recBtn.setAttribute('aria-label', next === 'recording' ? 'Stop recording' : 'Start recording');
+  meterEl.classList.toggle('on', next === 'recording');
+  statusEl.textContent = text;
+}
+
+async function startRecording() {
+  errorEl.textContent = '';
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+  } catch (e) {
+    errorEl.textContent = e.name === 'NotAllowedError'
+      ? 'Microphone access is blocked. Click the icon at the left of the address bar and allow the microphone.'
+      : `Could not open the microphone: ${e.message}`;
+    return;
+  }
+  try { ctx = new AudioContext({ sampleRate: 16000 }); }   // what the model wants
+  catch { ctx = new AudioContext(); }                       // fallback: server resamples
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([CAPTURE_WORKLET], { type: 'text/javascript' })));
+  source = ctx.createMediaStreamSource(stream);
+  node = new AudioWorkletNode(ctx, 'capture');
+  chunks = [];
+  node.port.onmessage = (e) => {
+    chunks.push(e.data);
+    let peak = 0;
+    for (const s of e.data) peak = Math.max(peak, Math.abs(s));
+    level = Math.max(peak, level * 0.9);
+  };
+  source.connect(node);
+  node.connect(ctx.destination);  // keeps the node running; it outputs silence
+  startedAt = performance.now();
+  setState('recording', 'Recording 0:00 · press to stop');
+  tick();
+}
+
+function tick() {
+  const secs = Math.floor((performance.now() - startedAt) / 1000);
+  statusEl.textContent = `Recording ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')} · press to stop`;
+  meterEl.firstElementChild.style.width = `${Math.min(100, Math.sqrt(level) * 100)}%`;
+  level *= 0.92;
+  frame = requestAnimationFrame(tick);
+}
+
+async function stopRecording() {
+  cancelAnimationFrame(frame);
+  source.disconnect(); node.disconnect();
+  stream.getTracks().forEach(t => t.stop());
+  const rate = ctx.sampleRate;
+  await ctx.close();
+
+  const samples = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
+  let offset = 0;
+  for (const c of chunks) { samples.set(c, offset); offset += c.length; }
+
+  if (samples.length < rate * 0.3) {
+    setState('idle', 'Too short. Press to record');
+    return;
+  }
+
+  setState('transcribing', 'Transcribing…');
+  try {
+    const res = await fetch('/api/transcribe', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: encodeWav(samples, rate) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    addResult(data);
+    setState('idle', 'Press to record');
+  } catch (e) {
+    errorEl.textContent = e instanceof TypeError
+      ? "Can't reach the local server. Is the sst web window still open?"
+      : `Transcription failed: ${e.message}`;
+    setState('idle', 'Press to record');
+  }
+}
+
+function encodeWav(samples, rate) {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  const ascii = (at, s) => { for (let i = 0; i < s.length; i++) view.setUint8(at + i, s.charCodeAt(i)); };
+  ascii(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); ascii(8, 'WAVE');
+  ascii(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  ascii(36, 'data'); view.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function addResult({ text, audio_seconds, took_seconds }) {
+  const results = $('results');
+  results.querySelector('.empty')?.remove();
+
+  const card = document.createElement('article');
+  card.className = 'result';
+  const p = document.createElement('p');
+  p.textContent = text || 'No speech recognised.';
+  if (!text) p.className = 'none';
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const info = document.createElement('span');
+  const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  info.textContent = `${time} · ${audio_seconds.toFixed(1)}s audio · transcribed in ${took_seconds.toFixed(2)}s`;
+  meta.append(info);
+
+  if (text) {
+    const copy = document.createElement('button');
+    copy.textContent = 'Copy';
+    copy.onclick = async () => {
+      await navigator.clipboard.writeText(text);
+      copy.textContent = 'Copied';
+      setTimeout(() => copy.textContent = 'Copy', 1200);
+    };
+    meta.append(copy);
+  }
+  card.append(p, meta);
+  results.prepend(card);
+}
+</script>
+</body>
+</html>
