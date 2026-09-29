@@ -1,0 +1,25 @@
+SST Dictation - third-party notices
+===================================
+
+SST Dictation includes the following model and software. Each is the property of its owners and
+is distributed under its own license.
+
+Speech recognition model
+------------------------
+NVIDIA Parakeet 0.6B unified English (sherpa-onnx int8 export:
+sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming)
+  Licensed by NVIDIA Corporation under the NVIDIA Open Model License Agreement.
+  https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/
+  The model card files (bias, explainability, privacy, safety) are in the models folder.
+
+Software
+--------
+sherpa-onnx           Apache License 2.0          https://github.com/k2-fsa/sherpa-onnx
+ONNX Runtime          MIT License                 https://github.com/microsoft/onnxruntime
+PortAudio             MIT-style license           https://www.portaudio.com/license.html
+python-sounddevice    MIT License                 https://github.com/spatialaudio/python-sounddevice
+NumPy                 BSD 3-Clause License        https://numpy.org/license.html
+                      (its bundled OpenBLAS and runtime libraries are under their own licenses)
+Python                PSF License Agreement       https://docs.python.org/3/license.html
+PyInstaller           GPL 2.0 with an exception that allows distributing its bootloader with any
+                      program                     https://pyinstaller.org/en/stable/license.html

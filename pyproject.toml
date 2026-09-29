@@ -18,6 +18,8 @@ sst = "sst.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
+# Only for building the Windows installer (build_installer.cmd); not needed to run sst.
+build = ["pyinstaller>=6.10"]
 
 [build-system]
 requires = ["hatchling"]
