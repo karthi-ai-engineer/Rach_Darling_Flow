@@ -35,6 +35,20 @@ def record_until_enter(device: int | None = None) -> tuple[np.ndarray, int]:
     return audio, rate
 
 
+def split_at_pauses(audio: np.ndarray, rate: int, max_seconds: float, search_seconds: float = 5.0) -> list[np.ndarray]:
+    """Cut audio into pieces of at most max_seconds. Each cut is placed at the quietest 100 ms
+    within the last search_seconds before the limit, which is normally a pause between words."""
+    max_n, search_n, window = int(max_seconds * rate), int(search_seconds * rate), int(0.1 * rate)
+    pieces = []
+    while len(audio) > max_n:
+        energy = np.cumsum(audio[max_n - search_n:max_n].astype(np.float64) ** 2)
+        cut = max_n - search_n + int(np.argmin(energy[window:] - energy[:-window])) + window // 2
+        pieces.append(audio[:cut])
+        audio = audio[cut:]
+    pieces.append(audio)
+    return pieces
+
+
 def save_wav(path: Path, audio: np.ndarray, rate: int) -> None:
     pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
     with wave.open(str(path), "wb") as w:

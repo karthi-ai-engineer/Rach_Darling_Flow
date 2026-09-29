@@ -4,8 +4,12 @@ from pathlib import Path
 import numpy as np
 
 from sst import MODELS_DIR
+from sst.audio import split_at_pauses
 
 MODEL_DIR = MODELS_DIR / "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
+# Longer audio is transcribed in pieces cut at pauses: as one piece, onnxruntime fails somewhere
+# between 4 and 9 minutes of audio (a 514 s recording crashed; split, it transcribes fine).
+MAX_PIECE_SECONDS = 30
 
 
 def _find(model_dir: Path, prefix: str) -> Path | None:
@@ -44,6 +48,10 @@ class ParakeetEngine:
             )
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
+        texts = (self._decode(piece, sample_rate) for piece in split_at_pauses(audio, sample_rate, MAX_PIECE_SECONDS))
+        return " ".join(text for text in texts if text)
+
+    def _decode(self, audio: np.ndarray, sample_rate: int) -> str:
         stream = self._recognizer.create_stream()
         stream.accept_waveform(sample_rate, audio)
         self._recognizer.decode_stream(stream)
