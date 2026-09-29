@@ -12,7 +12,7 @@ _Last updated: 2026-09-29_
 | 1 | Dictate into any app with a global hotkey (`sst dictate`, Ctrl+Alt+D) | PR #2, waiting for merge |
 | setup | GitHub CI (lint, tests, CodeQL), Dependabot, templates, CLAUDE.md, this file | PR #4 (CI green), waiting for merge |
 | 2 | Windows installer (`Setup.exe`, no Python needed), CI app build, release pipeline | PR #6, waiting for a test on another laptop + merge |
-| 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | PR #8, waiting for a hands-on test + merge |
+| 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | PR #8, the owner confirmed it works (installed app, 2026-09-29), waiting for merge |
 
 ## Continue on another device
 
@@ -92,24 +92,17 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
 - The console window is the only UI: there is no tray icon or on-screen recording indicator yet. A hotkey other
   than Ctrl+Win needs `sst.exe dictate --hotkey ...` in the shortcut; a settings file would be friendlier.
-- Ctrl+Win itself wasn't sent through the real hook in tests (Wispr Flow was running and would have reacted). The
-  hook plumbing was tested with the Menu key, Esc and Ctrl+Alt+X; Ctrl+Win is covered by the Matcher unit tests and
-  needs a hands-on check.
+- Ctrl+Win isn't sent through the real hook in automated tests (Wispr Flow on the dev laptop would react). The hook
+  plumbing is tested with the Menu key, Esc and Ctrl+Alt+X, and Ctrl+Win by the Matcher unit tests. The owner
+  confirmed that Ctrl+Win dictation works in the installed app.
 - English only. Punctuation and capitals come from the model as they are; there is no cleanup of filler words.
 
 ## Next steps
 
-1. Quit Wispr Flow, then test phase 3 by hand with `dictate.cmd`:
-   - hold Ctrl+Win and speak
-   - tap it for hands-free
-   - Ctrl+Win+Space (and the PowerToys Copilot key)
-   - the Menu key (PowerToys turns it into Ctrl+Win)
-   - Ctrl+Win+D and Ctrl+Win+← still switch desktops
-   - releasing Win doesn't open Start
-2. Merge in order: #2, #4, #6, then #8 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the tag,
+1. Merge in order: #2, #4, #6, then #8 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the tag,
    and the Release workflow publishes the first installer.
-3. Try `Setup.exe` on a second laptop. That is the one check not done yet (so far it was tested on the dev laptop only).
-4. Ideas for later phases, in rough order:
+2. Try `Setup.exe` on a second laptop. That is the one check not done yet (so far it was tested on the dev laptop only).
+3. Ideas for later phases, in rough order:
    - an on-screen recording indicator
    - a tray icon and start at login
    - spacing and capitals that fit the text around the cursor
