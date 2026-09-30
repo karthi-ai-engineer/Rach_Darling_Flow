@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -746,6 +747,8 @@ class TrayApp:
         threading.Thread(target=self._load, name="model-loader", daemon=True).start()
         self.reading: ReadingTest | None = None
         if getattr(sys, "frozen", False):  # the source checkout is updated with git, not by the app
+            # The installer of an update that has finished (it started this version) isn't needed any more.
+            QTimer.singleShot(60_000, lambda: shutil.rmtree(UPDATE_DIR, ignore_errors=True))
             QTimer.singleShot(20_000, self.check_for_updates)
             self.update_timer = QTimer()
             self.update_timer.setInterval(updates.CHECK_EVERY_HOURS * 3600 * 1000)
