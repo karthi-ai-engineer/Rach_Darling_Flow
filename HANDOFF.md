@@ -13,6 +13,7 @@ _Last updated: 2026-09-29_
 | setup | GitHub CI (lint, tests, CodeQL), Dependabot, templates, CLAUDE.md, this file | PR #4 (CI green), waiting for merge |
 | 2 | Windows installer (`Setup.exe`, no Python needed), CI app build, release pipeline | PR #6, waiting for a test on another laptop + merge |
 | 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | PR #8, the owner confirmed it works (installed app, 2026-09-29), waiting for merge |
+| 4 | A real app: tray icon, recording pill, settings, history, logs (Qt) | PR #10, waiting for a hands-on test + merge |
 
 ## Continue on another device
 
@@ -87,24 +88,69 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   run only uploads it as an artifact).
 - Inno Setup on the dev laptop is a portable copy in `.tools/innosetup` (git-ignored).
 
+## The tray app (phase 4)
+
+- `sst/app.py` (Qt / PySide6-Essentials, LGPL, bundled as separate DLLs). It has a tray icon and menu (status,
+  History, Settings, logs folder, Quit), and the icon turns red while recording.
+- The pill is a frameless, topmost, click-through window with `WS_EX_NOACTIVATE`. Checked: a focused window stays
+  focused through every pill state, so the paste still goes to the user's app.
+- The model loads on a background thread, and the tray icon appears at once. The keyboard hook starts after the model
+  has loaded. A 15 ms QTimer pumps the hook events into `Dictation`, and the worker thread reports back through a Qt
+  signal.
+- `sst/dictate.py` `Dictation` is the one dictation engine, driven by the tray app and by the console command
+  `sst dictate`. Its tests feed events with explicit times, so they are exact and fast (no sleeping).
+- Settings (`%APPDATA%\sst\settings.json`) are the hotkey, microphone by name, sounds and saving recordings. A damaged
+  file falls back to the defaults. History is `%APPDATA%\sst\history.jsonl` (last 200). Logs are
+  `%LOCALAPPDATA%\sst\logs\sst.log` (rotating).
+- The microphone list is re-read before every recording (~45 ms), so a headset plugged in later, or a new Windows
+  default, is picked up. The dev laptop's default mic was Bluetooth earbuds (OnePlus Nord Buds 3r). Bluetooth headset
+  mics use a low-quality call mode, so pick the laptop mic in Settings for better accuracy.
+- The installer has two programs: `SST Dictation.exe` (tray app, no console; the shortcuts point here) and `sst.exe`
+  (CLI).
+- "Start with Windows" is on by default. The installer task and the in-app setting share one HKCU Run value with
+  `--startup`, which starts quietly. Uninstall removes that value even if it was switched on from the app (verified
+  with a throwaway installer).
+- Build checks: `SST Dictation.exe --self-test` builds every window off-screen and transcribes once, and the build
+  script runs it. The dependency scan of all 92 bundled binaries finds nothing missing on a plain Windows (Qt brings
+  its own C++ runtime).
+- The installer is 520 MB (Qt added 20 MB), 762 MB installed.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
-- The console window is the only UI: there is no tray icon or on-screen recording indicator yet. A hotkey other
-  than Ctrl+Win needs `sst.exe dictate --hotkey ...` in the shortcut; a settings file would be friendlier.
 - Ctrl+Win isn't sent through the real hook in automated tests (Wispr Flow on the dev laptop would react). The hook
   plumbing is tested with the Menu key, Esc and Ctrl+Alt+X, and Ctrl+Win by the Matcher unit tests. The owner
   confirmed that Ctrl+Win dictation works in the installed app.
-- English only. Punctuation and capitals come from the model as they are; there is no cleanup of filler words.
+- English only. Punctuation and capitals come from the model as they are; there is no cleanup of filler words yet.
+- The installer isn't code-signed, so SmartScreen warns on first run.
 
 ## Next steps
 
-1. Merge in order: #2, #4, #6, then #8 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the tag,
-   and the Release workflow publishes the first installer.
-2. Try `Setup.exe` on a second laptop. That is the one check not done yet (so far it was tested on the dev laptop only).
-3. Ideas for later phases, in rough order:
-   - an on-screen recording indicator
-   - a tray icon and start at login
-   - spacing and capitals that fit the text around the cursor
-   - cleanup of the transcript (filler words, punctuation)
-   - a custom vocabulary
+1. Merge in order: #2, #4, #6, #8, then #10 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the
+   tag, and the Release workflow publishes the installer.
+2. Try the phase 4 installer: the tray icon, the pill, Settings (choose the laptop mic), History. Also try `Setup.exe`
+   on a second laptop.
+3. Roadmap to a Wispr Flow-class app:
+   - **Phase 5, clean text:**
+     - remove fillers (um, uh, you know)
+     - handle self-corrections ("at 2... no, at 3")
+     - spoken "new line" / "new paragraph"
+     - spacing and capitals that fit the text before the cursor (UI Automation)
+     - a personal dictionary (replacements), and snippets (a spoken shortcut expands into saved text)
+   - **Phase 6, accuracy on the owner's voice:**
+     - a reading test with known text to measure the word error rate (WER)
+     - trim silence (VAD)
+     - compare Parakeet with Whisper large-v3-turbo; add Whisper only if Japanese or Tamil is needed
+   - **Phase 7, AI polish and command mode:** an optional small local LLM (e.g. Qwen2.5 1.5B, llama.cpp) to tidy text;
+     select text, hold the key and say "make this formal". Expect about 2–4 s on this CPU, so it stays optional.
+   - **Phase 8, context:** per-app style (casual in Slack, formal in Outlook, plain in terminals and code editors).
+   - **Phase 9, distribution:** auto-update from GitHub Releases, code signing (needs a certificate), a "paste last
+     transcript" hotkey.
+4. Waiting on the owner:
+   - Japanese/Tamil needed?
+   - may text ever go to a cloud AI, or strictly local?
+   - a list of names and terms for the dictionary
+   - the apps used most
+   - code-signing budget
+   - the product name (SST Dictation?)
+   - whether the office has an internal AI gateway (ask IT)
