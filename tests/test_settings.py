@@ -1,8 +1,10 @@
 import json
 from datetime import date, timedelta
 
+import pytest
+
 from sst import settings
-from sst.settings import Settings, Stats, add_to_history, read_history
+from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -125,3 +127,51 @@ def test_stats_keep_a_limited_number_of_days(monkeypatch):
     for n in range(5):
         stats.add("word", 1.0, date(2026, 9, 1) + timedelta(days=n))
     assert list(stats.days) == ["2026-09-03", "2026-09-04", "2026-09-05"] and stats.words == 5
+
+
+def test_before_any_profile_there_is_the_first_one_using_the_old_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "CONFIG_DIR", tmp_path)
+    profiles = Profiles.load(tmp_path / "profiles.json")
+    first = profiles.current
+    assert [p.id for p in profiles.items] == [settings.FIRST_PROFILE] and first.label == "My profile"
+    assert first.settings_file == tmp_path / "settings.json"  # where they were before profiles: nothing moves
+    assert first.history_file == tmp_path / "history.jsonl" and first.gateway_file == tmp_path / "gateway.json"
+
+
+def test_new_profiles_get_their_own_folder_and_a_unique_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "CONFIG_DIR", tmp_path)
+    profiles = Profiles()
+    rahul, rahul_2, tamil = profiles.add("Rahul"), profiles.add(" Rahul "), profiles.add("தமிழ்")
+    assert (rahul.id, rahul_2.id, tamil.id) == ("rahul", "rahul-2", "profile")
+    assert rahul.name == "Rahul" and tamil.label == "தமிழ்"
+    assert rahul.settings_file == tmp_path / "profiles" / "rahul" / "settings.json"
+    assert rahul.folder(tmp_path / "bench") == tmp_path / "bench" / "profiles" / "rahul"
+
+
+def test_profiles_round_trip_and_the_active_one_is_kept(tmp_path):
+    path = tmp_path / "profiles.json"
+    profiles = Profiles()
+    profiles.current.name = "Karthi"
+    profiles.active = profiles.add("Rahul").id
+    profiles.save(path)
+    loaded = Profiles.load(path)
+    assert loaded == profiles and loaded.current.name == "Rahul"
+
+
+def test_removing_a_profile_falls_back_to_the_first_and_the_first_stays(tmp_path):
+    profiles = Profiles()
+    profiles.active = profiles.add("Rahul").id
+    profiles.remove("rahul")
+    assert [p.id for p in profiles.items] == ["default"] and profiles.active == "default"
+    with pytest.raises(ValueError):
+        profiles.remove("default")  # its files are the settings folder itself
+
+
+def test_a_damaged_or_odd_profiles_file_still_gives_a_usable_list(tmp_path):
+    path = tmp_path / "profiles.json"
+    path.write_text("{ not json", encoding="utf-8")
+    assert Profiles.load(path) == Profiles()
+    path.write_text(json.dumps({"active": "gone", "profiles": [{"id": "rahul", "name": "Rahul"}, {"id": "../evil"}]}),
+                    encoding="utf-8")
+    loaded = Profiles.load(path)
+    assert [p.id for p in loaded.items] == ["default", "rahul"] and loaded.active == "default"

@@ -85,11 +85,12 @@ def cmd_app(args) -> None:
 def cmd_bench(args) -> None:
     from sst import bench
     from sst.gateway import GatewayConfig, Polisher
-    from sst.settings import Settings
+    from sst.settings import Profiles, Settings
 
-    settings, gateway = Settings.load(), GatewayConfig.load()
+    profile = Profiles.load().current  # the models and words of the profile in use in the app
+    settings, gateway = Settings.load(profile.settings_file), GatewayConfig.load(profile.gateway_file)
     models = args.model or [m for m in (settings.cleanup_model, settings.cleanup_fallback) if m]
-    polishers = {f"Parakeet + {m}": Polisher(gateway, m, settings.vocabulary) for m in models} if gateway.base_url else {}
+    polishers = {f"Parakeet + {m}": Polisher(gateway, m, settings.vocabulary) for m in models} if gateway.address else {}
     results = bench.score(Path(args.folder), _load(args.engine), polishers, progress=lambda text: print(" ", text))
     print()
     print(results.report())

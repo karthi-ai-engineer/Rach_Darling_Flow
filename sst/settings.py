@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import time
 import winreg
@@ -15,6 +16,8 @@ HISTORY_FILE = CONFIG_DIR / "history.jsonl"
 HISTORY_KEEP = 200  # entries shown and kept
 STATS_FILE = CONFIG_DIR / "stats.json"
 STATS_DAYS = 400  # days of per-day word counts kept (for "this week" and the streak)
+PROFILES_FILE = CONFIG_DIR / "profiles.json"
+FIRST_PROFILE = "default"
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +153,95 @@ class Stats:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        tmp.replace(path)
+
+
+# ---- profiles: people sharing this computer, each with their own settings, words, AI provider, history and stats
+
+@dataclass
+class Profile:
+    id: str
+    name: str = ""  # "" = not named yet
+
+    @property
+    def label(self) -> str:
+        return self.name or "My profile"
+
+    def folder(self, root: Path | None = None) -> Path:
+        """This profile's part of a data folder (the settings folder unless another is given). The first profile keeps
+        the files from before profiles where they were, so nothing moves and an older Rflow still finds them."""
+        root = root or CONFIG_DIR
+        return root if self.id == FIRST_PROFILE else root / "profiles" / self.id
+
+    @property
+    def settings_file(self) -> Path:
+        return self.folder() / "settings.json"
+
+    @property
+    def history_file(self) -> Path:
+        return self.folder() / "history.jsonl"
+
+    @property
+    def stats_file(self) -> Path:
+        return self.folder() / "stats.json"
+
+    @property
+    def gateway_file(self) -> Path:
+        return self.folder() / "gateway.json"
+
+
+@dataclass
+class Profiles:
+    items: list[Profile] = field(default_factory=lambda: [Profile(FIRST_PROFILE)])
+    active: str = FIRST_PROFILE
+
+    @property
+    def current(self) -> Profile:
+        return next((p for p in self.items if p.id == self.active), self.items[0])
+
+    def get(self, profile_id: str) -> Profile | None:
+        return next((p for p in self.items if p.id == profile_id), None)
+
+    def add(self, name: str) -> Profile:
+        base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24] or "profile"
+        profile_id, n = base, 2
+        while self.get(profile_id) or profile_id == FIRST_PROFILE:
+            profile_id, n = f"{base}-{n}", n + 1
+        profile = Profile(profile_id, name.strip())
+        self.items.append(profile)
+        return profile
+
+    def remove(self, profile_id: str) -> None:
+        """Every profile but the first can go (the first one's files are the settings folder itself)."""
+        if profile_id == FIRST_PROFILE:
+            raise ValueError("The first profile can't be deleted; rename it instead.")
+        self.items = [p for p in self.items if p.id != profile_id]
+        if self.active == profile_id:
+            self.active = FIRST_PROFILE
+
+    @classmethod
+    def load(cls, path: Path = PROFILES_FILE) -> "Profiles":
+        """The saved profiles; before any were made (or if the file is damaged), just the first one."""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            items = [Profile(str(p["id"]), str(p.get("name") or "")) for p in data["profiles"]
+                     if re.fullmatch(r"[a-z0-9-]+", str(p["id"]))]
+        except FileNotFoundError:
+            return cls()
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            log.warning("Ignoring unreadable %s: %s", path, e)
+            return cls()
+        if not any(p.id == FIRST_PROFILE for p in items):
+            items.insert(0, Profile(FIRST_PROFILE))
+        profiles = cls(items, str(data.get("active") or FIRST_PROFILE))
+        profiles.active = profiles.current.id  # an unknown active profile falls back to the first
+        return profiles
+
+    def save(self, path: Path = PROFILES_FILE) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"active": self.active, "profiles": [asdict(p) for p in self.items]}, indent=2,
+                                  ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
 
 
