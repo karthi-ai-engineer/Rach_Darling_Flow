@@ -18,16 +18,21 @@ Rules for AI coding assistants (Claude Code) in this repository. Read `HANDOFF.m
 2. Branch from an up-to-date `main`: `phase-<n>/<short-name>`. Other work: `chore/<name>` or `fix/<name>`.
 3. Commit in small, meaningful steps. The subject is imperative and at most ~72 characters; the body says why.
 4. Push, then open the PR into `main` with `Closes #<issue>` and fill in the template. CI must pass.
-5. **The owner reviews, tests and merges** (with "Create a merge commit", so stacked branches stay clean).
-   Never merge your own PR and never push to `main` directly.
+5. **The owner reviews, tests and merges** (with "Create a merge commit", so stacked branches stay clean). Merge
+   yourself only when the owner explicitly asks. Then retarget the next stacked PR to `main` *before* deleting the
+   merged branch: deleting a base branch closes the PRs stacked on it. Never push to `main` directly.
 6. Update `HANDOFF.md` in the last PR of every phase, so work can resume on another device.
-7. Release: after the merge, tag `vX.Y.Z` on `main`. The Release workflow builds the installer and publishes it.
+7. Release, only when the owner says so: raise `__version__` in `sst/__init__.py` in the phase's PR; after the merge,
+   tag `vX.Y.Z` on `main`. The Release workflow publishes `Rflow-Setup.exe` and `Rflow-Setup.exe.sha256`. Every
+   installed Rflow offers that release as an update, and the website links to it. Keep those two asset names: the
+   updater and the website depend on them.
 
 ## Project
 
-Local speech-to-text for Windows, like a small, private Wispr Flow. NVIDIA Parakeet runs on the CPU through
-sherpa-onnx, and nothing leaves the laptop. Main feature: `sst dictate`. Hold Ctrl+Win in any app and speak; the
-text is typed at the cursor.
+**Rflow**: dictation for Windows, like a small, private Wispr Flow. NVIDIA Parakeet recognises speech on the CPU
+through sherpa-onnx, so the voice never leaves the laptop. The text can optionally be cleaned up by a model on any
+OpenAI-compatible endpoint the user configures. Hold Ctrl+Win in any app and speak; the text is typed at the cursor.
+The public download site is `site/` (Vercel). The Python package keeps its internal name `sst`.
 
 ```
 uv sync                                          # app + dev tools (pytest, ruff)
@@ -38,8 +43,9 @@ uv run ruff check .                              # lint
 ```
 
 The layout is in `README.md`. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
-shared by the tray app (`sst/app.py`, Qt) and the console command. The Windows-only parts are `sst/app.py`,
-`sst/dictate.py`, `sst/hotkey.py`, `sst/paste.py` and `sst/settings.py`. UI tests run Qt off-screen (`tests/test_app.py`).
+shared by the tray app (`sst/app.py`, Qt) and the console command. In-app updates are `sst/updates.py`, and the text
+cleanup is `sst/gateway.py`. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`, `sst/paste.py`,
+`sst/settings.py` and `sst/gateway.py` (DPAPI). UI tests run Qt off-screen (`tests/test_app.py`).
 
 ## Conventions
 
@@ -47,9 +53,10 @@ shared by the tray app (`sst/app.py`, Qt) and the console command. The Windows-o
   pays for itself.
 - Match the existing style: compact code, comments that explain *why*, line length 130, ruff rules from `pyproject.toml`.
 - Never commit `models/`, `recordings/` (the owner's voice), `build/`, `dist/` or `.tools/`.
-- The company AI gateway key is personal. It lives only in `%APPDATA%\sst\gateway.json`, encrypted with DPAPI. Never commit it, print it or
-  write it into logs, docs or tests. Load it with `GatewayConfig.load()`, whose repr hides it. Test the gateway one
-  model at a time (a small server), and use `tests/test_gateway.py`'s local fake for automated tests.
+- The owner's company AI gateway (its address and key) is private. Both live only in `%APPDATA%\sst\gateway.json`, and
+  the key is encrypted with DPAPI. Never put either into code, docs, tests, logs or commits; the repository is public.
+  Load them with `GatewayConfig.load()`, whose repr hides the key. Test the gateway one model at a time (a small
+  server), and use `tests/test_gateway.py`'s local fake for automated tests.
 - Tests must not press real keys, steal focus or touch the real clipboard; use fakes like `tests/test_dictate.py`.
   End-to-end checks through `SendInput` type into whatever window has focus, so run them only with the owner's OK and
   only while a test window is in front.

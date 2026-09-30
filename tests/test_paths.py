@@ -9,11 +9,11 @@ from sst import audio
 
 def test_installed_app_uses_its_own_folder_and_localappdata(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "SST Dictation" / "sst.exe"))
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "Rflow" / "Rflow.exe"))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     try:
         importlib.reload(sst)
-        assert sst.MODELS_DIR == tmp_path / "SST Dictation" / "models"
+        assert sst.MODELS_DIR == tmp_path / "Rflow" / "models"
         assert sst.RECORDINGS_DIR == tmp_path / "Local" / "sst" / "recordings"
     finally:
         monkeypatch.undo()

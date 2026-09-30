@@ -48,11 +48,20 @@ def test_history_is_trimmed(tmp_path, monkeypatch):
     assert len(path.read_text(encoding="utf-8").splitlines()) == 5
 
 
-def test_cleanup_model_and_vocabulary_round_trip(tmp_path):
+def test_cleanup_settings_and_vocabulary_round_trip(tmp_path):
     path = tmp_path / "settings.json"
-    chosen = Settings(cleanup_model="unsloth/Qwen3.8-27B-NVFP4", vocabulary=["Claude Code", "தமிழ்", "GitHub"])
+    chosen = Settings(cleanup=True, cleanup_model="model-a", cleanup_fallback="model-b",
+                      vocabulary=["Claude Code", "தமிழ்", "GitHub"])
     chosen.save(path)
     assert Settings.load(path) == chosen
+
+
+def test_settings_from_before_the_cleanup_switch_keep_cleanup_on(tmp_path):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"cleanup_model": "model-a"}), encoding="utf-8")  # a 0.1 settings file
+    assert Settings.load(path) == Settings(cleanup=True, cleanup_model="model-a")
+    path.write_text(json.dumps({"cleanup": False, "cleanup_model": "model-a"}), encoding="utf-8")
+    assert Settings.load(path).cleanup is False
 
 
 def test_a_vocabulary_that_is_not_a_list_of_words_is_ignored(tmp_path):

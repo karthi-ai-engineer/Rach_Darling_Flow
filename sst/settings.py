@@ -22,7 +22,9 @@ class Settings:
     microphone: str = ""  # a device name from input_device_names(); "" = the Windows default
     sounds: bool = True
     save_recordings: bool = True
-    cleanup_model: str = ""  # a model id from sst.gateway.MODELS; "" = type exactly what was heard
+    cleanup: bool = False  # clean up the text with an AI model before typing it
+    cleanup_model: str = ""  # a model id on the user's endpoint (sst.gateway)
+    cleanup_fallback: str = ""  # optional backup model, tried when the first one fails
     vocabulary: list[str] = field(default_factory=list)  # the user's names and terms, for the cleanup
 
     @classmethod
@@ -42,6 +44,8 @@ class Settings:
             value = data.get(f.name, default) if isinstance(data, dict) else default
             ok = isinstance(value, type(default)) and (not isinstance(value, list) or all(isinstance(v, str) for v in value))
             values[f.name] = value if ok else default
+        if isinstance(data, dict) and "cleanup" not in data and values["cleanup_model"]:
+            values["cleanup"] = True  # settings from before the on/off switch: a chosen model meant "on"
         return cls(**values)
 
     def save(self, path: Path = SETTINGS_FILE) -> None:
@@ -84,7 +88,7 @@ def read_history(path: Path = HISTORY_FILE) -> list[dict]:
 # ---- start with Windows: a value under HKCU\...\Run (the installer's "start when I sign in" option uses the same one)
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_VALUE = "SST Dictation"
+RUN_VALUE = "Rflow"
 
 
 def can_start_with_windows() -> bool:

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rflow — speak anywhere, it types</title>
+<meta name="description" content="Rflow is a free Windows dictation app. Hold Ctrl+Win in any app, speak, let go: your words are typed where your cursor is. Speech recognition runs on your laptop.">
+<link rel="icon" href="favicon.ico">
+<meta property="og:title" content="Rflow — speak anywhere, it types">
+<meta property="og:description" content="Hold Ctrl+Win in any Windows app, speak, let go. Speech recognition runs on your laptop.">
+<meta property="og:image" content="img/pill.png">
+<style>
+  :root {
+    --bg: #f7f8fb; --surface: #ffffff; --text: #111827; --muted: #5b6475; --line: #e3e7ef;
+    --accent: #2563eb; --accent-2: #4f46e5; --accent-text: #ffffff; --code: #eef1f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --surface: #151b24; --text: #e8ecf3; --muted: #9aa4b5; --line: #263041;
+            --accent: #3b82f6; --accent-2: #6366f1; --code: #1c2430; }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.6;
+         font: 16px/1.6 "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; color: var(--text); text-decoration: none; }
+  .brand img { width: 30px; height: 30px; }
+  nav a { color: var(--muted); text-decoration: none; margin-left: 22px; font-size: 15px; }
+  nav a:hover { color: var(--text); }
+  .hero { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; padding: 56px 0 64px; }
+  h1 { font-size: clamp(34px, 5vw, 54px); line-height: 1.08; margin: 0 0 18px; letter-spacing: -0.02em; }
+  h1 span { background: linear-gradient(90deg, var(--accent), var(--accent-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .lead { font-size: 19px; color: var(--muted); margin: 0 0 28px; max-width: 34em; }
+  kbd { font: 600 0.88em ui-monospace, "Cascadia Code", Consolas, monospace; background: var(--code); border: 1px solid var(--line);
+        border-bottom-width: 2px; border-radius: 6px; padding: 1px 7px; color: var(--text); white-space: nowrap; }
+  .cta { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+  .button { display: inline-flex; align-items: center; gap: 10px; background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            color: var(--accent-text); text-decoration: none; font-weight: 650; font-size: 17px; padding: 14px 24px; border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(37, 99, 235, .28); }
+  .button:hover { filter: brightness(1.08); }
+  .button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--line); box-shadow: none; }
+  .release { color: var(--muted); font-size: 14px; margin-top: 12px; }
+  .shot { width: 100%; border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(15, 23, 42, .18); display: block; }
+  section { padding: 56px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 30px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 32px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+  .card h3 { margin: 0 0 6px; font-size: 17px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .icon { font-size: 22px; margin-bottom: 8px; }
+  .steps { counter-reset: step; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .step { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; position: relative; }
+  .step::before { counter-increment: step; content: counter(step); display: inline-grid; place-items: center; width: 30px; height: 30px;
+                  border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; margin-bottom: 10px; }
+  .step h3 { margin: 0 0 6px; font-size: 17px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; align-items: center; }
+  table.keys { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  table.keys td { padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 15px; }
+  table.keys tr:last-child td { border-bottom: 0; }
+  table.keys td:first-child { white-space: nowrap; width: 44%; }
+  details { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; margin-bottom: 10px; }
+  summary { cursor: pointer; font-weight: 600; }
+  details p { color: var(--muted); margin: 10px 0 0; }
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+  @media (max-width: 860px) {
+    .hero, .two { grid-template-columns: 1fr; gap: 32px; padding-top: 28px; }
+    .grid, .steps { grid-template-columns: 1fr; }
+    nav a:not(.keep) { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <a class="brand" href="#"><img src="favicon.ico" alt="">Rflow</a>
+    <nav><a href="#features">Features</a><a href="#how">How it works</a><a href="#faq">FAQ</a>
+      <a class="keep" href="https://github.com/karthi-ai-engineer/Rach_Darling_Flow">GitHub</a></nav>
+  </header>
+
+  <div class="hero">
+    <div>
+      <h1>Speak anywhere.<br><span>Rflow types it.</span></h1>
+      <p class="lead">Hold <kbd>Ctrl</kbd>+<kbd>Win</kbd> in any Windows app, say what you want to write, and let go.
+        Your words appear where your cursor is. Speech recognition runs on your laptop.</p>
+      <div class="cta">
+        <a class="button" id="download" href="https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases/latest/download/Rflow-Setup.exe">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.5 4.5v7H3v-6Zm0 13 7.5 1v-7H3v6Zm8.5 1.1L21 21v-8.5h-9.5v7.1Zm0-15.2v7.1H21V3l-9.5 1.4Z"/></svg>
+          Download for Windows</a>
+        <a class="button secondary" href="#how">How it works</a>
+      </div>
+      <p class="release" id="release">Windows 10 and 11, 64-bit · free</p>
+    </div>
+    <img class="shot" src="img/app.png" alt="The Rflow window with recent dictations and an update banner">
+  </div>
+</div>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Dictation that stays out of the way</h2>
+    <p class="sub">A small tray app with one job: turn what you say into text, wherever you are typing.</p>
+    <div class="grid">
+      <div class="card"><div class="icon">⌨️</div><h3>Works in every app</h3>
+        <p>Chat, email, documents, code editors, the browser: the text goes where your cursor is. Your clipboard is left as it was.</p></div>
+      <div class="card"><div class="icon">🔒</div><h3>Recognised on your laptop</h3>
+        <p>NVIDIA Parakeet turns speech into text on your own computer. Your voice is never uploaded.</p></div>
+      <div class="card"><div class="icon">🎙️</div><h3>Hold, or go hands-free</h3>
+        <p>Hold <kbd>Ctrl</kbd>+<kbd>Win</kbd> while you talk, or tap it (or <kbd>Ctrl</kbd>+<kbd>Win</kbd>+<kbd>Space</kbd>) to keep recording. <kbd>Esc</kbd> cancels.</p></div>
+      <div class="card"><div class="icon">✨</div><h3>Clean text, if you want it</h3>
+        <p>Optionally let an AI model you choose (OpenAI, Ollama, your company's endpoint...) add punctuation, drop "um"s and spell your terms right.</p></div>
+      <div class="card"><div class="icon">💬</div><h3>Always shows what it's doing</h3>
+        <p>A small pill at the bottom of the screen: a live level while you speak, then "Typed". It never steals focus.</p></div>
+      <div class="card"><div class="icon">⬆️</div><h3>Updates itself</h3>
+        <p>When a new version is out, Rflow tells you. One click downloads, checks and installs it.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="sub">Three steps, and you're dictating.</p>
+    <div class="steps">
+      <div class="step"><h3>Install</h3><p>Run <b>Rflow-Setup.exe</b>. No admin rights needed; the speech model is included, so it also works offline.</p></div>
+      <div class="step"><h3>Click in a text box</h3><p>Any app: Teams, Slack, Outlook, Word, VS Code, your browser...</p></div>
+      <div class="step"><h3>Hold Ctrl+Win and speak</h3><p>Let go when you're done. The text appears where your cursor is, usually in well under a second.</p></div>
+    </div>
+    <div class="two" style="margin-top:36px">
+      <img class="shot" src="img/pill.png" alt="The recording pill: recording, transcribing, typed">
+      <table class="keys">
+        <tr><td>hold <kbd>Ctrl</kbd>+<kbd>Win</kbd></td><td>talk while holding, let go to type</td></tr>
+        <tr><td>tap <kbd>Ctrl</kbd>+<kbd>Win</kbd></td><td>hands-free: tap again to stop</td></tr>
+        <tr><td><kbd>Ctrl</kbd>+<kbd>Win</kbd>+<kbd>Space</kbd></td><td>hands-free as well</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>cancel the recording</td></tr>
+        <tr><td>click the tray icon</td><td>history, settings, updates</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="settings">
+  <div class="wrap two">
+    <div>
+      <h2>Your key, your microphone, your words</h2>
+      <p class="sub">Pick the microphone, the dictation key and whether to clean up the text. For the cleanup, enter any
+        OpenAI-compatible endpoint and choose a model from its list, with a backup model in case it fails. Add the names
+        and terms you use, so they come out right.</p>
+      <p class="sub">If the endpoint is slow or unreachable, Rflow simply types what it heard, so dictation never waits.</p>
+    </div>
+    <img class="shot" src="img/settings.png" alt="Rflow settings: key, microphone, text cleanup with endpoint and model">
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>Questions</h2>
+    <details><summary>Is my voice sent anywhere?</summary>
+      <p>No. Speech is recognised on your laptop by NVIDIA Parakeet. Only if you switch on text cleanup is the finished
+        text (never audio) sent to the endpoint you entered.</p></details>
+    <details><summary>Windows says "Windows protected your PC"</summary>
+      <p>The installer isn't code-signed yet. Click <b>More info</b>, then <b>Run anyway</b>.</p></details>
+    <details><summary>What does it need?</summary>
+      <p>Windows 10 or 11 (64-bit), a microphone and about 800 MB of disk space. No GPU, no internet connection
+        (except for the optional cleanup and for updates).</p></details>
+    <details><summary>Which languages?</summary>
+      <p>English, for now.</p></details>
+    <details><summary>How do updates work?</summary>
+      <p>Rflow checks for a new version when it starts and every few hours. You'll see a banner in its window; click
+        <b>Update now</b>. The download is checked against its published checksum before it's installed, and Rflow restarts itself.</p></details>
+    <details><summary>Nothing is typed in one particular app</summary>
+      <p>That app probably runs as administrator; Windows doesn't let normal programs type into those.</p></details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>© <span id="year">2026</span> Rflow · made by <a href="https://github.com/karthi-ai-engineer">karthi-ai-engineer</a></span>
+    <span>Speech model: NVIDIA Parakeet (NVIDIA Open Model License) ·
+      <a href="https://github.com/karthi-ai-engineer/Rach_Darling_Flow">Source on GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+  // Show the newest version, its size and date on the download button's caption.
+  document.getElementById("year").textContent = new Date().getFullYear();
+  fetch("https://api.github.com/repos/karthi-ai-engineer/Rach_Darling_Flow/releases/latest")
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(release => {
+      const asset = (release.assets || []).find(a => a.name === "Rflow-Setup.exe");
+      if (!asset) return;
+      const size = Math.round(asset.size / 1e6);
+      const date = new Date(release.published_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+      document.getElementById("release").textContent =
+        `Version ${release.tag_name.replace(/^v/, "")} · ${size} MB · released ${date} · Windows 10 and 11, 64-bit · free`;
+    })
+    .catch(() => {});
+</script>
+</body>
+</html>

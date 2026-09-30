@@ -44,10 +44,17 @@ jobs:
           fi
       - name: Build the installer
         run: uv run --locked --group build python scripts/build_installer.py
+      - name: Name it for the stable download link, with its checksum
+        # releases/latest/download/Rflow-Setup.exe always gives the newest version (the website links there), and the
+        # app's updater checks every download against Rflow-Setup.exe.sha256 before running it.
+        run: |
+          mkdir -p dist/release
+          cp dist/Rflow-Setup-*.exe dist/release/Rflow-Setup.exe
+          cd dist/release && sha256sum Rflow-Setup.exe > Rflow-Setup.exe.sha256 && cat Rflow-Setup.exe.sha256
       - uses: actions/upload-artifact@v7
         with:
-          name: SST-Dictation-Setup
-          path: dist/SST-Dictation-Setup-*.exe
+          name: Rflow-Setup
+          path: dist/release/*
           compression-level: 0  # already compressed
           retention-days: 14
       - name: Publish the GitHub Release
@@ -55,5 +62,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/SST-Dictation-Setup-*.exe \
-            --title "SST Dictation $GITHUB_REF_NAME" --generate-notes
+          gh release create "$GITHUB_REF_NAME" dist/release/Rflow-Setup.exe dist/release/Rflow-Setup.exe.sha256 \
+            --title "Rflow $GITHUB_REF_NAME" --generate-notes

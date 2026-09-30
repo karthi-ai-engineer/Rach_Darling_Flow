@@ -1,9 +1,10 @@
-"""Text cleanup with a model on the company AI gateway (OpenAI-compatible, e.g. https://tw-gateway.twave.co.jp/v1).
+"""Text cleanup with a model behind any OpenAI-compatible endpoint (OpenAI, Groq, a local Ollama or LM Studio, a
+company AI gateway...). The endpoint, key and models are the user's settings; nothing here is tied to one provider.
 
-Parakeet transcribes on the laptop; only the finished text goes to the gateway. Built never to hold up typing:
-if the chosen model fails the other one is tried, a slow answer or an unreachable gateway gives the text as heard
-(and an unreachable gateway is skipped for a minute), and the connection is opened while the user is still speaking.
-Standard library only; the gateway is internal, so no proxy is used.
+Parakeet transcribes on the laptop; only the finished text goes to the endpoint. Built never to hold up typing:
+if the chosen model fails the backup model is tried, a slow answer or an unreachable endpoint gives the text as heard
+(and an unreachable endpoint is skipped for a minute), and the connection is opened while the user is still speaking.
+Standard library only; connections go direct (no proxy).
 """
 import base64
 import ctypes
@@ -22,10 +23,7 @@ from urllib.parse import urlsplit
 from sst.settings import CONFIG_DIR
 
 GATEWAY_FILE = CONFIG_DIR / "gateway.json"  # the API key, encrypted for the Windows user; never in git
-DEFAULT_URL = "https://tw-gateway.twave.co.jp/v1"
-# The two company-server models that did best in the gateway test (HANDOFF.md), as (model id, label).
-MODELS = [("unsloth/Qwen3.8-27B-NVFP4", "1. Qwen3.8-27B (best quality)"),
-          ("Qwen/Qwen3-30B-A3B-Instruct-2507-FP8", "2. Qwen3-30B-A3B (fastest)")]
+DEFAULT_URL = ""  # the user enters their own endpoint in Settings
 
 CONNECT_TIMEOUT = 1.5    # a first connect sometimes stalls (seen from Python); a retry gets through in milliseconds
 CONNECT_ATTEMPTS = 3
@@ -128,12 +126,6 @@ def _unprotect(data: bytes) -> bytes:
     return _dpapi(_crypt32.CryptUnprotectData, data)
 
 
-def other_model(model: str) -> str | None:
-    """The fallback for one of the two tested models."""
-    ids = [m for m, _ in MODELS]
-    return next((m for m in ids if m != model), None) if model in ids else None
-
-
 def plausible(heard: str, cleaned: str) -> bool:
     """A cleanup keeps roughly the same length; anything else is a model misbehaving (answering, truncating...)."""
     h, c = len(heard.split()), len(cleaned.split())
@@ -141,7 +133,7 @@ def plausible(heard: str, cleaned: str) -> bool:
 
 
 class Polisher:
-    """Cleans up dictated text with a gateway model. polish() never raises and never takes much longer than the
+    """Cleans up dictated text with a model on the endpoint. polish() never raises and never takes much longer than the
     answer timeout; when it can't help, it returns the text unchanged and says why in `last_error`."""
 
     def __init__(self, config: GatewayConfig, model: str, vocabulary: list[str] = (), fallback: str | None = None):
@@ -163,10 +155,10 @@ class Polisher:
 
     def polish(self, text: str) -> str:
         self.last_error = ""
-        if not text.strip() or not self.config.api_key:
+        if not text.strip() or not self.config.base_url or not self.model:
             return text
         if time.monotonic() < self._down_until:
-            self.last_error = "the gateway could not be reached a moment ago"
+            self.last_error = "the AI endpoint could not be reached a moment ago"
             return text
         for model in [self.model] + ([self.fallback] if self.fallback and self.fallback != self.model else []):
             t0 = time.perf_counter()
@@ -199,8 +191,29 @@ class Polisher:
         except TimeoutError:
             raise GatewayError("no answer in time") from None
         except (OSError, http.client.HTTPException) as e:
-            raise GatewayError(f"could not reach the gateway: {e}") from None
+            raise GatewayError(f"could not reach the endpoint: {e}") from None
         return f"{_short(self.model)} answered in {time.perf_counter() - t0:.1f} s: {answer}"
+
+    def models(self) -> list[str]:
+        """For the Settings "Load models" button: the endpoint's model ids, models on the endpoint's own server first
+        (some gateways mark them `"is_cloud": false`). Raises GatewayError with a readable reason."""
+        try:
+            with self._lock:
+                status, data = self._request("/models", None, 10.0, method="GET")
+        except TimeoutError:
+            raise GatewayError("no answer in time") from None
+        except (OSError, http.client.HTTPException) as e:
+            raise GatewayError(f"could not reach the endpoint: {e}") from None
+        try:
+            answer = json.loads(data)
+        except ValueError:
+            raise GatewayError(f"HTTP {status}, not JSON") from None
+        if status != 200:
+            detail = (answer.get("error") or answer.get("detail") or data[:120]) if isinstance(answer, dict) else data[:120]
+            raise GatewayError(f"HTTP {status} {detail}")
+        items = answer.get("data", []) if isinstance(answer, dict) else answer
+        models = [m for m in items if isinstance(m, dict) and isinstance(m.get("id"), str)]
+        return [m["id"] for m in sorted(models, key=lambda m: (m.get("is_cloud") is not False, m["id"].lower()))]
 
     # ---- HTTP
 
@@ -226,14 +239,16 @@ class Polisher:
             content = content[1:-1].strip()  # some models wrap the answer in quotes
         return content
 
-    def _request(self, path: str, body: str, timeout: float) -> tuple[int, str]:
-        headers = {"Authorization": f"Bearer {self.config.api_key}", "Content-Type": "application/json"}
+    def _request(self, path: str, body: str | None, timeout: float, method: str = "POST") -> tuple[int, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.config.api_key:  # local endpoints such as Ollama need none
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
         for attempt in (1, 2):
             if self._conn is None:
                 self._connect()
             self._conn.sock.settimeout(timeout)
             try:
-                self._conn.request("POST", self._path + path, body=body.encode("utf-8"), headers=headers)
+                self._conn.request(method, self._path + path, body=body.encode("utf-8") if body else None, headers=headers)
                 response = self._conn.getresponse()
                 data = response.read().decode("utf-8", "replace")
             except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError):
@@ -250,7 +265,7 @@ class Polisher:
 
     def _prepare(self) -> None:
         with self._lock:
-            if time.monotonic() < self._down_until or not self.config.api_key:
+            if time.monotonic() < self._down_until or not self.config.base_url:
                 return
             if self._conn is None or time.monotonic() - self._used > IDLE_RECONNECT:
                 try:
@@ -282,8 +297,8 @@ class Polisher:
 
     def _mark_down(self, error: Exception) -> None:
         self._down_until = time.monotonic() + DOWN_FOR
-        self.last_error = f"the gateway could not be reached ({error})"
-        log.warning("Gateway unreachable, skipping cleanup for %.0fs: %s", DOWN_FOR, error)
+        self.last_error = f"the AI endpoint could not be reached ({error})"
+        log.warning("Endpoint unreachable, skipping cleanup for %.0fs: %s", DOWN_FOR, error)
 
     def _system_prompt(self) -> str:
         if not self.vocabulary:

@@ -1,7 +1,7 @@
-SST Dictation - third-party notices
-===================================
+Rflow - third-party notices
+===========================
 
-SST Dictation includes the following model and software. Each is the property of its owners and
+Rflow includes the following model and software. Each is the property of its owners and
 is distributed under its own license.
 
 Speech recognition model

@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from sst import gateway
-from sst.gateway import GatewayConfig, GatewayError, Polisher, other_model, plausible
+from sst.gateway import GatewayConfig, GatewayError, Polisher, plausible
 
 HEARD = "so we merge the five pr's today"
 
@@ -40,6 +40,13 @@ class FakeGateway:
                           "think": "<think>let me see</think> So we merge the five PRs today.",
                           "quoted": '"So we merge the five PRs today."'}.get(model, "So we merge the five PRs today.")
                 self._reply(200, {"choices": [{"message": {"role": "assistant", "content": answer}}]})
+
+            def do_GET(self):
+                fake.requests.append({"auth": self.headers.get("Authorization"), "path": self.path})
+                if self.path != "/v1/models":
+                    return self._reply(404, {"detail": "not found"})
+                self._reply(200, {"data": [{"id": "gpt-cloud", "is_cloud": True}, {"id": "zeta-local", "is_cloud": False},
+                                           {"id": "Alpha-local", "is_cloud": False}, {"id": "plain-model"}]})
 
             def _reply(self, status, payload):
                 data = json.dumps(payload).encode()
@@ -136,9 +143,27 @@ def test_thinking_tags_and_quotes_are_removed(fake, model):
     assert fake.polisher(model=model).polish(HEARD) == "So we merge the five PRs today."
 
 
-def test_without_a_key_nothing_is_sent(fake):
-    p = Polisher(GatewayConfig(fake.url, ""), "good")
-    assert p.polish(HEARD) == HEARD and fake.requests == []
+def test_a_local_endpoint_works_without_a_key(fake):
+    p = Polisher(GatewayConfig(fake.url, ""), "good")  # e.g. Ollama on localhost
+    assert p.polish(HEARD) == "So we merge the five PRs today."
+    assert fake.requests[0]["auth"] is None  # no empty "Bearer" header is sent
+
+
+def test_without_an_endpoint_or_model_nothing_is_sent(fake):
+    assert Polisher(GatewayConfig("", "key"), "good").polish(HEARD) == HEARD
+    assert fake.polisher(model="").polish(HEARD) == HEARD
+    assert fake.requests == []
+
+
+def test_load_models_lists_local_models_first(fake):
+    assert fake.polisher(model="").models() == ["Alpha-local", "zeta-local", "gpt-cloud", "plain-model"]
+    assert fake.requests[-1] == {"auth": "Bearer test-key", "path": "/v1/models"}
+
+
+def test_load_models_reports_an_unreachable_endpoint(monkeypatch):
+    monkeypatch.setattr(gateway, "CONNECT_TIMEOUT", 0.3)
+    with pytest.raises(GatewayError, match="could not reach"):
+        Polisher(GatewayConfig("http://127.0.0.1:9/v1", "k"), "").models()
 
 
 def test_check_reports_the_answer_or_a_readable_reason(fake):
@@ -170,11 +195,6 @@ def test_a_key_that_cannot_be_decrypted_is_dropped_not_crashed_on(tmp_path):
     path.write_text(json.dumps({"base_url": "https://gw.example/v1", "api_key_protected": "bm90IGEgcmVhbCBibG9i"}),
                     encoding="utf-8")  # e.g. copied from another laptop
     assert GatewayConfig.load(path) == GatewayConfig("https://gw.example/v1", "")
-
-
-def test_model_choices_fall_back_to_each_other():
-    (first, _), (second, _) = gateway.MODELS
-    assert other_model(first) == second and other_model(second) == first and other_model("unknown") is None
 
 
 @pytest.mark.parametrize("cleaned, ok", [("So we merge the five PRs today.", True), ("", False), ("Yes.", False),

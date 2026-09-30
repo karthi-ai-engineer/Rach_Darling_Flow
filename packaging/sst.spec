@@ -1,6 +1,6 @@
 # PyInstaller recipe for the two programs of the installed app. Run through build_installer.cmd, not directly.
-#   SST Dictation.exe   the tray app (no console window); what the shortcuts start
-#   sst.exe             the command-line tool (sst.exe devices, sst.exe file x.wav, ...)
+#   Rflow.exe           the tray app (no console window); what the shortcuts start
+#   rflow-cli.exe       the command-line tool (rflow-cli devices, rflow-cli file x.wav, ...)
 # Both share one _internal folder.
 import os
 
@@ -27,7 +27,7 @@ gui.datas = [d for d in gui.datas if not any(u in d[0] for u in UNUSED)]
 cli.binaries = [b for b in cli.binaries if not any(u in b[0] for u in UNUSED)]
 cli.datas = [d for d in cli.datas if not any(u in d[0] for u in UNUSED)]
 
-gui_exe = EXE(PYZ(gui.pure), gui.scripts, exclude_binaries=True, name="SST Dictation", icon=ICON,
+gui_exe = EXE(PYZ(gui.pure), gui.scripts, exclude_binaries=True, name="Rflow", icon=ICON,
               console=False, upx=False)  # UPX-packed files trigger more antivirus false positives
-cli_exe = EXE(PYZ(cli.pure), cli.scripts, exclude_binaries=True, name="sst", icon=ICON, console=True, upx=False)
+cli_exe = EXE(PYZ(cli.pure), cli.scripts, exclude_binaries=True, name="rflow-cli", icon=ICON, console=True, upx=False)
 COLLECT(gui_exe, cli_exe, gui.binaries, gui.datas, cli.binaries, cli.datas, name="sst", upx=False)
