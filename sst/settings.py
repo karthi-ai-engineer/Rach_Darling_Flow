@@ -5,7 +5,7 @@ import os
 import sys
 import time
 import winreg
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "sst"
@@ -22,6 +22,8 @@ class Settings:
     microphone: str = ""  # a device name from input_device_names(); "" = the Windows default
     sounds: bool = True
     save_recordings: bool = True
+    cleanup_model: str = ""  # a model id from sst.gateway.MODELS; "" = type exactly what was heard
+    vocabulary: list[str] = field(default_factory=list)  # the user's names and terms, for the cleanup
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "Settings":
@@ -36,8 +38,10 @@ class Settings:
         defaults = cls()
         values = {}
         for f in fields(cls):  # keep only known keys with the right type
-            value = data.get(f.name, getattr(defaults, f.name)) if isinstance(data, dict) else getattr(defaults, f.name)
-            values[f.name] = value if isinstance(value, type(getattr(defaults, f.name))) else getattr(defaults, f.name)
+            default = getattr(defaults, f.name)
+            value = data.get(f.name, default) if isinstance(data, dict) else default
+            ok = isinstance(value, type(default)) and (not isinstance(value, list) or all(isinstance(v, str) for v in value))
+            values[f.name] = value if ok else default
         return cls(**values)
 
     def save(self, path: Path = SETTINGS_FILE) -> None:
@@ -47,10 +51,14 @@ class Settings:
         tmp.replace(path)  # atomic: a crash mid-write never leaves a half-written file
 
 
-def add_to_history(text: str, path: Path = HISTORY_FILE) -> None:
+def add_to_history(text: str, heard: str | None = None, path: Path = HISTORY_FILE) -> None:
+    """`text` as typed; `heard` is the recognizer's text when the cleanup changed it."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "text": text}
+    if heard is not None and heard != text:
+        entry["heard"] = heard
     with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "text": text}, ensure_ascii=False) + "\n")
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def read_history(path: Path = HISTORY_FILE) -> list[dict]:

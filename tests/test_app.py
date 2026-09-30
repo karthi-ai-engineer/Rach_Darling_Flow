@@ -15,7 +15,8 @@ def qt():
     return QApplication.instance() or QApplication([])
 
 
-@pytest.mark.parametrize("state, message", [("recording", ""), ("transcribing", ""), ("typed", ""), ("cancelled", ""),
+@pytest.mark.parametrize("state, message", [("recording", ""), ("transcribing", ""), ("typed", ""), ("typed_raw", ""),
+                                            ("cancelled", ""),
                                             ("ignored", ""), ("warning", "Almost silent: check the microphone."),
                                             ("error", "Could not open the microphone")])
 def test_pill_draws_every_state(state, message):
@@ -54,3 +55,30 @@ def test_history_window_lists_entries_and_copies(monkeypatch):
     assert window.list.count() == 1 and "hello world" in window.list.item(0).text()
     window._copy(window.list.item(0))
     assert QApplication.clipboard().text() == "hello world"
+
+
+def test_settings_dialog_returns_the_cleanup_model_words_and_gateway_key():
+    from sst.gateway import MODELS, GatewayConfig
+    chosen = Settings(cleanup_model=MODELS[1][0], vocabulary=["Claude Code", "GitHub"])
+    dialog = sst_app.SettingsDialog(chosen, [], GatewayConfig("https://gw.example/v1", "key-1"))
+    assert dialog.result_settings() == chosen
+    assert dialog.result_gateway() == GatewayConfig("https://gw.example/v1", "key-1")
+    dialog.vocabulary.setPlainText("Tamil, Wispr Flow\n\n  SST  ")
+    dialog.api_key.setText("  key-2 ")
+    assert dialog.result_settings().vocabulary == ["Tamil", "Wispr Flow", "SST"]
+    assert dialog.result_gateway().api_key == "key-2"
+
+
+def test_cleanup_can_be_switched_off():
+    dialog = sst_app.SettingsDialog(Settings(cleanup_model="Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"), [])
+    dialog.cleanup.setCurrentIndex(0)
+    assert dialog.result_settings().cleanup_model == ""
+
+
+def test_history_window_leads_to_settings(monkeypatch):
+    monkeypatch.setattr(sst_app, "read_history", lambda: [])
+    opened = []
+    window = sst_app.HistoryWindow(open_settings=lambda: opened.append(True))
+    button = next(b for b in window.findChildren(sst_app.QPushButton) if b.text() == "Settings...")
+    button.click()
+    assert opened == [True]

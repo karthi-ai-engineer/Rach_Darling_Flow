@@ -39,7 +39,22 @@ transcribed, and "Typed" when it's done. It never takes the keyboard focus. Ther
 The text is pasted where your cursor is, and whatever you had copied is put back on the clipboard afterwards.
 Dictated text is kept out of Windows clipboard history (Win+V); SST's own History keeps the last 200.
 
-`dictate.cmd` / `uv run sst dictate` is the same without the tray app, in a console window.
+**Text cleanup (optional):** in Settings → *Text cleanup*, pick a model on the company AI gateway, paste your gateway
+API key, add your own words (names, company, products, tech terms), and click **Test**. From the next dictation on,
+the recognised text is cleaned up before it is typed: punctuation, fillers removed, and your words spelled right
+("STD dictation" becomes "SST Dictation", "five pr's" becomes "five PRs").
+
+| Model | Speed | A typical sentence |
+|---|---|---|
+| 1. Qwen3.8-27B | best quality | about 0.6–1.1 s |
+| 2. Qwen3-30B-A3B | fastest | about 0.35–0.7 s |
+
+Speech is still recognised on the laptop; only the finished text goes to the gateway (on the company network). If
+the chosen model fails, the other one is used; if the gateway is slow or unreachable (e.g. at home), the text is
+typed as heard at once, and the pill says "Typed as heard". History keeps both versions (hover a line). The key is
+stored in `%APPDATA%\sst\gateway.json`, encrypted for your Windows account (only you, on this laptop, can read it).
+
+`dictate.cmd` / `uv run sst dictate` is the same without the tray app (and without cleanup), in a console window.
 
 - **Quit Wispr Flow first** (tray icon → Quit). It listens to Ctrl+Win too, and both would type. sst warns you if it's running.
 - Other keys: `--hotkey menu` uses the Menu key (≣, next to right Alt; its right-click menu is blocked), or a combination
@@ -114,6 +129,7 @@ sst/
 └─ sst/
    ├─ app.py                  the tray app: tray icon, recording pill, settings and history windows (Qt)
    ├─ settings.py             settings, history and "start with Windows" (%APPDATA%\sst)
+   ├─ gateway.py              text cleanup with a company-gateway model: fallback, timeouts, kept-open connection
    ├─ cli.py                  the `sst` command
    ├─ dictate.py              Dictation: hotkey events -> record -> transcribe -> type (shared by app and console)
    ├─ hotkey.py               global hotkeys (low-level keyboard hook) and sending keys

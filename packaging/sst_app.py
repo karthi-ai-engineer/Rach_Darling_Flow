@@ -1,8 +1,10 @@
-"""Entry point of the installed app, sst.exe. Opening it starts dictation; with arguments it
-works like the `sst` command (e.g. `sst.exe devices`, `sst.exe --device 2 dictate`)."""
+"""Entry point of sst.exe, the command-line tool of the installed app. Opened without arguments it starts the tray
+app; with arguments it works like the `sst` command (e.g. `sst.exe devices`, `sst.exe --device 2 dictate`)."""
 import ctypes
+import subprocess
 import sys
 import traceback
+from pathlib import Path
 
 from sst import __version__
 from sst.cli import main
@@ -21,6 +23,12 @@ def _pause_if_own_window() -> None:
 
 
 if len(sys.argv) == 1:
+    # Double-clicked, or opened from a shortcut or taskbar pin made before the tray app existed (sst.exe was the app
+    # then): start the tray app instead of a second, console dictation that would only say "already running".
+    tray_app = Path(sys.executable).with_name("SST Dictation.exe")
+    if getattr(sys, "frozen", False) and tray_app.exists():
+        subprocess.Popen([str(tray_app)])
+        sys.exit(0)
     sys.argv.append("dictate")
 try:
     main()
