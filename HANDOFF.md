@@ -21,7 +21,9 @@ _Last updated: 2026-09-30_
 | 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words | done, on `main` (PR #18), released **v1.1.0** |
 | 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer | done, on `main` (PR #20) |
 | 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | done, on `main` (PR #22); the owner installed 1.3.0 and confirmed it works; not released yet |
-| 10 | **Accuracy lab**: five sets of sentences, session notes, audio measurements, `sst eval` with 95% ranges | PR open (issue #23), branch `phase-10/accuracy-lab` |
+| 10 | **Accuracy lab**: five sets of sentences, session notes, audio measurements, `sst eval` with 95% ranges | done, on `main` (PR #24); the owner read all five sets |
+| fix | Fairer scoring (contractions, compounds, Ctrl), only names suggested, eval report printing | PR #25 open |
+| 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | PR open, stacked on #25 |
 
 Released: v1.0.0, v1.0.1 and v1.1.0 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -435,6 +437,45 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   all three, and the second run came from the cache. That is one clean clip, so nothing about the owner's voice yet.
 - Tests: 211.
 
+## The owner's baseline (after phase 10)
+
+- All five sets read on 2026-09-30 with the laptop microphone (Intel Smart Sound array, Windows default). Set A was read
+  with the old reading test (no session.json: counted as set A, microphone "unknown"). Set B was read while Bluetooth
+  headphones were connected; the laptop microphone still recorded.
+- With the fairer scoring: **9.2%** word errors (7.1-11.6%); test sets C-E 6.7%; names and terms 40% (41 of 102); other
+  words 7.5%. Narrowband (phone quality, simulated) costs +3.4 points (+1.4 to +5.5), and names go to 50%.
+- Set B lost 5 first words and 2 sentences decoded to nothing, although the speech is in them (raised 4 times, or cut
+  in halves, they decode). The other sets had neither.
+- About a quarter of every recording is exact digital zeros, and a quiet room measured -91 dBFS: Windows or the Intel
+  driver gates and suppresses noise on this microphone.
+
+## Capture (phase 11)
+
+- `Recorder` (`sst/audio.py`):
+  - Records through WASAPI at the device's own rate (48 kHz on the laptop; the engine resamples), mono via
+    `auto_convert`. It falls back to the old MME way if WASAPI fails. Names saved by MME (cut at 31 characters) match
+    the start of the WASAPI name.
+  - `warm_seconds`: stays open after a recording (the app: 300 s, the owner's choice) and keeps the last
+    `PREROLL_SECONDS` (0.4) before `start()`. `tick()` closes it when idle. A call-quality microphone
+    (`call_quality()`: WASAPI rate of 16 kHz or less, or "Hands-Free" in the name) is never kept open.
+  - `stop_later()` returns a `Take` at once; the audio thread adds the `tail` (0.3 s) and `Take.audio()` waits for it.
+    `Take.seconds` leaves out the lead-in, so a quick accidental tap is still ignored.
+  - `raw=True` sets `AUDCLNT_STREAMOPTIONS_RAW` through sounddevice's private `_streaminfo`, and falls back to
+    Windows mode if the driver refuses. On the laptop: cold open 287 ms; warm start instant; a quiet room -91 dBFS
+    processed, -60 dBFS raw.
+- `audio.condition()`: DC offset removed and the peak raised to -1 dBFS before the engine. `ParakeetEngine` also
+  decodes audible audio that came back empty again in two halves. Its signature says so (`|peak-1|retry`), so the
+  bench doesn't reuse older cached text.
+- Dictation hands the take to the worker (the hotkey thread never waits) and ticks the recorder. The reading test
+  records the same way (its Stop doesn't freeze the window), closes the microphone when the page is left, and notes
+  the mode. `sst eval` reports raw recordings as "<device> (raw)".
+- Settings: "Keep the microphone ready for 5 minutes after dictating" (on), "Turn off Windows' voice effects for this
+  microphone" (off), and an amber warning under the microphone choice for a Bluetooth headset.
+- Result: the owner's 150 sentences went from 9.2% to **8.2%**, with no empty results.
+- Not measured yet: whether the warm microphone and the tail remove the lost first and last words (needs new
+  recordings), and raw against Windows mode.
+- Tests: 235.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -456,12 +497,10 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
    release, so it gives 1.1.0 until then. There is no 1.2.0 release: 1.3.0 includes phase 8.
 2. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
    against the local fakes).
-3. **The owner reads the sets** once phase 10 is merged: all five with the laptop microphone, and one or two with the
-   earbuds, ideally over two days. Then `sst eval --degrade narrowband` gives the baseline, the names-and-terms share,
-   and what narrowband costs.
+3. **The owner reads again with phase 11:** a few sets with "Turn off Windows' voice effects" on, and a few with it
+   off (both with the warm microphone), then `sst eval`. Raw against Windows mode decides the default; the lost first
+   words should be gone in both. A set with a Bluetooth headset selected in Settings is still missing.
 4. Roadmap (details in `docs/accuracy.md`):
-   - **Phase 11, capture:** WASAPI at the device's rate, a warm stream with a lead-in and a tail, Bluetooth detection,
-     capture mode and gain tests, VAD trimming.
    - **Phase 12, hotwords:** a `bpe.vocab` for the model, then Your words as sherpa-onnx hotwords (check that it works
      with the unified model's decoder; TDT v2 otherwise).
    - **Phase 13, correction:** word confidence, sound-alike matching against Your words, and an LLM called only when a
