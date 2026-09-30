@@ -1,5 +1,7 @@
 # sst
 
+[![CI](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml/badge.svg)](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml)
+
 Record from the microphone and turn speech into text **locally** (nothing leaves the laptop).
 The first engine is **NVIDIA Parakeet (English)**. More engines, such as Whisper or the office gateway, can be added later.
 
@@ -39,12 +41,26 @@ Or double-click **`start.cmd`** for the terminal version.
 
 Each recording is saved to `recordings/` as a `.wav` and `.txt` pair, so you can re-run the same audio through another engine later with `sst file`.
 
-## Setup (already done on this laptop)
+## Setup
+
+Needs Windows 10/11 and [uv](https://docs.astral.sh/uv/).
 
 ```
+git clone https://github.com/karthi-ai-engineer/Rach_Darling_Flow.git
+cd Rach_Darling_Flow
 uv sync                                          # install dependencies into .venv
 uv run python scripts/download_model.py parakeet # ~630 MB model into models/
 ```
+
+## Development
+
+```
+uv run pytest           # tests (they use fakes: no keys pressed, no microphone or model needed)
+uv run ruff check .     # lint
+```
+
+Work happens phase by phase: an issue, a branch and a pull request into `main`, checked by CI.
+`CLAUDE.md` has the working rules, and `HANDOFF.md` says where things stand and what comes next.
 
 ## Layout
 
@@ -53,6 +69,10 @@ sst/
 ├─ dictate.cmd                double-click: dictate into any app with Ctrl+Alt+D
 ├─ web.cmd                    double-click: web page
 ├─ start.cmd                  double-click: terminal version
+├─ CLAUDE.md                  working rules (branches, PRs, authorship)
+├─ HANDOFF.md                 current state and next steps, to resume on any device
+├─ .github/                   CI, CodeQL, Dependabot, issue and PR templates
+├─ tests/                     pytest suite
 ├─ scripts/download_model.py  fetches models into models/
 ├─ models/                    downloaded models (git-ignored)
 ├─ recordings/                your recordings + transcripts (git-ignored)
