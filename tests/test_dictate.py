@@ -155,3 +155,33 @@ def test_a_failing_paste_is_reported_and_the_next_dictation_still_works(make):
     assert states[-1] == "error"
     feed(d, (2, "press"), (2.7, "release"))
     assert typed == ["hello world "]
+
+
+class FakeCleanup:
+    def __init__(self, result="Hello, world.", error=""):
+        self.result, self.error, self.prepared, self.last_error = result, error, 0, ""
+
+    def prepare(self):
+        self.prepared += 1
+
+    def polish(self, text):
+        self.last_error = self.error
+        return text if self.error else self.result
+
+
+def test_the_cleaned_text_is_typed_and_both_texts_are_reported(make):
+    d, typed, states = make()
+    results = []
+    d.cleanup = FakeCleanup()
+    d.on_result = lambda heard, text: results.append((heard, text))
+    feed(d, (0, "press"), (0.7, "release"))
+    assert typed == ["Hello, world. "] and states[-1] == "typed"
+    assert results == [("hello world", "Hello, world.")]
+    assert d.cleanup.prepared == 1  # the gateway connection was opened while the user was speaking
+
+
+def test_when_the_cleanup_cannot_help_the_heard_text_is_typed(make):
+    d, typed, states = make()
+    d.cleanup = FakeCleanup(error="the gateway could not be reached")
+    feed(d, (0, "press"), (0.7, "release"))
+    assert typed == ["hello world "] and states[-1] == "typed_raw"

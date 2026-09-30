@@ -38,8 +38,10 @@ class Dictation:
 
     Feed it `handle(event, at)` for every hotkey event and `tick(now)` a few times a second.
     It reports progress through `on_state(state, message)`, where state is one of
-    recording, transcribing, typed (message = the text), idle, cancelled, ignored, warning, error.
-    on_state is called from the caller's thread and from the worker thread.
+    recording, transcribing, typed (message = the text), typed_raw (typed as heard because the cleanup
+    couldn't help; message = the reason), idle, cancelled, ignored, warning, error; and each typed text
+    through `on_result(heard, typed)`. Both are called from the caller's thread and from the worker thread.
+    `cleanup` is an optional sst.gateway.Polisher (or anything with prepare(), polish(text) and last_error).
     """
 
     def __init__(self, engine, recorder, *, paste: Callable[[str], None] = paste_text, sounds: bool = True,
@@ -47,7 +49,9 @@ class Dictation:
         self.engine, self.recorder, self.paste = engine, recorder, paste
         self.sounds, self.save = sounds, save
         self.listener: HotkeyListener | None = None  # told when recording, so that Esc cancels only then
+        self.cleanup = None  # set and replaced by the app when the chosen model changes; None = type what was heard
         self.on_state: Callable[[str, str], None] = lambda state, message: None
+        self.on_result: Callable[[str, str], None] = lambda heard, typed: None
         self.recording = False
         self._holding = False  # the press that started this recording has not been released yet
         self._started = 0.0
@@ -100,6 +104,8 @@ class Dictation:
             self.on_state("error", f"Could not open the microphone: {e}")
             return
         self._beep(880)
+        if self.cleanup:
+            self.cleanup.prepare()  # connect to the gateway while the user speaks, not after
         if self.listener:
             self.listener.recording = True  # Esc now cancels
         self.recording, self._holding, self._started = True, True, at
@@ -129,14 +135,21 @@ class Dictation:
                 t0 = time.perf_counter()
                 text = self.engine.transcribe(audio, rate)
                 took = time.perf_counter() - t0
-                if text:
-                    self.paste(text + " ")  # trailing space so the next dictation doesn't run into this one
                 log.info("%.1fs -> %.2fs  %s", len(audio) / rate, took, text or "(nothing recognised)")
+                cleanup = self.cleanup  # read once: the app may swap it meanwhile
+                typed = cleanup.polish(text) if cleanup and text else text
+                if typed:
+                    self.paste(typed + " ")  # trailing space so the next dictation doesn't run into this one
                 if float(np.abs(audio).max()) < 0.01:
                     self.on_state("warning", "Almost silent: check the microphone.")
                 if self.save:
-                    save_recording(audio, rate, text)
-                self.on_state("typed" if text else "idle", text)
+                    save_recording(audio, rate, typed)
+                if typed:
+                    self.on_result(text, typed)
+                if typed and cleanup and cleanup.last_error:
+                    self.on_state("typed_raw", cleanup.last_error)
+                else:
+                    self.on_state("typed" if typed else "idle", typed)
             except Exception as e:  # keep the worker alive for the next recording
                 log.exception("Transcription or typing failed")
                 self.on_state("error", f"Error: {e}")
