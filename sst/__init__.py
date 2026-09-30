@@ -3,9 +3,9 @@ import os
 import sys
 from pathlib import Path
 
-__version__ = "0.1.0"  # the one place to change it; the installer and release tags follow it
+__version__ = "1.0.0"  # the one place to change it; the installer and release tags follow it
 
-if getattr(sys, "frozen", False):  # the installed app (sst.exe, built by build_installer.cmd)
+if getattr(sys, "frozen", False):  # the installed app (Rflow.exe / rflow-cli.exe, built by build_installer.cmd)
     MODELS_DIR = Path(sys.executable).parent / "models"
     RECORDINGS_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "sst" / "recordings"
 else:

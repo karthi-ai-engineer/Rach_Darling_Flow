@@ -1,5 +1,5 @@
-"""Entry point of sst.exe, the command-line tool of the installed app. Opened without arguments it starts the tray
-app; with arguments it works like the `sst` command (e.g. `sst.exe devices`, `sst.exe --device 2 dictate`)."""
+"""Entry point of rflow-cli.exe, the command-line tool of the installed app. Opened without arguments it starts the
+tray app; with arguments it works like the `sst` command (e.g. `rflow-cli devices`, `rflow-cli --device 2 dictate`)."""
 import ctypes
 import subprocess
 import sys
@@ -10,8 +10,9 @@ from sst import __version__
 from sst.cli import main
 
 kernel32 = ctypes.windll.kernel32
-kernel32.SetConsoleTitleW(f"SST Dictation {__version__}")
-# While this exists, the installer asks to close the app before updating or uninstalling it.
+kernel32.SetConsoleTitleW(f"Rflow {__version__}")
+# While this exists, the installer asks to close the app before updating or uninstalling it. The name is from the
+# first versions; it is kept so that new installers still recognise a running old version.
 running_mutex = kernel32.CreateMutexW(None, False, "SST-Dictation-running")
 
 
@@ -23,9 +24,9 @@ def _pause_if_own_window() -> None:
 
 
 if len(sys.argv) == 1:
-    # Double-clicked, or opened from a shortcut or taskbar pin made before the tray app existed (sst.exe was the app
-    # then): start the tray app instead of a second, console dictation that would only say "already running".
-    tray_app = Path(sys.executable).with_name("SST Dictation.exe")
+    # Double-clicked, or opened from an old shortcut or taskbar pin: start the tray app instead of a second,
+    # console dictation that would only say "already running".
+    tray_app = Path(sys.executable).with_name("Rflow.exe")
     if getattr(sys, "frozen", False) and tray_app.exists():
         subprocess.Popen([str(tray_app)])
         sys.exit(0)

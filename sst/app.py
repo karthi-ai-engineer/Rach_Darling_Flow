@@ -1,12 +1,12 @@
-"""The tray app: SST Dictation without a console window.
+"""The tray app, Rflow: dictation without a console window.
 
 A tray icon with a menu (status, History, Settings, Quit), a small "pill" near the bottom of the
 screen while you dictate (recording with a live level, transcribing, typed), a settings window and
 a history window. The dictation itself is sst.dictate.Dictation, the same as the console command.
 
   uv run sst app                        from the source checkout
-  SST Dictation.exe                     the installed app (the Start menu shortcut)
-  SST Dictation.exe --self-test         build check: builds every window off-screen and transcribes once
+  Rflow.exe                             the installed app (the Start menu shortcut)
+  Rflow.exe --self-test                 build check: builds every window off-screen and transcribes once
 """
 import ctypes
 import logging
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -44,11 +45,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sst import RECORDINGS_DIR, __version__
+from sst import RECORDINGS_DIR, __version__, updates
 from sst.audio import Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import load_engine
-from sst.gateway import MODELS, GatewayConfig, GatewayError, Polisher, other_model
+from sst.gateway import GatewayConfig, GatewayError, Polisher
 from sst.hotkey import HotkeyListener, parse_hotkey
 from sst.settings import (
     Settings,
@@ -59,9 +60,10 @@ from sst.settings import (
     starts_with_windows,
 )
 
-APP_NAME = "SST Dictation"
+APP_NAME = "Rflow"
 ICON_FILE = Path(__file__).parent / "static" / "sst.ico"
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "sst" / "logs"
+UPDATE_DIR = Path(os.environ.get("TEMP", Path.home())) / "Rflow-update"  # downloaded installers
 HOTKEY_CHOICES = [("Ctrl+Win (like Wispr Flow)", "ctrl+win"), ("Menu key", "menu"), ("Ctrl+Alt+D", "ctrl+alt+d")]
 
 log = logging.getLogger("sst.app")
@@ -247,32 +249,37 @@ class SettingsDialog(QDialog):
         form.addRow("", self.start_with_windows)
 
         gateway = gateway or GatewayConfig()
-        cleanup = QGroupBox("Text cleanup (company AI gateway)")
+        cleanup = QGroupBox("Text cleanup with an AI model")
         cleanup_form = QFormLayout(cleanup)
-        self.cleanup = QComboBox()
-        self.cleanup.addItem("Off: type exactly what was heard", "")
-        for model, label in MODELS:
-            self.cleanup.addItem(label, model)
-        if settings.cleanup_model and self.cleanup.findData(settings.cleanup_model) < 0:
-            self.cleanup.addItem(settings.cleanup_model, settings.cleanup_model)
-        self.cleanup.setCurrentIndex(max(0, self.cleanup.findData(settings.cleanup_model)))
-        cleanup_form.addRow("Model", self.cleanup)
-        how = QLabel("Speech is still recognised on this laptop; only the finished text goes to the gateway. If the "
-                     "model fails the other one is tried, and if the gateway can't help in time the text is typed as heard.")
-        how.setWordWrap(True)
+        self.cleanup_on = QCheckBox("Clean up the text before typing it (punctuation, fillers, your words)")
+        self.cleanup_on.setChecked(settings.cleanup)
+        self.cleanup_on.setToolTip("Works with any OpenAI-compatible endpoint. If the model fails, the backup model is "
+                                   "used; if the endpoint can't help in time, the text is typed as heard.")
+        cleanup_form.addRow("", self.cleanup_on)
+        how = QLabel("Your voice stays on this laptop; only the finished text goes to the endpoint.")
         how.setStyleSheet("color: gray")
         cleanup_form.addRow("", how)
         self.gateway_url = QLineEdit(gateway.base_url)
-        cleanup_form.addRow("Gateway", self.gateway_url)
+        self.gateway_url.setPlaceholderText("e.g. https://api.openai.com/v1  ·  http://localhost:11434/v1 (Ollama)")
+        cleanup_form.addRow("Endpoint", self.gateway_url)
         self.api_key = QLineEdit(gateway.api_key)
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText("Paste your gateway API key (kept on this laptop only)")
-        test = QPushButton("Test")
-        test.clicked.connect(self._test)
+        self.api_key.setPlaceholderText("Encrypted on this laptop (optional for local)")
+        load = QPushButton("Load models")
+        load.clicked.connect(self._load_models)
         key_row = QHBoxLayout()
         key_row.addWidget(self.api_key)
-        key_row.addWidget(test)
+        key_row.addWidget(load)
         cleanup_form.addRow("API key", key_row)
+        self.model = _model_box(settings.cleanup_model, "choose after Load models, or type a model name")
+        test = QPushButton("Test")
+        test.clicked.connect(self._test)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.model, 1)
+        model_row.addWidget(test)
+        cleanup_form.addRow("Model", model_row)
+        self.fallback = _model_box(settings.cleanup_fallback, "optional: used if the model fails")
+        cleanup_form.addRow("Backup model", self.fallback)
         self.test_result = QLabel("")
         self.test_result.setWordWrap(True)
         cleanup_form.addRow("", self.test_result)
@@ -294,26 +301,56 @@ class SettingsDialog(QDialog):
     def result_settings(self) -> Settings:
         return Settings(hotkey=self.hotkey.currentData(), microphone=self.microphone.currentData(),
                         sounds=self.sounds.isChecked(), save_recordings=self.save_recordings.isChecked(),
-                        cleanup_model=self.cleanup.currentData(), vocabulary=self._words())
+                        cleanup=self.cleanup_on.isChecked(), cleanup_model=self.model.currentText().strip(),
+                        cleanup_fallback=self.fallback.currentText().strip(), vocabulary=self._words())
 
     def result_gateway(self) -> GatewayConfig:
-        return GatewayConfig(base_url=self.gateway_url.text().strip() or GatewayConfig().base_url,
-                             api_key=self.api_key.text().strip())
+        return GatewayConfig(base_url=self.gateway_url.text().strip(), api_key=self.api_key.text().strip())
 
     def _words(self) -> list[str]:
         return [w.strip() for w in re.split(r"[\n,]", self.vocabulary.toPlainText()) if w.strip()]
 
-    def _test(self) -> None:
-        polisher = Polisher(self.result_gateway(), self.cleanup.currentData() or MODELS[0][0], self._words())
-        self.test_result.setText("Testing...")
+    def _busy(self, message: str, work) -> None:
+        self.test_result.setText(message)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:
-            self.test_result.setText("OK: " + polisher.check())
+            self.test_result.setText(work())
         except GatewayError as e:
             self.test_result.setText(f"Failed: {e}")
         finally:
             QApplication.restoreOverrideCursor()
+
+    def _load_models(self) -> None:
+        def load() -> str:
+            models = Polisher(self.result_gateway(), "").models()
+            for box in (self.model, self.fallback):
+                current = box.currentText()
+                box.clear()
+                if box is self.fallback:
+                    box.addItem("")  # no backup model
+                box.addItems(models)
+                box.setCurrentText(current)
+            return f"Loaded {len(models)} models." if models else "The endpoint lists no models; type a model name."
+        self._busy("Loading models...", load)
+
+    def _test(self) -> None:
+        model = self.model.currentText().strip()
+        if not model:
+            self.test_result.setText("Choose a model first (Load models).")
+            return
+        self._busy("Testing...", lambda: "OK: " + Polisher(self.result_gateway(), model, self._words()).check())
+
+
+def _model_box(current: str, hint: str) -> QComboBox:
+    box = QComboBox()
+    box.setEditable(True)  # pick from the loaded list, or type any model name
+    box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+    box.lineEdit().setPlaceholderText(hint)
+    if current:
+        box.addItem(current)
+    box.setCurrentText(current)
+    return box
 
 
 class HistoryWindow(QWidget):
@@ -338,10 +375,30 @@ class HistoryWindow(QWidget):
         row.addWidget(self.status)
         row.addStretch()
         row.addWidget(copy)
+        # The "a new version is available" banner, shown by the app when an update exists.
+        self.banner = QFrame()
+        self.banner.setObjectName("updateBanner")
+        self.banner.setStyleSheet("#updateBanner { background: #2563eb; border-radius: 8px; } "
+                                  "#updateBanner QLabel { color: white; font-weight: 600; }")
+        self.banner_text = QLabel()
+        self.banner_text.setWordWrap(True)
+        self.notes_button = QPushButton("What's new")
+        self.update_button = QPushButton("Update now")
+        banner_row = QHBoxLayout(self.banner)
+        banner_row.addWidget(self.banner_text, 1)
+        banner_row.addWidget(self.notes_button)
+        banner_row.addWidget(self.update_button)
+        self.banner.hide()
         layout = QVBoxLayout(self)
+        layout.addWidget(self.banner)
         layout.addWidget(self.list)
         layout.addLayout(row)
-        self.resize(560, 420)
+        self.resize(600, 440)
+
+    def show_update(self, text: str, busy: bool = False) -> None:
+        self.banner_text.setText(text)
+        self.update_button.setEnabled(not busy)
+        self.banner.show()
 
     def refresh(self) -> None:
         self.list.clear()
@@ -360,6 +417,27 @@ class HistoryWindow(QWidget):
             self.status.setText("Copied.")
 
 
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.CreateMutexW.restype = ctypes.c_void_p
+_kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+_kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+_running_mutex = None
+
+
+def hold_running_mutex() -> None:
+    # While it exists, the installer asks to close Rflow before updating or uninstalling it. The name is from the
+    # first versions; kept so that new installers still recognise a running old version.
+    global _running_mutex
+    _running_mutex = _kernel32.CreateMutexW(None, False, "SST-Dictation-running")
+
+
+def release_running_mutex() -> None:
+    global _running_mutex
+    if _running_mutex:
+        _kernel32.CloseHandle(_running_mutex)
+        _running_mutex = None
+
+
 def _open_folder(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
@@ -372,6 +450,11 @@ class _Signals(QObject):
     result = Signal(str, str)  # (heard, typed), from Dictation's worker thread
     loaded = Signal(object)
     failed = Signal(str)
+    update_found = Signal(object)  # the rest come from the update threads
+    update_none = Signal()
+    update_progress = Signal(str)
+    update_ready = Signal(str)
+    update_failed = Signal(str, bool)  # (message, tell the user)
 
 
 class TrayApp:
@@ -383,26 +466,40 @@ class TrayApp:
         self.listener: HotkeyListener | None = None
         self.quiet_start = quiet_start
         self._cleanup_notice = -1e9  # when the user was last told that the cleanup couldn't help
+        self.update: updates.Update | None = None
+        self._update_told = ""  # the version the user was last notified about
 
         self.signals = _Signals()
         self.signals.state.connect(self._on_state)
         self.signals.result.connect(self._on_result)
         self.signals.loaded.connect(self._on_loaded)
         self.signals.failed.connect(self._on_failed)
+        self.signals.update_found.connect(self._on_update_found)
+        self.signals.update_none.connect(lambda: self._notify(APP_NAME, f"You have the latest version ({__version__})."))
+        self.signals.update_progress.connect(lambda text: self.history.show_update(text, busy=True))
+        self.signals.update_ready.connect(self._on_update_ready)
+        self.signals.update_failed.connect(self._on_update_failed)
 
         self.icon = QIcon(str(ICON_FILE))
         self.recording_icon = _with_red_dot(self.icon)
         self.pill = Pill(level=lambda: self.recorder.level)
         self.history = HistoryWindow(open_settings=self.show_settings)
+        self.history.notes_button.clicked.connect(self._open_release_notes)
+        self.history.update_button.clicked.connect(self.start_update)
 
         self.tray = QSystemTrayIcon(self.icon)
         menu = QMenu()
         self.status_action = QAction("Loading the speech model...", menu)
         self.status_action.setEnabled(False)
         menu.addAction(self.status_action)
+        self.update_action = QAction("", menu)
+        self.update_action.triggered.connect(self.show_history)
+        self.update_action.setVisible(False)
+        menu.addAction(self.update_action)
         menu.addSeparator()
         menu.addAction("History...", self.show_history)
         menu.addAction("Settings...", self.show_settings)
+        menu.addAction("Check for updates", lambda: self.check_for_updates(manual=True))
         menu.addAction("Open logs folder", lambda: _open_folder(LOG_DIR))
         menu.addSeparator()
         menu.addAction(f"Quit {APP_NAME}", self.quit)
@@ -410,6 +507,7 @@ class TrayApp:
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(lambda reason: self.show_history()
                                     if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
+        self.tray.messageClicked.connect(self.show_history)  # e.g. "Rflow 1.1.0 is available"
         self.tray.setToolTip(f"{APP_NAME}: loading...")
         self.tray.show()
 
@@ -417,6 +515,12 @@ class TrayApp:
         self.pump.setInterval(15)
         self.pump.timeout.connect(self._pump)
         threading.Thread(target=self._load, name="model-loader", daemon=True).start()
+        if getattr(sys, "frozen", False):  # the source checkout is updated with git, not by the app
+            QTimer.singleShot(20_000, self.check_for_updates)
+            self.update_timer = QTimer()
+            self.update_timer.setInterval(updates.CHECK_EVERY_HOURS * 3600 * 1000)
+            self.update_timer.timeout.connect(self.check_for_updates)
+            self.update_timer.start()
 
     # -- start-up
 
@@ -464,17 +568,19 @@ class TrayApp:
 
     def _apply_cleanup(self) -> None:
         """Use the model chosen in Settings from the next dictation on (or none)."""
-        model = self.settings.cleanup_model
+        s = self.settings
+        model = s.cleanup_model if s.cleanup else ""
         polisher = None
-        if model and self.gateway.api_key:
-            polisher = Polisher(self.gateway, model, self.settings.vocabulary, fallback=other_model(model))
+        if model and self.gateway.base_url:
+            polisher = Polisher(self.gateway, model, s.vocabulary, fallback=s.cleanup_fallback or None)
             polisher.prepare()  # connect now, so the first dictation doesn't wait for it
-        elif model:
-            self._notify(APP_NAME, "Text cleanup needs the gateway API key: add it in Settings.",
+        elif s.cleanup:
+            self._notify(APP_NAME, "Text cleanup needs an endpoint and a model: set them in Settings.",
                          QSystemTrayIcon.MessageIcon.Warning)
         self.dictation.cleanup = polisher
         self._update_status()
-        log.info("Text cleanup: %s (%s, %d words)", model or "off", self.gateway, len(self.settings.vocabulary))
+        log.info("Text cleanup: %s, backup %s (%s, %d words)", model or "off", s.cleanup_fallback or "none",
+                 self.gateway, len(s.vocabulary))
 
     def _update_status(self) -> None:
         if not self.listener:
@@ -544,6 +650,80 @@ class TrayApp:
                 self._start_listener()
         log.info("Settings saved: %s", new)
 
+    # -- updates
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        def work() -> None:
+            try:
+                update = updates.check()
+            except Exception as e:  # offline, rate-limited...: try again at the next check
+                self.signals.update_failed.emit(f"Could not check for updates: {e}", manual)
+                return
+            if update:
+                self.signals.update_found.emit(update)
+            elif manual:
+                self.signals.update_none.emit()
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def _on_update_found(self, update) -> None:
+        self.update = update
+        self.history.show_update(f"Rflow {update.version} is available (you have {__version__}).")
+        self.update_action.setText(f"Update to Rflow {update.version}...")
+        self.update_action.setVisible(True)
+        log.info("Update available: %s", update.version)
+        if self._update_told != update.version:
+            self._update_told = update.version
+            self._notify(f"Rflow {update.version} is available", "Click here, then Update now.")
+
+    def start_update(self) -> None:
+        update = self.update
+        if not update:
+            return
+        if not getattr(sys, "frozen", False):
+            QDesktopServices.openUrl(QUrl(update.page))  # a source checkout: just show the release
+            return
+        self.history.show_update(f"Downloading Rflow {update.version}...", busy=True)
+        last = [-1]
+
+        def progress(done: int, total: int) -> None:
+            percent = int(done * 100 / total) if total else 0
+            if percent != last[0]:
+                last[0] = percent
+                self.signals.update_progress.emit(f"Downloading Rflow {update.version}... {percent}%")
+
+        def work() -> None:
+            try:
+                path = updates.download(update, UPDATE_DIR, progress)
+            except Exception as e:
+                log.exception("Update download failed")
+                self.signals.update_failed.emit(f"Update failed: {e}", True)
+                return
+            self.signals.update_ready.emit(str(path))
+        threading.Thread(target=work, name="update-download", daemon=True).start()
+
+    def _on_update_ready(self, path: str) -> None:
+        log.info("Installing %s; Rflow restarts when it's done", path)
+        self.history.show_update("Installing... Rflow restarts by itself when it's done.", busy=True)
+        release_running_mutex()  # otherwise the installer stops to ask for Rflow to be closed
+        try:
+            updates.install(Path(path))
+        except OSError as e:
+            hold_running_mutex()
+            self._on_update_failed(f"Could not start the installer: {e}", True)
+            return
+        self.quit()
+
+    def _on_update_failed(self, message: str, tell: bool) -> None:
+        log.warning(message)
+        if tell:
+            self._notify(APP_NAME, message, QSystemTrayIcon.MessageIcon.Warning)
+        if self.update:
+            self.history.show_update(f"{message} You can try again.")
+
+    def _open_release_notes(self) -> None:
+        if self.update and self.update.page:
+            QDesktopServices.openUrl(QUrl(self.update.page))
+
     def quit(self) -> None:
         if self.listener:
             self.listener.stop()
@@ -582,8 +762,9 @@ def self_test() -> int:
         pill.show_state(state, "test")
         pill.grab()
     SettingsDialog(Settings(), ["Test microphone"], GatewayConfig()).grab()
-    history = HistoryWindow()
+    history = HistoryWindow(open_settings=lambda: None)
     history.refresh()
+    history.show_update("Rflow 9.9.9 is available (you have 1.0.0).")
     history.grab()
     _with_red_dot(QIcon(str(ICON_FILE)))
     from sst.engines.parakeet import MODEL_DIR
@@ -610,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
     if already_running():
         QMessageBox.information(None, APP_NAME, f"{APP_NAME} is already running. Look for its icon in the tray.")
         return 0
+    hold_running_mutex()
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.critical(None, APP_NAME, "Windows has no notification area (system tray) available.")
         return 1
