@@ -6,12 +6,15 @@ import sys
 import time
 import winreg
 from dataclasses import asdict, dataclass, field, fields
+from datetime import date, timedelta
 from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / "sst"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 HISTORY_FILE = CONFIG_DIR / "history.jsonl"
 HISTORY_KEEP = 200  # entries shown and kept
+STATS_FILE = CONFIG_DIR / "stats.json"
+STATS_DAYS = 400  # days of per-day word counts kept (for "this week" and the streak)
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +29,8 @@ class Settings:
     cleanup_model: str = ""  # a model id on the user's endpoint (sst.gateway)
     cleanup_fallback: str = ""  # optional backup model, tried when the first one fails
     vocabulary: list[str] = field(default_factory=list)  # the user's names and terms, for the cleanup
+    welcomed: bool = False  # the first-run welcome was completed (or skipped)
+    told_about_tray: bool = False  # closing the window keeps Rflow in the tray; said once
 
     @classmethod
     def load(cls, path: Path = SETTINGS_FILE) -> "Settings":
@@ -83,6 +88,69 @@ def read_history(path: Path = HISTORY_FILE) -> list[dict]:
         entries = entries[-HISTORY_KEEP:]
         path.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries), encoding="utf-8")
     return entries[::-1][:HISTORY_KEEP]
+
+
+@dataclass
+class Stats:
+    """Totals for the Home page. Kept apart from the history, which only keeps the last HISTORY_KEEP dictations."""
+    words: int = 0
+    dictations: int = 0
+    timed_words: int = 0  # words of the dictations whose length is known, for the speaking speed
+    seconds: float = 0.0
+    days: dict[str, int] = field(default_factory=dict)  # "2026-09-30" -> words dictated that day
+
+    def add(self, text: str, seconds: float | None, day: date) -> None:
+        words = len(text.split())
+        self.words += words
+        self.dictations += 1
+        if seconds:
+            self.timed_words += words
+            self.seconds += seconds
+        key = day.isoformat()
+        self.days[key] = self.days.get(key, 0) + words
+        if len(self.days) > STATS_DAYS:
+            self.days = dict(sorted(self.days.items())[-STATS_DAYS:])
+
+    @property
+    def words_per_minute(self) -> int | None:
+        """Speaking speed, once there is enough to say (half a minute of speech)."""
+        return round(self.timed_words / self.seconds * 60) if self.seconds >= 30 else None
+
+    def words_this_week(self, today: date) -> int:
+        return sum(self.days.get((today - timedelta(days=n)).isoformat(), 0) for n in range(7))
+
+    def streak(self, today: date) -> int:
+        """Days in a row with dictation, up to today (or up to yesterday: today isn't over yet)."""
+        day = today if today.isoformat() in self.days else today - timedelta(days=1)
+        count = 0
+        while day.isoformat() in self.days:
+            count, day = count + 1, day - timedelta(days=1)
+        return count
+
+    @classmethod
+    def load(cls, path: Path = STATS_FILE, history: Path = HISTORY_FILE) -> "Stats":
+        """The saved totals; the first time, a start from the history (its dictations have no length yet)."""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return cls(words=int(data["words"]), dictations=int(data["dictations"]), timed_words=int(data["timed_words"]),
+                       seconds=float(data["seconds"]), days={str(k): int(v) for k, v in dict(data["days"]).items()})
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            log.warning("Starting the stats again; unreadable %s: %s", path, e)
+        stats = cls()
+        for entry in reversed(read_history(history)):
+            try:
+                stats.add(entry["text"], None, date.fromisoformat(entry.get("time", "")[:10]))
+            except ValueError:
+                continue
+        return stats
+
+    def save(self, path: Path = STATS_FILE) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        tmp.replace(path)
 
 
 # ---- start with Windows: a value under HKCU\...\Run (the installer's "start when I sign in" option uses the same one)
