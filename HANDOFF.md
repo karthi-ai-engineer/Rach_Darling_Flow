@@ -20,13 +20,13 @@ _Last updated: 2026-09-30_
 | fix | Update checks retry when the first connection stalls | done, on `main` (PR #16), released **v1.0.1** |
 | 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words | done, on `main` (PR #18), released **v1.1.0** |
 | 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer | done, on `main` (PR #20) |
-| 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | done, on `main` (PR #22); the owner installed 1.3.0 and confirmed it works; not released yet |
+| 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | done, on `main` (PR #22), released **v1.3.0** |
 | 10 | **Accuracy lab**: five sets of sentences, session notes, audio measurements, `sst eval` with 95% ranges | done, on `main` (PR #24); the owner read all five sets |
-| fix | Fairer scoring (contractions, compounds, Ctrl), only names suggested, eval report printing | PR #25 open |
-| 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | PR #27 open, stacked on #25 |
-| 12 | **Hotwords**: Parakeet listens for Your words (bpe.vocab from NVIDIA's archive, beam search, score 1.0, guard) | PR open, stacked on #27 |
+| fix | Fairer scoring (contractions, compounds, Ctrl), only names suggested, eval report printing | done, on `main` (PR #25) |
+| 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | done, on `main` (PR #27) |
+| 12 | **Hotwords**: Parakeet listens for Your words (bpe.vocab from NVIDIA's archive, beam search, score 1.0, guard) | done, on `main` (PR #29); phases 10-12 released as **v1.4.0** |
 
-Released: v1.0.0, v1.0.1 and v1.1.0 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel,
+Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
 itself to 1.0.1.
 
@@ -531,9 +531,11 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 ## Next steps
 
-1. Release 1.3.0 when the owner says so: tag `v1.3.0` on `main` and push the tag. The website (redeployed by Vercel on
-   every merge into `main`) already describes the window, providers and profiles, but its download is the latest
-   release, so it gives 1.1.0 until then. There is no 1.2.0 release: 1.3.0 includes phase 8.
+1. The owner installs 1.4.0 through the in-app update (or the website) and dictates for a few days with Your words
+   filled in; what goes wrong in real dictation decides phase 13 (sound-alike fixer, AI cleanup only when unsure, or
+   a stronger model). The first try at a sound-alike fixer (2026-10-01, not merged) brought names from 24.5% to 15%,
+   but turned ordinary words into names ("installer" -> "PyInstaller", "open a" -> "OpenAI", "cloud" -> "Claude"): it
+   needs a list of ordinary English words it must never touch.
 2. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
    against the local fakes).
 3. **The owner fills Your words** with the names and terms they dictate (Karthi, Rahul, Claude, Groq, Qwen, CodeQL,
