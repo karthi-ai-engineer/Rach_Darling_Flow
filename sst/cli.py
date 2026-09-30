@@ -95,7 +95,12 @@ def cmd_eval(args) -> None:
     models = [] if args.no_cleanup else args.model or [m for m in (settings.cleanup_model, settings.cleanup_fallback) if m]
     polishers = {m.rsplit("/", 1)[-1]: Polisher(gateway, m, settings.vocabulary) for m in models} if gateway.address else {}
     pipelines = evaluate.pipelines_for(polishers, args.degrade or [])
-    results = evaluate.run(folders, _load(args.engine), pipelines, progress=lambda text: print(" ", text))
+    engine = _load(args.engine)
+    if hasattr(engine, "words"):  # as in dictation: the recogniser listens for Your words
+        chosen = [w.strip() for w in args.words.split(",")] if args.words else settings.vocabulary
+        engine.words = [] if args.no_words else [w for w in chosen if w]
+        print(f"  Your words used while recognising: {len(engine.words)}" + ("" if engine.biased else " (no bpe.vocab)"))
+    results = evaluate.run(folders, engine, pipelines, progress=lambda text: print(" ", text))
     out = Path(args.out) if args.out else evaluate.output_folder(folders)
     results.save(out)
     print()
@@ -132,6 +137,8 @@ def main() -> None:
     p_eval.add_argument("folders", nargs="*", help="test folders (default: every test of the profile in use)")
     p_eval.add_argument("--model", action="append", help="cleanup model to compare (repeatable); default: the ones in Settings")
     p_eval.add_argument("--no-cleanup", action="store_true", help="recognition only, no cleanup models")
+    p_eval.add_argument("--no-words", action="store_true", help="recognise without listening for Your words (hotwords)")
+    p_eval.add_argument("--words", help='try other words instead of Your words, e.g. "Karthi,Vercel,CodeQL"')
     p_eval.add_argument("--degrade", action="append",
                         help="also score the audio made worse on purpose: narrowband (phone / Bluetooth call quality) "
                              "or gain:<dB>, e.g. gain:-20 (repeatable)")
