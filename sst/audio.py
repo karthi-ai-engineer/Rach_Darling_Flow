@@ -1,5 +1,6 @@
 """Microphone recording and WAV read/write."""
 import wave
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
@@ -82,6 +83,15 @@ class Recorder:
         self._chunks.append(block)
         self.level = float(np.sqrt(np.mean(block * block)))
 
+    def describe(self) -> dict:
+        """The microphone actually used, its audio interface and the rate recorded at, for the reading test's notes."""
+        try:
+            device = _resolve(self.device)
+            info = sd.query_devices(device, "input") if device is not None else sd.query_devices(kind="input")
+            return {"device": info["name"], "host_api": sd.query_hostapis(info["hostapi"])["name"], "rate": self.rate}
+        except Exception:  # only a note: never let it stop a recording from being saved
+            return {"rate": self.rate}
+
     def stop(self) -> np.ndarray:
         """Stop recording and return the samples, in [-1, 1] at self.rate."""
         global _open_streams
@@ -125,6 +135,70 @@ def split_at_pauses(audio: np.ndarray, rate: int, max_seconds: float, search_sec
         audio = audio[cut:]
     pieces.append(audio)
     return pieces
+
+
+@dataclass
+class AudioStats:
+    """What a recording sounds like to a machine: level, noise, clipping and bandwidth. Speech models cope with any
+    steady level (they normalise), but not with clipping, speech buried in noise, or phone-quality audio: a Bluetooth
+    headset's microphone in call mode keeps nothing above 4 kHz (or 8 kHz), where many consonants live."""
+    seconds: float
+    speech_db: float  # dBFS of the loud (speech) frames
+    noise_db: float  # dBFS of the quiet frames: the room and the microphone's own hiss
+    peak_db: float
+    clipped: float  # share of samples at full scale
+    high_band_db: float  # voiced frames' 4-7 kHz level against their 0.3-3 kHz level; very low = narrowband
+
+    @property
+    def snr_db(self) -> float:
+        return self.speech_db - self.noise_db
+
+    @property
+    def flags(self) -> list[str]:
+        out = []
+        if self.high_band_db < NARROWBAND_DB:
+            out.append("narrowband")
+        if self.clipped > 0.001:
+            out.append("clipped")
+        if self.speech_db < QUIET_DB:
+            out.append("quiet")
+        if self.snr_db < NOISY_DB:
+            out.append("noisy")
+        return out
+
+
+NARROWBAND_DB = -45.0  # wideband speech measures about -15 to -35 dB here; a call-mode Bluetooth mic, -60 or lower
+QUIET_DB = -45.0
+NOISY_DB = 15.0
+
+
+def measure(audio: np.ndarray, rate: int) -> AudioStats:
+    """Level, noise, clipping and bandwidth of a recording, from 20 ms frames (loudest 5% = speech, quietest 10% = noise)."""
+    audio = np.asarray(audio, dtype=np.float64)
+    seconds = len(audio) / rate
+    frame = max(1, int(0.02 * rate))
+    n = len(audio) // frame
+    if n < 2:
+        return AudioStats(seconds, -120.0, -120.0, -120.0, 0.0, 0.0)
+    frames = audio[:n * frame].reshape(n, frame)
+    frame_db = 10 * np.log10(np.mean(frames ** 2, axis=1) + 1e-12)
+    speech_db, noise_db = float(np.percentile(frame_db, 95)), float(np.percentile(frame_db, 10))
+    peak = float(np.max(np.abs(audio)))
+    clipped = float(np.mean(np.abs(audio) >= 0.99))
+    return AudioStats(seconds, speech_db, noise_db, 20 * np.log10(peak + 1e-12), clipped,
+                      _high_band_db(frames[frame_db > speech_db - 15], rate))
+
+
+def _high_band_db(voiced: np.ndarray, rate: int) -> float:
+    if rate <= 8000:
+        return -120.0  # nothing above 4 kHz can exist
+    if len(voiced) == 0:
+        return 0.0  # no speech to judge by
+    spectrum = np.mean(np.abs(np.fft.rfft(voiced * np.hanning(voiced.shape[1]), axis=1)) ** 2, axis=0)
+    freqs = np.fft.rfftfreq(voiced.shape[1], 1 / rate)
+    high = spectrum[(freqs >= 4000) & (freqs <= min(7000, 0.45 * rate))].mean()
+    low = spectrum[(freqs >= 300) & (freqs <= 3000)].mean()
+    return float(10 * np.log10((high + 1e-20) / (low + 1e-20)))
 
 
 def save_wav(path: Path, audio: np.ndarray, rate: int) -> None:

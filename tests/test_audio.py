@@ -44,3 +44,17 @@ def test_wav_round_trip(tmp_path):
     loaded, rate = load_wav(tmp_path / "a.wav")
     assert rate == RATE
     np.testing.assert_allclose(loaded, audio, atol=1e-4)  # 16-bit samples: ~0.00003 per step
+
+
+def test_measure_tells_a_clean_wideband_recording_from_problem_ones():
+    from sst.audio import measure
+    from sst.evaluate import degrade
+    rng = np.random.default_rng(1)
+    speech = np.concatenate([np.zeros(RATE // 2), rng.uniform(-0.3, 0.3, RATE)]).astype(np.float32)
+    speech += rng.normal(0, 1e-4, len(speech)).astype(np.float32)  # a quiet room
+    clean = measure(speech, RATE)
+    assert clean.flags == [] and clean.snr_db > 40 and clean.seconds == 1.5
+    assert "narrowband" in measure(degrade(speech, RATE, "narrowband"), RATE).flags
+    assert "clipped" in measure(np.clip(speech * 10, -1, 1), RATE).flags
+    assert "quiet" in measure(speech * 0.001, RATE).flags
+    assert "narrowband" in measure(speech[::2], 8000).flags  # recorded at 8 kHz: nothing above 4 kHz can exist

@@ -31,6 +31,7 @@ class ParakeetEngine:
             )
         import sherpa_onnx
 
+        self.signature = f"parakeet|{model_dir.name}|greedy"  # what the text depends on (sst.evaluate caches by it)
         self._lock = threading.Lock()  # dictation and the reading test may transcribe at the same time
         tokens = str(model_dir / "tokens.txt")
         encoder = _find(model_dir, "encoder")

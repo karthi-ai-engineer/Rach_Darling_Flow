@@ -21,6 +21,7 @@ _Last updated: 2026-09-30_
 | 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words | done, on `main` (PR #18), released **v1.1.0** |
 | 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer | done, on `main` (PR #20) |
 | 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | done, on `main` (PR #22); the owner installed 1.3.0 and confirmed it works; not released yet |
+| 10 | **Accuracy lab**: five sets of sentences, session notes, audio measurements, `sst eval` with 95% ranges | PR open (issue #23), branch `phase-10/accuracy-lab` |
 
 Released: v1.0.0, v1.0.1 and v1.1.0 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -394,6 +395,46 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - **Not tried for real:** OpenAI, Anthropic, Gemini and Groq with real keys (only against the fakes, which check the
   request format). The owner, or anyone with a key, should press Test once for each.
 
+## Accuracy lab (phase 10)
+
+- The owner's decision: work on accuracy before phases 10/11 of the old roadmap, and first on everything before the
+  speech recogniser, so that a better model later gains even more. The research (papers, sherpa-onnx / NeMo sources,
+  Handy, OpenWhispr, VoiceInk and others, measurements on the dev laptop) is summarised in `docs/accuracy.md`, with the
+  target pipeline and phases 11-13. Main findings:
+  - The 24% is mostly names and terms, plus the capture path, not the model.
+  - Neural denoising makes modern models worse.
+  - sherpa-onnx 1.13.8 can bias Parakeet towards Your words (hotwords), but it needs a `bpe.vocab`, which the model
+    download doesn't include.
+- This phase is only the measuring stick; dictation is unchanged. With 30 sentences (~360 words) the noise is about
+  ±2.3 points, too much to see a 2-3 point change.
+- **Sets** (`sst/bench.py`): `BLOCKS` A-E, 30 sentences each. A is the old list (old tests stay comparable, and old
+  folders without notes count as A). A-B are for tuning, C-E the held-out test. Some sentences use cloud, clot and
+  publishing literally. `TERMS` are the names and tech terms, scored apart.
+- **Sessions:** each test folder gets `session.json` (set, microphone chosen, device and host API from
+  `Recorder.describe()`, rate, version) with its first recording. A new test reads the set read completely the fewest
+  times (`next_block`). Fillers (um, uh) no longer count as errors.
+- **Audio measurements** (`audio.measure`): the speech level (loudest 5% of 20 ms frames), noise (quietest 10%), peak,
+  clipped share, and the 4-7 kHz level against 0.3-3 kHz on speech.
+  - Flags: narrowband below -45 dB, quiet below -45 dBFS, noisy below 15 dB SNR, clipped over 0.1%.
+  - On the model's test WAV the high band is -30 dB, and -106 dB after a 300-3400 Hz filter.
+- **`sst eval`** (`sst/evaluate.py`; `sst bench` is an alias; `rflow-cli eval` when installed):
+  - Replays the tests (all of the profile's by default) through `Pipeline`s: recognition alone, `--degrade narrowband`
+    / `gain:<dB>`, and each cleanup model.
+  - Reports: word and character errors, names-and-terms errors, other-word errors, and terms put in where something else
+    was said.
+  - A paired bootstrap (1000 draws within each session, fixed seed) gives each setup a 95% range and a verdict against
+    the first: better or worse only when the whole range is on one side of zero.
+  - The tuning and test sets and each microphone are reported apart, with time p50/p95.
+  - Recognition is cached in each test's `asr_cache.json`, keyed by `engine.signature` (model and decoding), the
+    degradation and the WAV's hash. Phase 12 must change the signature when the decoding changes.
+  - Several tests: the report goes to `bench\summary`.
+- **The page:** "Set C · sentence 3 of 30", Score (this test) and Score all tests. The results show the 95% range, the
+  verdict, names and terms, and plain microphone warnings. The buttons sit in two rows so the page fits the window's
+  smallest size (checked in both themes).
+- Checked with the real model: `sst eval --degrade narrowband --degrade gain:-30` on the model's test WAV gave 0% for
+  all three, and the second run came from the cache. That is one clean clip, so nothing about the owner's voice yet.
+- Tests: 211.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -415,13 +456,20 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
    release, so it gives 1.1.0 until then. There is no 1.2.0 release: 1.3.0 includes phase 8.
 2. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
    against the local fakes).
-3. Roadmap:
-   - **Phase 10, text without the AI endpoint:** rule-based fillers and spoken "new line" / "new paragraph"; spacing
-     and capitals that fit the text before the cursor (UI Automation); snippets.
-   - **Phase 11, command mode and context:** "make this formal" on selected text; per-app style.
-   - **Accuracy, if the reading test calls for it:** trim silence (VAD); a Whisper model if IT adds one to the gateway.
+3. **The owner reads the sets** once phase 10 is merged: all five with the laptop microphone, and one or two with the
+   earbuds, ideally over two days. Then `sst eval --degrade narrowband` gives the baseline, the names-and-terms share,
+   and what narrowband costs.
+4. Roadmap (details in `docs/accuracy.md`):
+   - **Phase 11, capture:** WASAPI at the device's rate, a warm stream with a lead-in and a tail, Bluetooth detection,
+     capture mode and gain tests, VAD trimming.
+   - **Phase 12, hotwords:** a `bpe.vocab` for the model, then Your words as sherpa-onnx hotwords (check that it works
+     with the unified model's decoder; TDT v2 otherwise).
+   - **Phase 13, correction:** word confidence, sound-alike matching against Your words, and an LLM called only when a
+     word is uncertain.
+   - **Then** the old phase 10 (text without the AI endpoint: fillers, "new line", spacing from the text before the
+     cursor, snippets) and phase 11 (command mode, per-app style).
    - **Later:** code signing (removes the SmartScreen warning), and a "paste last transcript" hotkey.
-4. Waiting on the owner:
+5. Waiting on the owner:
    - Japanese/Tamil needed?
    - the word list
    - the apps used most
