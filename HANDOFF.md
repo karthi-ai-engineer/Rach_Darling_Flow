@@ -145,7 +145,7 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   embeddings, images/generations, audio/transcriptions. It is internal (172.16.5.107) and reachable from the dev laptop
   in about 50 ms.
 - Auth is the owner's gateway API key, sent as `Authorization: Bearer <key>` or `X-API-Key: <key>`. The key lives only
-  in `%APPDATA%\sst\gateway.json` (`{"base_url": ..., "api_key": ...}`), outside the repository. **Never commit it.**
+  in `%APPDATA%\sst\gateway.json`, outside the repository and encrypted with DPAPI (see phase 5). **Never commit it.**
 - Task:
   - list the models
   - test only the models hosted on the company's own GPU server, **one at a time** (a small server, with cold starts)
@@ -193,6 +193,13 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   plus at most one tray notification per 10 minutes. History stores `heard` next to `text`.
 - The key lives in `%APPDATA%\sst\gateway.json` (Settings edits it; masked field; "Test" button). It is never in git
   or the logs (`GatewayConfig.__repr__` masks it).
+- On disk it is `api_key_protected`, encrypted with Windows DPAPI for the signed-in user: only that user on this laptop
+  can decrypt it. CodeQL flagged the first version, which stored it as plain text. A plain `"api_key"` typed into the
+  file by hand is encrypted on first load. A key that can't be decrypted (copied from another laptop) is dropped,
+  and the user is asked to enter it again.
+- Settings has a Settings button in the History window too; a tray click opens History, and the owner looked
+  for the options there. `sst.exe` without arguments starts the tray app, because an old taskbar pin to `sst.exe`
+  opened a console that said "already running".
 - The system prompt: fix recognition errors using the user's vocabulary, add punctuation and capitals, remove
   fillers, keep the wording, don't answer. Settings' "Your words" feed the vocabulary.
 - Against the real gateway:

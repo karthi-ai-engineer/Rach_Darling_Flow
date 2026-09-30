@@ -5,6 +5,8 @@ if the chosen model fails the other one is tried, a slow answer or an unreachabl
 (and an unreachable gateway is skipped for a minute), and the connection is opened while the user is still speaking.
 Standard library only; the gateway is internal, so no proxy is used.
 """
+import base64
+import ctypes
 import http.client
 import json
 import logging
@@ -12,13 +14,14 @@ import re
 import ssl
 import threading
 import time
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from sst.settings import CONFIG_DIR
 
-GATEWAY_FILE = CONFIG_DIR / "gateway.json"  # holds the API key: on the laptop only, never in git
+GATEWAY_FILE = CONFIG_DIR / "gateway.json"  # the API key, encrypted for the Windows user; never in git
 DEFAULT_URL = "https://tw-gateway.twave.co.jp/v1"
 # The two company-server models that did best in the gateway test (HANDOFF.md), as (model id, label).
 MODELS = [("unsloth/Qwen3.8-27B-NVFP4", "1. Qwen3.8-27B (best quality)"),
@@ -50,6 +53,9 @@ class GatewayError(Exception):
 
 @dataclass
 class GatewayConfig:
+    """Where the gateway is and the user's key. On disk the key is encrypted for the Windows user (DPAPI), so only
+    that user on this laptop can read it; a key pasted into the file by hand ("api_key") is encrypted on first load."""
+
     base_url: str = DEFAULT_URL
     api_key: str = ""
 
@@ -60,18 +66,66 @@ class GatewayConfig:
     def load(cls, path: Path = GATEWAY_FILE) -> "GatewayConfig":
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return cls(base_url=str(data.get("base_url") or DEFAULT_URL).strip(), api_key=str(data.get("api_key") or "").strip())
+            base_url = str(data.get("base_url") or DEFAULT_URL).strip()
         except FileNotFoundError:
             return cls()
         except (OSError, ValueError, AttributeError) as e:
             log.warning("Ignoring unreadable %s: %s", path, e)
             return cls()
+        if data.get("api_key_protected"):
+            try:
+                return cls(base_url, _unprotect(base64.b64decode(data["api_key_protected"])).decode("utf-8"))
+            except (OSError, ValueError) as e:  # e.g. the file was copied from another user or laptop
+                log.warning("Cannot decrypt the gateway key in %s (%s); enter it again in Settings", path, e)
+                return cls(base_url)
+        config = cls(base_url, str(data.get("api_key") or "").strip())
+        if config.api_key:
+            config.save(path)  # a key typed into the file: store it encrypted from now on
+        return config
 
     def save(self, path: Path = GATEWAY_FILE) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"base_url": self.base_url}
+        if self.api_key:
+            data["api_key_protected"] = base64.b64encode(_protect(self.api_key.encode("utf-8"))).decode("ascii")
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"base_url": self.base_url, "api_key": self.api_key}, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
         tmp.replace(path)
+
+
+# ---- Windows DPAPI: encryption tied to the signed-in Windows user
+
+class _Blob(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+_crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+for _f in (_crypt32.CryptProtectData, _crypt32.CryptUnprotectData):
+    _f.argtypes = [ctypes.POINTER(_Blob), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                   wintypes.DWORD, ctypes.POINTER(_Blob)]
+    _f.restype = wintypes.BOOL
+_kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+_CRYPTPROTECT_UI_FORBIDDEN = 0x1
+
+
+def _dpapi(function, data: bytes) -> bytes:
+    buffer = ctypes.create_string_buffer(data, len(data))
+    blob_in, blob_out = _Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char))), _Blob()
+    if not function(ctypes.byref(blob_in), None, None, None, None, _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(blob_out)):
+        raise OSError(ctypes.get_last_error(), "Windows data protection (DPAPI) failed")
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    finally:
+        _kernel32.LocalFree(blob_out.pbData)
+
+
+def _protect(data: bytes) -> bytes:
+    return _dpapi(_crypt32.CryptProtectData, data)
+
+
+def _unprotect(data: bytes) -> bytes:
+    return _dpapi(_crypt32.CryptUnprotectData, data)
 
 
 def other_model(model: str) -> str | None:

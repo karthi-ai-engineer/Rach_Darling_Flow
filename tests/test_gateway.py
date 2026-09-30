@@ -147,12 +147,29 @@ def test_check_reports_the_answer_or_a_readable_reason(fake):
         fake.polisher(model="error").check()
 
 
-def test_the_key_never_shows_in_logs_and_config_round_trips(tmp_path):
+def test_the_key_is_stored_encrypted_and_never_shows_in_logs(tmp_path):
+    path = tmp_path / "gateway.json"
     config = GatewayConfig("https://gw.example/v1", "secret-key-123")
     assert "secret-key-123" not in repr(config)
-    config.save(tmp_path / "gateway.json")
-    assert GatewayConfig.load(tmp_path / "gateway.json") == config
+    config.save(path)
+    assert "secret-key-123" not in path.read_text(encoding="utf-8")  # encrypted for this Windows user (DPAPI)
+    assert GatewayConfig.load(path) == config
     assert GatewayConfig.load(tmp_path / "missing.json") == GatewayConfig()
+
+
+def test_a_key_pasted_into_the_file_by_hand_is_encrypted_on_first_load(tmp_path):
+    path = tmp_path / "gateway.json"
+    path.write_text(json.dumps({"base_url": "https://gw.example/v1", "api_key": "pasted-key"}), encoding="utf-8")
+    assert GatewayConfig.load(path).api_key == "pasted-key"
+    assert "pasted-key" not in path.read_text(encoding="utf-8")
+    assert GatewayConfig.load(path).api_key == "pasted-key"
+
+
+def test_a_key_that_cannot_be_decrypted_is_dropped_not_crashed_on(tmp_path):
+    path = tmp_path / "gateway.json"
+    path.write_text(json.dumps({"base_url": "https://gw.example/v1", "api_key_protected": "bm90IGEgcmVhbCBibG9i"}),
+                    encoding="utf-8")  # e.g. copied from another laptop
+    assert GatewayConfig.load(path) == GatewayConfig("https://gw.example/v1", "")
 
 
 def test_model_choices_fall_back_to_each_other():

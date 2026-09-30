@@ -52,7 +52,7 @@ the recognised text is cleaned up before it is typed: punctuation, fillers remov
 Speech is still recognised on the laptop; only the finished text goes to the gateway (on the company network). If
 the chosen model fails, the other one is used; if the gateway is slow or unreachable (e.g. at home), the text is
 typed as heard at once, and the pill says "Typed as heard". History keeps both versions (hover a line). The key is
-stored only in `%APPDATA%\sst\gateway.json`.
+stored in `%APPDATA%\sst\gateway.json`, encrypted for your Windows account (only you, on this laptop, can read it).
 
 `dictate.cmd` / `uv run sst dictate` is the same without the tray app (and without cleanup), in a console window.
 
