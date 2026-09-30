@@ -1,86 +1,65 @@
-# sst
+# Rflow
 
 [![CI](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml/badge.svg)](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml)
 
-Record from the microphone and turn speech into text **locally** (nothing leaves the laptop).
-The first engine is **NVIDIA Parakeet (English)**. More engines, such as Whisper or the office gateway, can be added later.
+**Speak anywhere, Rflow types it.** Hold **Ctrl+Win** in any Windows app, speak, let go: your words are typed where
+your cursor is. Speech is recognised **on your laptop** by NVIDIA Parakeet (English); your voice is never uploaded.
+Optionally, an AI model you choose cleans up the text (punctuation, fillers, your own words).
 
-## Install on any laptop
+## Install
 
-Download **`SST-Dictation-Setup-<version>.exe`** from [Releases](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases)
-and run it. It doesn't need administrator rights, Python or an internet connection (the ~650 MB speech model is inside).
-Windows 10/11, 64-bit.
+Download **`Rflow-Setup.exe`** (the latest version:
+[releases/latest](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases/latest)) and run it. It needs no
+administrator rights, no Python and no internet connection: the ~650 MB speech model is inside. Windows 10/11, 64-bit.
 
-- Windows may say *"Windows protected your PC"*, because the installer isn't code-signed. Click **More info → Run anyway**.
-- **SST Dictation** then runs quietly in the tray (the icon near the clock) and starts when you sign in; there is no window
-  to keep open. Right-click the icon for **History**, **Settings** (key, microphone, sounds, start with Windows) and **Quit**.
+- Windows may say *"Windows protected your PC"*, because the installer isn't code-signed yet. Click **More info → Run anyway**.
+- Rflow then runs quietly in the tray (the icon near the clock) and starts when you sign in. **Click** the icon for its
+  window (history, the Settings button, update banner); **right-click** it for the menu (Settings, Check for updates, Quit).
+- **Updates:** when a new version is published, Rflow shows a banner in its window and a notification. **Update now**
+  downloads it, checks it against its published SHA-256, installs it and restarts Rflow.
 - Settings and history live in `%APPDATA%\sst`, recordings in `%LOCALAPPDATA%\sst\recordings`, logs in
   `%LOCALAPPDATA%\sst\logs`. Uninstall from *Settings → Apps*.
-- `sst.exe` next to it is the command-line tool, e.g. `sst.exe devices` or `sst.exe file x.wav`.
+- `rflow-cli.exe` next to it is the command-line tool, e.g. `rflow-cli devices` or `rflow-cli file x.wav`.
 
 ## Use
 
-**Dictate into any app:** start **SST Dictation** (the installed app, or `uv run sst app` from the source).
-Then click in any text box (Notepad, Chrome, Slack, VS Code...) and:
+Click in any text box (Notepad, Chrome, Slack, Teams, VS Code...) and:
 
 | Keys | What happens |
 |---|---|
-| hold **Ctrl+Win** while speaking | push-to-talk: types the text when you let go (the same keys as Wispr Flow) |
+| hold **Ctrl+Win** while speaking | push-to-talk: types the text when you let go |
 | tap **Ctrl+Win**, speak, tap again | hands-free: records until the second tap, then types the text |
-| **Ctrl+Win+Space**, speak, Ctrl+Win | hands-free too, as in Wispr Flow |
+| **Ctrl+Win+Space**, speak, Ctrl+Win | hands-free too |
 | **Esc** while recording | cancels; nothing is typed |
 
 Windows' own Ctrl+Win shortcuts still work: Ctrl+Win+D (new desktop), Ctrl+Win+←/→ and so on simply drop the recording.
-Releasing Win doesn't open the Start menu.
+Releasing Win doesn't open the Start menu. The key can be changed in Settings (e.g. the Menu key).
 
-While you speak, a small pill near the bottom of the screen shows a live level; then it shows dots while the text is
-transcribed, and "Typed" when it's done. It never takes the keyboard focus. There's also a beep at the start and end
-(switch it off in Settings). A recording stops by itself after 3 minutes and is typed as usual.
-The text is pasted where your cursor is, and whatever you had copied is put back on the clipboard afterwards.
-Dictated text is kept out of Windows clipboard history (Win+V); SST's own History keeps the last 200.
+While you speak, a small pill near the bottom of the screen shows a live level; then dots while the text is
+transcribed, and "Typed" when it's done. It never takes the keyboard focus. A recording stops by itself after 3 minutes
+and is typed as usual. The text is pasted where your cursor is, and whatever you had copied is put back on the clipboard
+afterwards. Dictated text is kept out of Windows clipboard history (Win+V); Rflow's own History keeps the last 200.
 
-**Text cleanup (optional):** in Settings → *Text cleanup*, pick a model on the company AI gateway, paste your gateway
-API key, add your own words (names, company, products, tech terms), and click **Test**. From the next dictation on,
-the recognised text is cleaned up before it is typed: punctuation, fillers removed, and your words spelled right
-("STD dictation" becomes "SST Dictation", "five pr's" becomes "five PRs").
+**Text cleanup (optional):** Settings → *Text cleanup with an AI model*:
 
-| Model | Speed | A typical sentence |
-|---|---|---|
-| 1. Qwen3.8-27B | best quality | about 0.6–1.1 s |
-| 2. Qwen3-30B-A3B | fastest | about 0.35–0.7 s |
+1. Enter an **endpoint** (any OpenAI-compatible API: `https://api.openai.com/v1`, a local Ollama or LM Studio such as
+   `http://localhost:11434/v1`, a company AI gateway...) and, if it needs one, an **API key**.
+2. **Load models**, choose a **model** and optionally a **backup model**, and click **Test**.
+3. Add **your words** (names, company, products, tech terms), so they come out spelled right.
 
-Speech is still recognised on the laptop; only the finished text goes to the gateway (on the company network). If
-the chosen model fails, the other one is used; if the gateway is slow or unreachable (e.g. at home), the text is
-typed as heard at once, and the pill says "Typed as heard". History keeps both versions (hover a line). The key is
-stored in `%APPDATA%\sst\gateway.json`, encrypted for your Windows account (only you, on this laptop, can read it).
+Only the finished text goes to the endpoint, never audio. If the model fails, the backup is used; if the endpoint is
+slow or unreachable, the text is typed as heard at once and the pill says "Typed as heard". History keeps both versions
+(hover a line). The key is stored in `%APPDATA%\sst\gateway.json`, encrypted for your Windows account (DPAPI).
 
-`dictate.cmd` / `uv run sst dictate` is the same without the tray app (and without cleanup), in a console window.
+- Using Wispr Flow too? Quit it first: it also listens to Ctrl+Win, and both would type. Rflow warns you if it's running.
+- Nothing typed into one particular app? That app is probably running as administrator; Windows doesn't let normal
+  programs type into those.
 
-- **Quit Wispr Flow first** (tray icon → Quit). It listens to Ctrl+Win too, and both would type. sst warns you if it's running.
-- Other keys: `--hotkey menu` uses the Menu key (≣, next to right Alt; its right-click menu is blocked), or a combination
-  like `--hotkey ctrl+alt+d` (letters, digits, F1–F24, space, `muhenkan`/`henkan`...).
-  If PowerToys remaps your Menu or Copilot key to Ctrl+Win (+Space), those keys work with the default as they are.
-- Nothing gets typed into one particular app? That app is probably running as administrator, and Windows does not let normal
-  programs type into those. Start `dictate.cmd` as administrator too.
-- Add `--no-save` if you don't want the recordings kept in `recordings/`.
+**From the source** (developers): `uv run sst app` starts the tray app; `dictate.cmd` / `uv run sst dictate` is the same
+in a console window, without cleanup. Also `uv run sst web` (a Record button in the browser, served on 127.0.0.1 only),
+`uv run sst start` (record in the terminal), `uv run sst file x.wav` and `uv run sst devices`.
 
-**Web page:** double-click **`web.cmd`** (or `uv run sst web`). Your browser opens a page with a Record button:
-press it, speak, press it again (or use the Space bar), and the text appears below with a Copy button.
-The server only listens on this laptop (`127.0.0.1:8765`). Close the black window to stop it.
-
-**Terminal:**
-
-```
-uv run sst start        # records immediately; press Enter to stop, the text is printed
-uv run sst file x.wav   # transcribe an existing 16-bit WAV file
-uv run sst devices      # list microphones (* = default); pick one with --device N
-```
-
-Or double-click **`start.cmd`** for the terminal version.
-
-Each recording is saved to `recordings/` as a `.wav` and `.txt` pair, so you can re-run the same audio through another engine later with `sst file`.
-
-## Setup
+## Setup (from source)
 
 Needs Windows 10/11 and [uv](https://docs.astral.sh/uv/).
 
@@ -94,17 +73,24 @@ uv run python scripts/download_model.py parakeet # ~630 MB model into models/
 ## Development
 
 ```
-uv run pytest           # tests (they use fakes: no keys pressed, no microphone or model needed)
+uv run pytest           # tests (they use fakes: no keys pressed, no microphone, model or network needed)
 uv run ruff check .     # lint
 ```
 
-**Build the installer** yourself with **`build_installer.cmd`** (it needs the model downloaded and
-[Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`). It builds the app with PyInstaller,
-checks that the built `sst.exe` really transcribes, and writes `dist\SST-Dictation-Setup-<version>.exe`.
+**Build the installer** with **`build_installer.cmd`** (needs the model and
+[Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`). It builds `Rflow.exe` and
+`rflow-cli.exe` with PyInstaller, checks that they really transcribe and open their windows, and writes
+`dist\Rflow-Setup-<version>.exe`.
 
-**Release:** raise `__version__` in `sst/__init__.py`, merge, then tag `main` with `vX.Y.Z` and push the tag. The Release
-workflow builds the installer and publishes it on GitHub. It can also be started by hand from the Actions tab to get a
-test installer from any branch.
+**Release** (this is what users' Update button picks up):
+
+1. Raise `__version__` in `sst/__init__.py` (e.g. `1.1.0`) in the phase's pull request, and merge it.
+2. Tag `main` with `v1.1.0` and push the tag.
+3. The Release workflow builds the installer and publishes a GitHub Release with `Rflow-Setup.exe` and
+   `Rflow-Setup.exe.sha256`. The website's download button and every installed Rflow see it right away.
+
+**Website:** `site/` is a static page for Vercel (Root Directory `site`, no build step). Its download button links to
+`releases/latest/download/Rflow-Setup.exe`, so it never needs changing for a new version.
 
 Work happens phase by phase: an issue, a branch and a pull request into `main`, checked by CI.
 `CLAUDE.md` has the working rules, and `HANDOFF.md` says where things stand and what comes next.
@@ -112,26 +98,28 @@ Work happens phase by phase: an issue, a branch and a pull request into `main`, 
 ## Layout
 
 ```
-sst/
-├─ dictate.cmd                double-click: dictate into any app with Ctrl+Win
+Rach_Darling_Flow/
+├─ site/                      the download website (Vercel): index.html, screenshots, icon
+├─ dictate.cmd                double-click: dictate in a console window (from source)
 ├─ web.cmd                    double-click: web page
 ├─ start.cmd                  double-click: terminal version
-├─ build_installer.cmd        double-click: build dist\SST-Dictation-Setup-<version>.exe
+├─ build_installer.cmd        double-click: build dist\Rflow-Setup-<version>.exe
 ├─ CLAUDE.md                  working rules (branches, PRs, authorship)
 ├─ HANDOFF.md                 current state and next steps, to resume on any device
-├─ .github/                   CI, CodeQL, Dependabot, issue and PR templates
+├─ .github/                   CI, CodeQL, Release, Dependabot, issue and PR templates
 ├─ tests/                     pytest suite
 ├─ scripts/download_model.py  fetches models into models/
-├─ scripts/build_installer.py PyInstaller -> add model -> smoke test -> Inno Setup
+├─ scripts/build_installer.py PyInstaller -> add model -> smoke tests -> Inno Setup
 ├─ packaging/                 installer recipe: sst_gui.py / sst_app.py (entry points), sst.spec, installer.iss, notices
 ├─ models/                    downloaded models (git-ignored)
 ├─ recordings/                your recordings + transcripts (git-ignored)
-└─ sst/
-   ├─ app.py                  the tray app: tray icon, recording pill, settings and history windows (Qt)
+└─ sst/                       the Python package (the app's internal name)
+   ├─ app.py                  the tray app: tray icon, recording pill, settings, history, update banner (Qt)
+   ├─ updates.py              in-app updates from GitHub Releases (checksum-verified)
    ├─ settings.py             settings, history and "start with Windows" (%APPDATA%\sst)
-   ├─ gateway.py              text cleanup with a company-gateway model: fallback, timeouts, kept-open connection
+   ├─ gateway.py              text cleanup with a model on any OpenAI-compatible endpoint: backup model, timeouts
    ├─ cli.py                  the `sst` command
-   ├─ dictate.py              Dictation: hotkey events -> record -> transcribe -> type (shared by app and console)
+   ├─ dictate.py              Dictation: hotkey events -> record -> transcribe -> clean up -> type
    ├─ hotkey.py               global hotkeys (low-level keyboard hook) and sending keys
    ├─ paste.py                paste text into the focused app, then restore the clipboard
    ├─ web.py                  local server for the web page (127.0.0.1 only)
@@ -139,7 +127,7 @@ sst/
    ├─ audio.py                microphone recording, WAV read/write, saving recordings, splitting long audio
    └─ engines/
       ├─ __init__.py          engine list + load_engine()
-      └─ parakeet.py          Parakeet via sherpa-onnx (CPU); audio over 30 s is split at pauses
+      └─ parakeet.py          Parakeet via sherpa-onnx (CPU); audio over 3 minutes is split at pauses
 ```
 
 ## Adding another engine

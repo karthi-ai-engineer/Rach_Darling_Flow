@@ -1,20 +1,22 @@
 # Handoff
 
 Where the project stands, so work can continue on any device. Updated at the end of every phase.
+The product is **Rflow** (the repository and the Python package keep their names: Rach_Darling_Flow, `sst`).
 
-_Last updated: 2026-09-29_
+_Last updated: 2026-09-30_
 
 ## Status
 
 | Phase | What | State |
 |---|---|---|
 | 0 | Record and transcribe locally: CLI (`sst start`, `sst file`) and web page (`sst web`) | done, on `main` |
-| 1 | Dictate into any app with a global hotkey (`sst dictate`, Ctrl+Alt+D) | PR #2, waiting for merge |
-| setup | GitHub CI (lint, tests, CodeQL), Dependabot, templates, CLAUDE.md, this file | PR #4 (CI green), waiting for merge |
-| 2 | Windows installer (`Setup.exe`, no Python needed), CI app build, release pipeline | PR #6, waiting for a test on another laptop + merge |
-| 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | PR #8, the owner confirmed it works (installed app, 2026-09-29), waiting for merge |
-| 4 | A real app: tray icon, recording pill, settings, history, logs (Qt) | PR #10, the owner uses it (pill, History), waiting for merge |
-| 5 | AI text cleanup through the company gateway, model chosen in Settings; one-piece transcription up to 3 min | PR #12, waiting for a hands-on test + merge |
+| 1 | Dictate into any app with a global hotkey (`sst dictate`) | done, on `main` (PR #2) |
+| setup | GitHub CI (lint, tests, CodeQL), Dependabot, templates, CLAUDE.md, this file | done, on `main` (PR #4) |
+| 2 | Windows installer (no Python needed), CI app build, release pipeline | done, on `main` (PR #6) |
+| 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | done, on `main` (PR #8) |
+| 4 | A real app: tray icon, recording pill, settings, history, logs (Qt) | done, on `main` (PR #10) |
+| 5 | AI text cleanup (model chosen in Settings), key encrypted; one-piece transcription up to 3 min | done, on `main` (PR #12) |
+| 6 | **Rflow 1.0**: product name, generic endpoint / key / model, in-app updates, download website, v1.0.0 | PR #14, waiting for merge + Vercel + release |
 
 ## Continue on another device
 
@@ -27,7 +29,7 @@ gh auth login                                     # as karthi-ai-engineer
 uv sync
 uv run python scripts/download_model.py parakeet  # ~630 MB, not in git
 uv run pytest
-uv run sst dictate
+uv run sst app                                     # the tray app
 ```
 
 Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
@@ -139,11 +141,11 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   errors are the model on this voice, not the mic.
 - The analysis scripts were ad hoc. Phase 6 should add a proper reading test (`sst bench`) with reference texts.
 
-## Company AI gateway (the next task, from the owner)
+## Company AI gateway (tested 2026-09-30)
 
-- `https://tw-gateway.twave.co.jp/v1` is OpenAI-compatible: models, chat/completions, responses, completions,
-  embeddings, images/generations, audio/transcriptions. It is internal (172.16.5.107) and reachable from the dev laptop
-  in about 50 ms.
+- The owner's company runs an internal, OpenAI-compatible AI gateway (models, chat/completions, responses,
+  completions, embeddings, images/generations, audio/transcriptions). Its address is in the owner's own settings
+  (`%APPDATA%\sst\gateway.json`), deliberately not in this public repository.
 - Auth is the owner's gateway API key, sent as `Authorization: Bearer <key>` or `X-API-Key: <key>`. The key lives only
   in `%APPDATA%\sst\gateway.json`, outside the repository and encrypted with DPAPI (see phase 5). **Never commit it.**
 - Task:
@@ -178,6 +180,7 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 ## Text cleanup (phase 5)
 
+- (Phase 6 made this generic: see below. The owner uses these two models as model and backup.)
 - The owner's decision: in Settings, choose **1. `unsloth/Qwen3.8-27B-NVFP4`** (best quality) or **2.
   `Qwen/Qwen3-30B-A3B-Instruct-2507-FP8`** (fastest), or Off. Saving activates it from the next dictation. Only the
   model changes; everything else stays the same.
@@ -215,6 +218,47 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - Tests: 94. `tests/test_gateway.py` runs a fake gateway on localhost (good, error, slow, unreachable, implausible
   answers, keep-alive, fallback).
 
+## Rflow 1.0 (phase 6)
+
+- **Name.** Rflow is the tray app `Rflow.exe`, and the command-line tool is `rflow-cli.exe` (Windows ignores case, so
+  the two names must differ). The installer is `Rflow-Setup-<ver>.exe`. The installer keeps the same AppId, so SST
+  Dictation installs upgrade in place: their folder and their Settings > Apps entry stay. `[InstallDelete]` removes the
+  old `SST Dictation.exe` / `sst.exe` and the old shortcuts, and `[Registry]` deletes the old "SST Dictation" Run value.
+  The mutexes keep their old names (`SST-Dictation-running`, `SST-Dictation-dictate`), so new installers still detect a
+  running old version. Data folders stay `%APPDATA%\sst` and `%LOCALAPPDATA%\sst`.
+- **Generic cleanup.** The code has no company defaults. Settings > "Text cleanup with an AI model" has:
+  - an on/off switch
+  - Endpoint and API key (optional, e.g. for Ollama; no empty Bearer header is sent)
+  - "Load models" (`Polisher.models()`: GET /models; models marked `is_cloud: false` are listed first)
+  - Model and Backup model (editable combos: pick one or type a name), and Test
+
+  `Settings.cleanup` / `cleanup_model` / `cleanup_fallback`: an old settings file that has a model but no `cleanup`
+  key loads with cleanup on. The owner's backup model has to be picked once in Settings, since the fixed pair of models
+  is gone.
+- **In-app updates** (`sst/updates.py`):
+  - The installed app checks `api.github.com/.../releases/latest` 20 s after start and then every 6 h; the tray menu
+    has "Check for updates". A newer tag with the assets `Rflow-Setup.exe` and `Rflow-Setup.exe.sha256` shows a blue
+    banner in the window (What's new / Update now), a tray notification (clicking it opens the window), and a menu item.
+  - The installer is downloaded to `%TEMP%\Rflow-update`. Only GitHub hosts are accepted after redirects, and the
+    SHA-256 must match, or the file is deleted.
+  - Then the app releases its `SST-Dictation-running` mutex (otherwise setup stops at AppMutex) and starts setup with
+    `/SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1`, then quits. setup's `[Run]` entry with `Check: IsInAppUpdate`
+    starts the new Rflow.
+  - A source checkout doesn't check for updates; "Update now" there only opens the release page.
+- **Release workflow:** it copies the build to `dist/release/Rflow-Setup.exe`, writes `Rflow-Setup.exe.sha256`
+  (sha256sum), and publishes both to the GitHub Release "Rflow vX.Y.Z" (the tag must equal `sst.__version__`).
+  `releases/latest/download/Rflow-Setup.exe` is the stable download link.
+- **Website:** `site/index.html` is a single static page with screenshots in `site/img` (rendered from the real
+  widgets, generic example settings) and `favicon.ico`. It works in dark and light mode, and at phone width (checked:
+  no horizontal overflow at 390 px). The download button links to the stable link, and a script shows the latest
+  version, size and date from the GitHub API. Vercel: import the repo with **Root Directory `site`**, Framework
+  "Other", and no build command.
+- **Public repo:** the company gateway's hostname and IP were removed from the code and the docs. Older commits in the
+  git history still contain the hostname; removing it would mean rewriting published history. That is the owner's
+  decision, and so is whether the repo stays public.
+- The Settings screenshot exposed a layout bug: a long word-wrapped QLabel inside a QFormLayout overlapped and got
+  clipped. The text is now one short line, with the details in a tooltip.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -224,32 +268,33 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - English only. The cleanup can't bring back words the recognizer dropped, and it leaves real words that are wrong
   in context ("charted" for "chatting", "cloud" for "Claude").
 - The console command (`sst dictate`) has no cleanup; the tray app does.
-- The installer isn't code-signed, so SmartScreen warns on first run.
+- The installer isn't code-signed, so SmartScreen warns on the first install. In-app updates don't trigger it, because
+  a file downloaded by the app isn't marked as coming from the internet.
+- The full in-app update path (1.0.0 installed, then Update to a newer release) can only be tried once a second
+  release exists. The unit tests cover the check, the download, the checksum and the installer command line.
 
 ## Next steps
 
-1. Merge in order: #2, #4, #6, #8, #10, then #12 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push
-   the tag, and the Release workflow publishes the installer.
-2. Owner:
-   - install the phase 5 build
-   - in Settings, choose a cleanup model, check the API key (Test), add the word list
-   - choose the laptop mic
-3. Roadmap:
-   - **Phase 6, accuracy on the owner's voice:**
+1. Merge PR #14 into `main`.
+2. Owner: on vercel.com, Add New > Project, import `karthi-ai-engineer/Rach_Darling_Flow`, set Root Directory to `site`,
+   Framework to "Other", and Deploy. Optionally rename the project to `rflow` (for rflow.vercel.app).
+3. Publish 1.0.0: tag `v1.0.0` on `main` and push it. The Release workflow builds and publishes; check that the website's
+   download button then works.
+4. Owner: install 1.0.0 over the current version. In Settings, pick the backup model once (Load models), and choose the
+   laptop mic. Then publish a small 1.0.1 to try the Update button end to end.
+5. Roadmap:
+   - **Phase 7, accuracy on the owner's voice:**
      - `sst bench`: a reading test with reference texts (about 30 sentences), scored for word errors
-     - compare Parakeet, Parakeet + cleanup model 1 or 2, and a Whisper model if IT adds one to the gateway (vLLM
-       serves Whisper; it would also cover Japanese/Tamil)
+     - compare Parakeet alone, and with cleanup model 1 or 2
      - trim silence (VAD)
-   - **Phase 7, text without the gateway:** rule-based fillers and spoken "new line" / "new paragraph" for when cleanup
-     is off; self-corrections; spacing and capitals that fit the text before the cursor (UI Automation); snippets.
-   - **Phase 8, command mode and context:** select text, hold the key and say "make this formal" (gateway model);
-     per-app style (casual in Slack, formal in Outlook, plain in terminals and code editors).
-   - **Phase 9, distribution:** auto-update from GitHub Releases, code signing (needs a certificate), a "paste last
-     transcript" hotkey.
-4. Waiting on the owner:
+     - maybe a Whisper model if IT adds one to the gateway
+   - **Phase 8, text without the AI endpoint:** rule-based fillers and spoken "new line" / "new paragraph"; spacing and
+     capitals that fit the text before the cursor (UI Automation); snippets.
+   - **Phase 9, command mode and context:** "make this formal" on selected text; per-app style.
+   - **Later:** code signing (removes the SmartScreen warning), and a "paste last transcript" hotkey.
+6. Waiting on the owner:
    - Japanese/Tamil needed?
-   - the word list for the dictionary
+   - the word list
    - the apps used most
    - code-signing budget
-   - the product name (SST Dictation?)
-   - ask IT: a local Whisper model on the gateway, and switching on `qwen3` / `sensenova-u1.5`
+   - the git history question above
