@@ -22,7 +22,7 @@ administrator rights, no Python and no internet connection: the ~650 MB speech m
 - Settings and history live in `%APPDATA%\sst`, recordings in `%LOCALAPPDATA%\sst\recordings`, reading tests in
   `%LOCALAPPDATA%\sst\bench`, logs in `%LOCALAPPDATA%\sst\logs`. Uninstall from *Settings → Apps*.
 - `rflow-cli.exe` next to it is the command-line tool, e.g. `rflow-cli devices`, `rflow-cli file x.wav` or
-  `rflow-cli bench <folder>`.
+  `rflow-cli eval` (score your reading tests).
 
 ## Use
 
@@ -82,13 +82,24 @@ logo, or the *Profiles* page). Each profile has its own dictation key, microphon
 dictations, stats and reading tests; a new one starts with the welcome. The first profile keeps its files in
 `%APPDATA%\sst`, the others in `%APPDATA%\sst\profiles\<name>`.
 
-**Reading test:** the *Reading test* page measures how well Rflow understands *your* voice, microphone and words. Read
-30 short sentences aloud (Record / Stop, or Space; about 10 minutes; you can leave and continue later), then **Score**.
-Rflow shows the share of words it got wrong with speech recognition alone and with your cleanup model and backup model,
-the time per sentence, and the words it misheard most. Tick the suggested words and click **Add to Your words**, then
-**Score again** to see the difference; **New test** starts over. Recordings and results (`report.md`,
-`results.json`) stay in `%LOCALAPPDATA%\sst\bench\<date>`; `rflow-cli bench <folder>` scores a folder again (e.g. with
-`--model <name>` to try another model).
+**Reading test:** the *Reading test* page measures how well Rflow understands *your* voice, microphone and words. There
+are 5 sets of 30 short sentences; each test is one set (Record / Stop, or Space; about 6 minutes; you can leave and
+continue later), and **New test** moves on to the next set. Sets A and B are for practice: the words Rflow suggests for
+Your words come from them. Sets C to E are the real test, so a better score there isn't just learned by heart. **Score**
+scores this test; **Score all tests** scores every test together, which gives a much surer answer. Rflow shows:
+
+- the share of words it got wrong with speech recognition alone and with your cleanup model and backup model, with a 95%
+  range, and whether a setup is really better than the first one or just lucky
+- errors on names and terms apart, the time per sentence, and the words it misheard most
+- a warning when a microphone sounds like a phone call (a Bluetooth headset while its microphone is on), clips or is very
+  quiet
+
+Tick the suggested words and click **Add to Your words**, then **Score again** to see the difference. Recordings and
+results (`report.md`, `results.json`, and `session.json` with the set and microphone) stay in
+`%LOCALAPPDATA%\sst\bench\<date>`, and results for all tests go to `bench\summary`. `rflow-cli eval` scores every test
+again from the command line: `--model <name>` tries another cleanup model, `--no-cleanup` skips cleanup, and
+`--degrade narrowband` (or `gain:-20`) shows what a worse microphone would do to the same recordings. How this feeds the
+accuracy work is in [docs/accuracy.md](docs/accuracy.md).
 
 - Using Wispr Flow too? Quit it first: it also listens to Ctrl+Win, and both would type. Rflow warns you if it's running.
 - Nothing typed into one particular app? That app is probably running as administrator; Windows doesn't let normal
@@ -98,7 +109,7 @@ the time per sentence, and the words it misheard most. Tick the suggested words 
 only one can dictate); `dictate.cmd` / `uv run sst dictate` is the same
 in a console window, without cleanup. Also `uv run sst web` (a Record button in the browser, served on 127.0.0.1 only),
 `uv run sst start` (record in the terminal), `uv run sst file x.wav`, `uv run sst devices` and
-`uv run sst bench <folder>` (score a reading test).
+`uv run sst eval [<folder>...]` (score reading tests).
 
 ## Setup (from source)
 
@@ -148,6 +159,7 @@ Rach_Darling_Flow/
 ├─ CLAUDE.md                  working rules (branches, PRs, authorship)
 ├─ HANDOFF.md                 current state and next steps, to resume on any device
 ├─ .github/                   CI, CodeQL, Release, Dependabot, issue and PR templates
+├─ docs/accuracy.md           the accuracy plan: research summary, target pipeline, phases
 ├─ tests/                     pytest suite
 ├─ scripts/download_model.py  fetches models into models/
 ├─ scripts/build_installer.py PyInstaller -> add model -> smoke tests -> Inno Setup
@@ -159,7 +171,8 @@ Rach_Darling_Flow/
 └─ sst/                       the Python package (the app's internal name)
    ├─ app.py                  the app: tray icon, recording pill, dictation, updates; "open Rflow again" (Qt)
    ├─ window.py               the window: Home, Dictionary, Reading test, AI cleanup, Settings, welcome; light/dark
-   ├─ bench.py                the reading test's sentences and scoring: word error rate per setup, misheard words
+   ├─ bench.py                the reading test's sets of sentences, test sessions, the fair word comparison
+   ├─ evaluate.py             `sst eval`: replays the tests through setups; error rates, 95% ranges, microphones
    ├─ updates.py              in-app updates from GitHub Releases (checksum-verified)
    ├─ settings.py             profiles, settings, history, stats and "start with Windows" (%APPDATA%\sst)
    ├─ gateway.py              AI cleanup: the providers and their request formats, backup model, timeouts, keys (DPAPI)
@@ -169,7 +182,7 @@ Rach_Darling_Flow/
    ├─ paste.py                paste text into the focused app, then restore the clipboard
    ├─ web.py                  local server for the web page (127.0.0.1 only)
    ├─ static/                 the Record / Stop page (index.html), the app icon (sst.ico), the window's images (ui/)
-   ├─ audio.py                microphone recording, WAV read/write, saving recordings, splitting long audio
+   ├─ audio.py                microphone recording, WAV read/write, measuring a recording, splitting long audio
    └─ engines/
       ├─ __init__.py          engine list + load_engine()
       └─ parakeet.py          Parakeet via sherpa-onnx (CPU); audio over 3 minutes is split at pauses

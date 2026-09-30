@@ -46,7 +46,10 @@ uv run ruff check .                              # lint
 The layout is in `README.md`. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
 shared by the app (`sst/app.py`, Qt: tray, pill, `TrayApp`) and the console command. The window is `sst/window.py`: it
 keeps no state and calls `TrayApp`, or `PreviewApp` in tests and screenshots. In-app updates are `sst/updates.py`, and
-the text cleanup is `sst/gateway.py` (`PROVIDERS`: each provider's request format). Settings, keys, history, stats and
+the text cleanup is `sst/gateway.py` (`PROVIDERS`: each provider's request format). Accuracy work follows
+`docs/accuracy.md`: a change is kept only if `sst eval` (`sst/evaluate.py`) shows it better on the reading test's held-out
+sets (C-E), and an engine's `signature` must change whenever its output can (model, decoding, hotwords), since
+transcriptions are cached by it. Settings, keys, history, stats and
 reading tests belong to a profile (`Profiles` in `sst/settings.py`): read and write them through the profile's paths
 (`TrayApp.profile.settings_file`...), never the module's default paths. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`,
 `sst/paste.py`, `sst/settings.py` and `sst/gateway.py` (DPAPI). UI tests run Qt off-screen (`tests/test_app.py`,
