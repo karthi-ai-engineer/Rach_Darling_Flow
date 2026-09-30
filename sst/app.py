@@ -348,8 +348,10 @@ class TrayApp:
         log.info("Listening for %s", key.text)
 
     def _apply_cleanup(self) -> None:
-        """Use the model chosen in AI cleanup from the next dictation on (or none)."""
+        """Use Your words and the model chosen in AI cleanup from the next dictation on."""
         s = self.settings
+        if hasattr(self.dictation.engine, "words"):
+            self.dictation.engine.words = list(s.vocabulary)  # the recogniser listens for them (hotwords)
         model = s.cleanup_model if s.cleanup else ""
         polisher = None
         if model and self.gateway.address:

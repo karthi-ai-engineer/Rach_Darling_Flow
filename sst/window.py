@@ -484,8 +484,10 @@ class HomePage(Page):
 
 class DictionaryPage(Page):
     def __init__(self, app, go_to):
-        super().__init__("Dictionary", "Names, products and terms that Rflow should spell your way, such as your "
-                                       "name, your company, or GitHub and CodeQL. The AI cleanup uses them.")
+        super().__init__("Dictionary", "Names, products and terms that Rflow should hear and spell your way, such as "
+                                       "your name, your company, or GitHub and CodeQL. Speech recognition listens for "
+                                       "them, and the AI cleanup uses them too. Add names and terms, not everyday "
+                                       "words: those would be heard where you didn't say them.")
         self.app = app
         self.entry = QLineEdit()
         self.entry.setPlaceholderText("Add a word or name (several: separate them with commas)")
@@ -495,7 +497,7 @@ class DictionaryPage(Page):
         self.cleanup_off.setObjectName("card")
         off = QHBoxLayout(self.cleanup_off)
         off.setContentsMargins(18, 10, 18, 10)
-        off.addWidget(text("AI cleanup is off, so your words aren't used yet.", muted=True))
+        off.addWidget(text("Speech recognition uses your words; AI cleanup is off, so it doesn't.", muted=True))
         off.addWidget(button("Set up AI cleanup", lambda: go_to("cleanup"), link=True), 0)
         self.add(self.cleanup_off)
         self.count = text("", "section")
