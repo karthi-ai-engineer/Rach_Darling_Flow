@@ -168,6 +168,7 @@ Rach_Darling_Flow/
 ├─ HANDOFF.md                 current state and next steps, to resume on any device
 ├─ .github/                   CI, CodeQL, Release, Dependabot, issue and PR templates
 ├─ docs/accuracy.md           the accuracy plan: research summary, target pipeline, phases
+├─ docs/research/             the full accuracy research: report with sources, and the detailed notes
 ├─ tests/                     pytest suite
 ├─ scripts/download_model.py  fetches models into models/
 ├─ scripts/build_installer.py PyInstaller -> add model -> smoke tests -> Inno Setup

@@ -3,7 +3,62 @@
 Where the project stands, so work can continue on any device. Updated at the end of every phase.
 The product is **Rflow** (the repository and the Python package keep their names: Rach_Darling_Flow, `sst`).
 
-_Last updated: 2026-09-30_
+_Last updated: 2026-10-01_
+
+## Start here (a new session, or the owner's other laptop)
+
+**Where things stand (2026-10-01):**
+- **Rflow 1.4.0 is released** (GitHub Release `v1.4.0`, the website's download). It contains accuracy phases 10-12.
+- **On the owner's voice** (150 read sentences, laptop microphone):
+  - word errors 9.2% → 7.1%
+  - held-out sets 6.7% → **5.4%**, better than Parakeet's own benchmark average of 5.9%
+  - names and terms 40% → 24.5%, when Your words holds the names
+- **All code is merged into `main`.** No PRs are open.
+- The owner now **uses 1.4.0 for real dictation for a few days**: install it, fill Your words, then read two sets (raw
+  and Windows mode). What goes wrong decides phase 13; see **Next steps** at the end.
+
+**Read in this order:**
+1. This section and **Next steps** (the end of this file).
+2. `CLAUDE.md`: the working rules (authorship, no AI attribution, issue → branch → PR, the owner merges).
+3. `docs/accuracy.md`: the accuracy plan, the target pipeline, and all measured results.
+4. Only when needed:
+   - `docs/research/accuracy-report.md`: the full research, with sources
+   - `docs/research/notes/`: capture, noise and VAD, ASR models and hotwords, other dictation apps, correction and
+     evaluation
+
+**How the owner likes to work** (learned while working together):
+- Explain in plain words, big picture first, with a table of results. Say what the owner has to do next as numbered
+  steps.
+- **Measure first.** An accuracy change is kept only if `sst eval` shows it better on the held-out sets (C-E), with
+  the 95% range. Tune on sets A-B only.
+- Product and privacy defaults are the owner's decision (e.g. the warm microphone: 5 minutes). Ask with 2-4 clear
+  options and a recommendation.
+- The owner reviews and merges. When the owner explicitly says to merge or release ("you do", "yes release it"), do
+  it: merge stacked PRs in order, retargeting the next one to `main` first. Close issues by hand if a retargeted PR
+  didn't close them.
+- Long jobs (scoring, sweeps) run in the background; tell the owner what is running and why.
+
+**Not in git, on purpose** (it stays on the laptop that made it):
+- `models/`: run `scripts/download_model.py parakeet`. It also fetches `bpe.vocab`, which hotwords need.
+- **The owner's voice.** Reading tests are in `%LOCALAPPDATA%\sst\bench` (150 recordings, the baseline for every
+  measurement) and dictations in `%LOCALAPPDATA%\sst\recordings`. Settings, Your words, history and stats are in
+  `%APPDATA%\sst`. On 2026-10-01 they were packed into `OneDrive\Documents\Rflow-data-2026-10-01.zip` (17 MB, synced by the
+  owner's OneDrive) on the first laptop, for the owner to carry over (OneDrive or USB, **never GitHub**). Unzip `bench\` into `%LOCALAPPDATA%\sst\bench\` and
+  `settings\` into `%APPDATA%\sst\`. Without them, `sst eval` has nothing to score until the owner reads new sets.
+  `asr_cache.json` in each test is only a cache; the key in `gateway.json` (none was set) wouldn't decrypt on another
+  laptop anyway (DPAPI).
+- The installed app: `Rflow-Setup.exe` from the latest release.
+
+**Gotchas on the Windows dev laptop:**
+- **Git Bash heredocs broke** on long Python snippets with quotes and backslashes: edits failed half-way, and once
+  wrote backspace characters into a regex. Write the script to a file, or use the editor, instead.
+- **The console is cp1252.** `sst eval` now prints `?` for characters it can't show, rather than failing.
+- **The first HTTPS connection sometimes stalls** (GitHub, Hugging Face). Use retries: curl `--retry`, or the
+  scripts' own retries.
+- **Only one Rflow can dictate.** The developer copy (`uv run sst app`) and the installed `Rflow.exe` share the same
+  mutex and data folders. Quit Wispr Flow too: it also listens to Ctrl+Win.
+- **The developer copy's "Update now" only opens the release page** (by design: it's updated with `git pull`). That
+  confused the owner; see Next steps.
 
 ## Status
 
@@ -39,12 +94,14 @@ git config user.name "Karthi27"
 git config user.email "karthi.ai.engineer@gmail.com"
 gh auth login                                     # as karthi-ai-engineer
 uv sync
-uv run python scripts/download_model.py parakeet  # ~630 MB, not in git
-uv run pytest
-uv run sst app                                     # the tray app
+uv run python scripts/download_model.py parakeet  # ~630 MB + bpe.vocab (10 KB), not in git
+uv run pytest                                      # 243 tests
+uv run sst app                                     # the developer copy (quit the installed Rflow first)
+uv run sst eval --no-cleanup                       # score the reading tests (needs the owner's recordings, above)
 ```
 
-Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
+Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below. Ollama is installed on the first
+laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the new one.
 
 ## Decisions so far
 
@@ -515,6 +572,53 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - `sst eval --words "A,B"` tries other words, and `--no-words` uses none.
 - Tests: 243.
 
+## Phase 13 groundwork (experiments on 2026-10-01, nothing merged)
+
+These were scratch scripts, not in git. The findings:
+
+- **Word confidence exists.** With beam search, `stream.result` has `tokens`, `timestamps` and `ys_log_probs` (one per
+  word piece; a piece starting with a space starts a word). A word's confidence = the lowest probability of its
+  pieces. On the owner's 150 sentences (with 31 names as hotwords, 1912 words heard, 6.1% wrong):
+
+  | Confidence | Words | Wrong |
+  |---|---|---|
+  | 0.97 or more | 1113 (58%) | 1.8% |
+  | 0.90-0.97 | 210 | 9.5% |
+  | 0.70-0.90 | 259 | 10.0% |
+  | 0.50-0.70 | 202 | 12.9% |
+  | 0.30-0.50 | 105 | 21.0% |
+  | below 0.30 | 23 | 8.7% (hotword-boosted pieces can have a low model probability and still be right) |
+
+  - Good for skipping correction when every word is at least 0.97.
+  - Weak as a detector of wrong words: flagging below 0.7 catches 43% of the errors, and 85% of the flagged words are
+    right.
+- **Errors left after hotwords** (135):
+  - 70 ordinary substitutions: the/a, test/tests, note/notes, and some reading variations
+  - 27 names: Ollama → olama ×2, onnx → onix ×2, Parakeet → parkit / parkeet / parketh / rakit, Qwen → quinn /
+    quin / coin, Groq → grog / grok / how, Vercel → versal, PowerToys → powertise, Haiku → high
+  - 19 dropped words and 19 extra words
+- **Sound-alike fixer prototype:**
+  - Spans of 1-3 low-confidence words, compared with Your words by letter edit distance, halved when a rough sound
+    key matches.
+  - Results:
+    - similarity 0.8, confidence below 0.9: 7.1% → 7.0%, names 24.5% → **14.7%**, names put in wrongly 2 → 7
+    - similarity 0.9: 6.9%, names 19.6%, 3 put in wrongly
+    - 0.7 or looser: much worse ("in the" → "Inno", "a real" → "Rahul")
+  - Its fixes: Olama → Ollama, Parkit / Parkeet / Parketh → Parakeet, PowerTise → PowerToys, Sherpa Onix →
+    sherpa-onnx, Grok → Groq, "i installer" → PyInstaller.
+  - Its harm: "installer" → "PyInstaller" (×3), "open a" → "OpenAI", "the cloud version" → "Claude", "Anthropic key"
+    → "Anthropic".
+  - **To build it properly:**
+    - never change an ordinary English word; this needs a word list, e.g. SCOWL (permissive licence), or Windows'
+      spell-checker API
+    - never join a span that holds a word already in Your words
+    - never join function words (a, the, in, on...)
+    - tune on sets A-B, judge on C-E
+- **AI cleanup only when unsure** (not started): send a sentence to the LLM only when a word is below about 0.9. Mark
+  the uncertain words, and give only the words from Your words that sound like them. Reject answers that change too
+  much. Research: `docs/research/notes/post_asr_and_evaluation.md` (whole-transcript LLM correction doubled word
+  errors on Parakeet output in one study).
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -531,27 +635,35 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 ## Next steps
 
-1. The owner installs 1.4.0 through the in-app update (or the website) and dictates for a few days with Your words
-   filled in; what goes wrong in real dictation decides phase 13 (sound-alike fixer, AI cleanup only when unsure, or
-   a stronger model). The first try at a sound-alike fixer (2026-10-01, not merged) brought names from 24.5% to 15%,
-   but turned ordinary words into names ("installer" -> "PyInstaller", "open a" -> "OpenAI", "cloud" -> "Claude"): it
-   needs a list of ordinary English words it must never touch.
-2. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
+1. **The owner, on the new laptop:**
+   - Install Rflow 1.4.0 (`Rflow-Setup.exe` from the latest release; "More info → Run anyway" on the SmartScreen
+     warning).
+   - Copy the data zip (see **Start here**).
+   - Fill **Your words** with the names and terms they dictate: colleagues, company, clients, products, tools. Names
+     and terms only, no everyday words. Phase 12's gain depends on it.
+   - Dictate for a few days with Wispr Flow quit.
+2. **The owner reads two sets:** one as it is, and one with Settings → "Turn off Windows' voice effects" on. Then
+   `sst eval`: raw against Windows mode decides the default, and the lost first words should be gone in both. A set
+   with a Bluetooth headset *selected* in Settings is still missing.
+3. **Phase 13, chosen by what goes wrong in real dictation** (see **Phase 13 groundwork**):
+   - names still wrong → the sound-alike fixer with an ordinary-word guard
+   - small words wrong → AI cleanup only when unsure (Ollama locally, or the owner's provider)
+   - both mediocre → compare a stronger model (Qwen3-ASR or Canary via sherpa-onnx) on the same recordings
+   - later: learn from the owner's edits after pasting
+4. **A small fix:** in the developer copy, the update banner should say "you run Rflow from its source: update with
+   git pull; download the installer for the app", not offer "Update now" (`TrayApp.start_update`, `sst/app.py`).
+5. **Then the features paused for accuracy:**
+   - text without the AI endpoint: fillers, "new line", spacing and capitals from the text before the cursor,
+     snippets
+   - command mode ("make this formal" on selected text) and a style per app
+6. **Later:**
+   - code signing (removes the SmartScreen warning)
+   - a "paste last transcript" hotkey
+   - the bench: resampling whole sessions, and substitutions / deletions / insertions counted apart
+7. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
    against the local fakes).
-3. **The owner fills Your words** with the names and terms they dictate (Karthi, Rahul, Claude, Groq, Qwen, CodeQL,
-   company and product names...): phase 12's gain depends on it.
-4. **The owner reads again with phase 11:** a few sets with "Turn off Windows' voice effects" on, and a few with it
-   off (both with the warm microphone), then `sst eval`. Raw against Windows mode decides the default; the lost first
-   words should be gone in both. A set with a Bluetooth headset selected in Settings is still missing.
-5. Roadmap (details in `docs/accuracy.md`):
-   - **Phase 13, correction:** word confidence, sound-alike matching against Your words, and an LLM called only when a
-     word is uncertain.
-   - **Then** the old phase 10 (text without the AI endpoint: fillers, "new line", spacing from the text before the
-     cursor, snippets) and phase 11 (command mode, per-app style).
-   - **Later:** code signing (removes the SmartScreen warning), and a "paste last transcript" hotkey.
-6. Waiting on the owner:
+8. Waiting on the owner:
    - Japanese/Tamil needed?
-   - the word list
    - the apps used most
    - code-signing budget
    - the git history question above
