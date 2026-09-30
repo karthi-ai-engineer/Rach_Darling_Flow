@@ -21,7 +21,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from sst.audio import Recorder, save_recording
+from sst.audio import Recorder, Take, save_recording
 from sst.hotkey import HotkeyListener, parse_hotkey
 from sst.paste import paste_text
 
@@ -57,7 +57,7 @@ class Dictation:
         self._holding = False  # the press that started this recording has not been released yet
         self._started = 0.0
         self._stopped_by_press = -1.0  # when a hotkey press last ended a recording
-        self._jobs: queue.Queue[tuple[np.ndarray, int]] = queue.Queue()
+        self._jobs: queue.Queue[Take] = queue.Queue()
         threading.Thread(target=self._work, name="transcriber", daemon=True).start()
 
     def handle(self, event: str, at: float) -> None:
@@ -88,10 +88,16 @@ class Dictation:
         if self.recording and now - self._started > MAX_SECONDS:
             self.on_state("warning", f"Reached {MAX_SECONDS // 60} minutes, stopping.")
             self._stop(keep=True)
+        tick = getattr(self.recorder, "tick", None)
+        if tick:
+            tick(now)  # close a warm microphone that has been idle long enough
 
     def close(self) -> None:
         if self.recording:
             self._stop(keep=False, quiet=True)
+        close = getattr(self.recorder, "close", None)
+        if close:
+            close()
 
     def wait(self) -> None:
         """Block until every recording so far is transcribed and typed."""
@@ -116,23 +122,26 @@ class Dictation:
         self.recording = False
         if self.listener:
             self.listener.recording = False  # give Esc back to the other apps
-        audio = self.recorder.stop()
+        # The take keeps recording a short tail after the key release; the worker waits for it, not this thread.
+        stop_later = getattr(self.recorder, "stop_later", None)
+        take = stop_later() if stop_later else Take.ready(self.recorder.stop(), self.recorder.rate)
         if quiet:
             self.on_state("idle", "")
         elif not keep:
             self._beep(330)
             self.on_state("cancelled", "Cancelled.")
-        elif len(audio) / self.recorder.rate < MIN_SECONDS:
+        elif take.seconds < MIN_SECONDS:
             self.on_state("ignored", "Too short, ignored.")
         else:
             self._beep(660)
-            self._jobs.put((audio, self.recorder.rate))
+            self._jobs.put(take)
             self.on_state("transcribing", "")
 
     def _work(self) -> None:
         while True:
-            audio, rate = self._jobs.get()
+            take = self._jobs.get()
             try:
+                audio, rate = take.audio(), take.rate
                 t0 = time.perf_counter()
                 text = self.engine.transcribe(audio, rate)
                 took = time.perf_counter() - t0
