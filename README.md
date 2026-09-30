@@ -23,15 +23,22 @@ Then click in any text box (Notepad, Chrome, Slack, VS Code...) and:
 
 | Keys | What happens |
 |---|---|
-| tap **Ctrl+Alt+D**, speak, tap again | hands-free: records until the second tap, then types the text |
-| hold **Ctrl+Alt+D** while speaking | push-to-talk: types the text when you let go |
+| hold **Ctrl+Win** while speaking | push-to-talk: types the text when you let go (the same keys as Wispr Flow) |
+| tap **Ctrl+Win**, speak, tap again | hands-free: records until the second tap, then types the text |
+| **Ctrl+Win+Space**, speak, Ctrl+Win | hands-free too, as in Wispr Flow |
 | **Esc** while recording | cancels; nothing is typed |
+
+Windows' own Ctrl+Win shortcuts still work: Ctrl+Win+D (new desktop), Ctrl+Win+←/→ and so on simply drop the recording.
+Releasing Win doesn't open the Start menu.
 
 A high beep means recording started, a lower beep means it stopped. A recording stops by itself after 3 minutes and is typed as usual.
 The text is pasted where your cursor is, and whatever you had copied is put back on the clipboard afterwards.
 Dictated text is kept out of Windows clipboard history (Win+V). Keep the black window open; you can minimise it.
 
-- Hotkey already taken by another app? Use `uv run sst dictate --hotkey ctrl+alt+x` (letters, digits, F1–F24, space...).
+- **Quit Wispr Flow first** (tray icon → Quit). It listens to Ctrl+Win too, and both would type. sst warns you if it's running.
+- Other keys: `--hotkey menu` uses the Menu key (≣, next to right Alt; its right-click menu is blocked), or a combination
+  like `--hotkey ctrl+alt+d` (letters, digits, F1–F24, space, `muhenkan`/`henkan`...).
+  If PowerToys remaps your Menu or Copilot key to Ctrl+Win (+Space), those keys work with the default as they are.
 - Nothing gets typed into one particular app? That app is probably running as administrator, and Windows does not let normal
   programs type into those. Start `dictate.cmd` as administrator too.
 - Add `--no-save` if you don't want the recordings kept in `recordings/`.
@@ -85,7 +92,7 @@ Work happens phase by phase: an issue, a branch and a pull request into `main`, 
 
 ```
 sst/
-├─ dictate.cmd                double-click: dictate into any app with Ctrl+Alt+D
+├─ dictate.cmd                double-click: dictate into any app with Ctrl+Win
 ├─ web.cmd                    double-click: web page
 ├─ start.cmd                  double-click: terminal version
 ├─ build_installer.cmd        double-click: build dist\SST-Dictation-Setup-<version>.exe
@@ -101,7 +108,7 @@ sst/
 └─ sst/
    ├─ cli.py                  the `sst` command
    ├─ dictate.py              hotkey -> record -> transcribe -> paste loop (Windows)
-   ├─ hotkey.py               global hotkeys (Windows RegisterHotKey)
+   ├─ hotkey.py               global hotkeys (low-level keyboard hook) and sending keys
    ├─ paste.py                paste text into the focused app, then restore the clipboard
    ├─ web.py                  local server for the web page (127.0.0.1 only)
    ├─ static/index.html       the Record / Stop page

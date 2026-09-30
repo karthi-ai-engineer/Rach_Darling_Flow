@@ -48,8 +48,8 @@ Source: "..\dist\sst\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 Source: "NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Press Ctrl+Alt+D in any app and speak"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Press Ctrl+Alt+D in any app and speak"; Tasks: desktopicon
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Hold Ctrl+Win in any app and speak"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Hold Ctrl+Win in any app and speak"; Tasks: desktopicon
 Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: startup; Flags: runminimized
 
 [Run]
