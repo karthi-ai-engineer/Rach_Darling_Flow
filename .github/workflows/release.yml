@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # build the installer from any branch as a downloadable artifact, without publishing
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: Build installer
+    runs-on: windows-latest
+    permissions:
+      contents: write  # publish the GitHub Release
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Check that the tag matches sst.__version__
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(uv run --locked python -c "import sst; print(sst.__version__)")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match sst.__version__ ($version). Update sst/__init__.py first."
+            exit 1
+          fi
+      - name: Cache the Parakeet model
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: model-${{ hashFiles('scripts/download_model.py') }}
+      - name: Download the model (skipped when cached)
+        run: uv run --locked python scripts/download_model.py parakeet
+      - name: Install Inno Setup
+        run: |
+          if ! ls "/c/Program Files (x86)"/Inno\ Setup*/ISCC.exe >/dev/null 2>&1; then
+            choco install innosetup --no-progress -y
+          fi
+      - name: Build the installer
+        run: uv run --locked --group build python scripts/build_installer.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SST-Dictation-Setup
+          path: dist/SST-Dictation-Setup-*.exe
+          compression-level: 0  # already compressed
+          retention-days: 14
+      - name: Publish the GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/SST-Dictation-Setup-*.exe \
+            --title "SST Dictation $GITHUB_REF_NAME" --generate-notes
