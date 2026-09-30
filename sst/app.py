@@ -40,6 +40,7 @@ from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
 UPDATE_DIR = Path(os.environ.get("TEMP", Path.home())) / "Rflow-update"  # downloaded installers
 # Opening Rflow while it runs asks the running copy, through this local pipe, to show its window.
 SERVER_NAME = f"Rflow-window-{os.environ.get('USERNAME', 'user')}"
+ASFW_ANY = -1  # AllowSetForegroundWindow: any process
 
 log = logging.getLogger("sst.app")
 
@@ -201,6 +202,9 @@ def show_running_window() -> bool:
     socket.connectToServer(SERVER_NAME)
     if not socket.waitForConnected(1500):
         return False
+    # Windows only lets the process the user just started take the foreground. Pass that on to the running copy,
+    # or its window would only flash in the taskbar.
+    ctypes.windll.user32.AllowSetForegroundWindow(ASFW_ANY)
     socket.write(b"show\n")
     socket.waitForBytesWritten(1500)
     socket.disconnectFromServer()
