@@ -15,6 +15,7 @@ from sst.bench import align, errors, words
     ("1,250 files", ["one", "two", "hundred", "fifty", "files"]),  # a comma splits the number, as a reader would say it
     ("OK, it's fine", ["okay", "its", "fine"]),
     ("um so uh the the plan", ["so", "the", "the", "plan"]),  # fillers aren't in the sentences: hearing one isn't wrong
+    ("Hold Ctrl and Win", ["hold", "control", "and", "win"]),  # Parakeet may write the key's name short
 ])
 def test_words_are_normalised_for_a_fair_comparison(text, expected):
     assert words(text) == expected
@@ -112,3 +113,12 @@ def test_sessions_leave_out_summaries_and_other_profiles(tmp_path):
 def test_suggestions_are_spelled_as_in_the_sentences_and_skip_common_words():
     misheard = {("tamil", "tamar"): 2, ("in", "on"): 3, ("codeql", "code"): 1}
     assert bench.suggest(misheard, ["Learn Tamil in CodeQL."]) == ["Tamil", "CodeQL"]
+
+
+def test_ordinary_words_are_not_suggested_even_when_misheard():
+    # From the owner's first test: "lunch -> once", "tray -> trap", "Vercel -> versal", "Control -> ..."
+    misheard = {("lunch", "once"): 1, ("tray", "trap"): 1, ("vercel", "versal"): 1, ("control", "cntrl"): 1,
+                ("worse", "was"): 1}
+    sentences = ["Review it before lunch.", "The tray app shows a pill.", "The website on Vercel is live.",
+                 "Hold Control and speak.", "It sounds worse."]
+    assert bench.suggest(misheard, sentences) == ["Vercel", "Control"]

@@ -199,6 +199,7 @@ _COMMON = set("""a an and are as at be but by can could did do does for from had
 its me my no not of on or our she so that the their them then there these they this to too was we were what when
 which while who will with would you your""".split())
 FILLERS = {"um", "umm", "uh", "uhm", "erm", "hmm", "mm"}
+SAME = {"ok": "okay", "ctrl": "control"}  # the same word written two ways ("Control" is often written "Ctrl")
 _ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen " \
         "eighteen nineteen".split()
 _TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
@@ -224,7 +225,7 @@ def words(text: str) -> list[str]:
         if token.isdigit() and int(token) < 1_000_000:
             out.extend(_number_words(int(token)).split())
         else:
-            out.append({"ok": "okay"}.get(token, token))
+            out.append(SAME.get(token, token))
     return [w for w in out if w not in FILLERS]  # the sentences have no fillers; hearing one isn't a mistake
 
 
@@ -341,14 +342,18 @@ def next_block(root: Path = BENCH_DIR) -> str:
 
 
 def suggest(misheard: dict[tuple[str, str], int], sentences: list[str]) -> list[str]:
-    """Words the user said that were misheard, as written in the sentences (e.g. "Tamil", "CodeQL"), most frequent
-    first; common words are left out, since adding them to the vocabulary wouldn't help."""
-    spelled = {}
+    """Names and terms the user said that were misheard, as written in the sentences (e.g. "Tamil", "CodeQL"), most
+    frequent first. Only TERMS and words written with a capital inside a sentence count: an ordinary word such as
+    "lunch" in Your words would make the recogniser hear it where it wasn't said."""
+    spelled, names = {}, term_words()
     for sentence in sentences:
-        for token in re.findall(r"[A-Za-z][A-Za-z']*(?:-[A-Za-z]+)*", sentence):
-            spelled.setdefault(token.lower().replace("'", "").replace("-", ""), token)
+        for k, token in enumerate(re.findall(r"[A-Za-z][A-Za-z']*(?:-[A-Za-z]+)*", sentence)):
+            key = token.lower().replace("'", "").replace("-", "")
+            spelled.setdefault(key, token)
+            if k > 0 and token[0].isupper() and token != "I":
+                names.add(key)
     counts: dict[str, int] = {}
     for (said, _heard), times in misheard.items():
-        if said and said not in _COMMON and len(said) > 2:
+        if said in names and said not in _COMMON and len(said) > 2:
             counts[said] = counts.get(said, 0) + times
     return [spelled.get(word, word) for word, _ in sorted(counts.items(), key=lambda item: -item[1])[:20]]
