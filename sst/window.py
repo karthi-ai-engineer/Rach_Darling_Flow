@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -45,9 +47,16 @@ from PySide6.QtWidgets import (
 
 from sst import RECORDINGS_DIR, __version__, bench
 from sst.audio import LevelMeter, save_wav
-from sst.gateway import GatewayConfig, Polisher
+from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
-from sst.settings import Settings, Stats, can_start_with_windows, set_start_with_windows, starts_with_windows
+from sst.settings import (
+    Profiles,
+    Settings,
+    Stats,
+    can_start_with_windows,
+    set_start_with_windows,
+    starts_with_windows,
+)
 
 APP_NAME = "Rflow"
 ICON_FILE = Path(__file__).parent / "static" / "sst.ico"
@@ -63,7 +72,8 @@ log = logging.getLogger("sst.window")
 ICON_FONTS = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
 GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanup": "\ue99a", "settings": "\ue713",
           "copy": "\ue8c8", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
-          "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895"}
+          "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
+          "profile": "\ue77b"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
@@ -99,6 +109,13 @@ def stylesheet(theme: str) -> str:
                        background: transparent; }}
     QPushButton#nav:hover {{ background: {t['hover']}; color: {t['text']}; }}
     QPushButton#nav:checked {{ background: {t['selected']}; color: {t['text']}; font-weight: 600; }}
+    QPushButton#profile {{ text-align: left; padding: 8px 12px; border: 1px solid {t['line']}; border-radius: 8px;
+                           background: {t['surface']}; color: {t['text']}; }}
+    QPushButton#profile:hover {{ border-color: {t['accent']}; }}
+    QMenu {{ background: {t['surface']}; color: {t['text']}; border: 1px solid {t['line']}; padding: 4px; }}
+    QMenu::item {{ padding: 6px 24px 6px 12px; border-radius: 6px; }}
+    QMenu::item:selected {{ background: {t['selected']}; }}
+    QMenu::separator {{ height: 1px; background: {t['line']}; margin: 4px 8px; }}
     QFrame#card {{ background: {t['surface']}; border: 1px solid {t['line']}; border-radius: 12px; }}
     QFrame#hero {{ border-radius: 14px; border: none;
                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {t['accent']}, stop:1 {t['accent2']}); }}
@@ -398,7 +415,8 @@ class HomePage(Page):
         today = now.date()
         stats: Stats = self.app.stats
         label = self.app.hotkey_label()
-        self.greeting.setText(_greeting(now.hour))
+        name = self.app.profiles.current.name.split()
+        self.greeting.setText(_greeting(now.hour) + (f", {name[0]}" if name else ""))
         self.hero_title.setText(f"Hold {label} in any app and speak")
         self.hero_text.setText(how_to_dictate(label))
         wpm = stats.words_per_minute
@@ -729,9 +747,10 @@ class ReadingTestPage(Page):
             if self.test is not None:
                 self.test.stop()
                 self.test.deleteLater()
-            microphone = self.app.settings.microphone
+            microphone, root = self.app.settings.microphone, self.app.bench_dir()  # each profile has its own tests
+            folder = None if new else folder or bench.unfinished(root)
             self.test = ReadingTest(self.app.new_recorder(), self.app.score_reading, self.app.add_words,
-                                    microphone or "Windows default", folder=None if new else folder or bench.unfinished())
+                                    microphone or "Windows default", folder=folder or root / time.strftime("%Y-%m-%d_%H%M%S"))
             self.test.restart.connect(lambda: self.ensure_test(new=True))
             self.holder.addWidget(self.test)
         return self.test
@@ -762,44 +781,90 @@ def _model_box(current: str, hint: str) -> QComboBox:
 class CleanupPage(Page):
     def __init__(self, app):
         super().__init__("AI cleanup", "An AI model adds punctuation, removes filler words and spells your words right. "
-                                       "Your voice stays on this laptop; only the finished text goes to the endpoint.")
+                                       "Your voice stays on this computer; only the finished text goes to the provider.")
         self.app = app
         settings, gateway = app.settings, app.gateway
+        # Each provider's (address, key, model, backup model) while the page is open, so switching back loses nothing.
+        self._memory = {key: (url, secret, "", "") for key, (url, secret) in gateway.others.items()}
+        # Nothing chosen yet: start with the first provider in the list rather than an empty custom server.
+        self._provider = gateway.service.key if gateway.provider or gateway.base_url else next(iter(PROVIDERS))
         frame, layout = card(12)
         self.cleanup_on = QCheckBox("Clean up the text before typing it")
         self.cleanup_on.setChecked(settings.cleanup)
-        self.cleanup_on.setToolTip("Works with any OpenAI-compatible endpoint. If the model fails, the backup model is "
-                                   "used; if the endpoint can't help in time, the text is typed as heard.")
+        self.cleanup_on.setToolTip("If the model fails, the backup model is used; if the provider can't help in time, "
+                                   "the text is typed as heard.")
         layout.addWidget(self.cleanup_on)
-        form = QFormLayout()
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(10)
+        self.form = QFormLayout()
+        self.form.setHorizontalSpacing(14)
+        self.form.setVerticalSpacing(10)
+        self.provider = QComboBox()
+        for provider in PROVIDERS.values():
+            self.provider.addItem(provider.name, provider.key)
+        self.provider.setCurrentIndex(self.provider.findData(self._provider))
+        self.form.addRow("Provider", self.provider)
         self.gateway_url = QLineEdit(gateway.base_url)
-        self.gateway_url.setPlaceholderText("e.g. https://api.openai.com/v1  ·  http://localhost:11434/v1 (Ollama)")
-        form.addRow("Endpoint", self.gateway_url)
+        self.form.addRow("Address", self.gateway_url)
         self.api_key = QLineEdit(gateway.api_key)
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key.setPlaceholderText("Encrypted on this laptop (optional for local)")
         self.load_button = button("Load models", self._load_models)
-        form.addRow("API key", row(self.api_key, self.load_button))
-        self.model = _model_box(settings.cleanup_model, "choose after Load models, or type a model name")
+        self.form.addRow("API key", row(self.api_key, self.load_button))
+        self.key_link = button("Get a key", self._open_key_page, link=True)
+        self.key_note = text("", muted=True)
+        self.key_row = row(self.key_link, self.key_note, stretch_at=2)
+        self.form.addRow("", self.key_row)
+        self.model = _model_box(settings.cleanup_model, "")
         self.test_button = button("Test", self._test)
         model_row = row(self.model, self.test_button)
         model_row.setStretch(0, 1)
-        form.addRow("Model", model_row)
+        self.form.addRow("Model", model_row)
         self.fallback = _model_box(settings.cleanup_fallback, "optional: used if the model fails")
-        form.addRow("Backup model", self.fallback)
-        layout.addLayout(form)
+        self.form.addRow("Backup model", self.fallback)
+        layout.addLayout(self.form)
         self.test_result = text("", muted=True)
         layout.addWidget(self.test_result)
         self.add(frame)
         self.saved = text("", muted=True)
         self.add(row(button("Save", self._save, primary=True), self.saved, stretch_at=2))
         self.body.addStretch()
+        self.provider.currentIndexChanged.connect(self._provider_changed)
+        self._show_provider()
+
+    def _show_provider(self) -> None:
+        """What the chosen provider needs: a key (cloud), an address (own server), or both."""
+        p = PROVIDERS[self._provider]
+        self.form.setRowVisible(self.gateway_url, p.own_server)
+        self.gateway_url.setPlaceholderText(p.url or "e.g. http://localhost:8000/v1, or your company's AI gateway")
+        self.api_key.setPlaceholderText("Encrypted on this computer" if p.needs_key
+                                        else "Only if your server needs one (encrypted on this computer)")
+        self.form.setRowVisible(self.key_row, bool(p.key_page))
+        self.key_link.setVisible(bool(p.key_page))
+        self.key_note.setText(f"from {p.name}" if p.key_page else "")
+        self.model.lineEdit().setPlaceholderText(p.hint or "choose after Load models, or type a model name")
+
+    def _provider_changed(self) -> None:
+        new = self.provider.currentData()
+        self._memory[self._provider] = (self.gateway_url.text().strip(), self.api_key.text().strip(),
+                                        self.model.currentText().strip(), self.fallback.currentText().strip())
+        p = PROVIDERS[new]
+        url, key, model, fallback = self._memory.get(new, (p.url if p.own_server else "", "", "", ""))
+        self._provider = new
+        self.gateway_url.setText(url)
+        self.api_key.setText(key)
+        for box, value in ((self.model, model), (self.fallback, fallback)):
+            box.clear()
+            box.setCurrentText(value)
+        self.test_result.setText("")
+        self._show_provider()
+
+    def _open_key_page(self) -> None:
+        QDesktopServices.openUrl(QUrl(PROVIDERS[self._provider].key_page))
 
     def result(self) -> tuple[bool, str, str, GatewayConfig]:
-        return (self.cleanup_on.isChecked(), self.model.currentText().strip(), self.fallback.currentText().strip(),
-                GatewayConfig(base_url=self.gateway_url.text().strip(), api_key=self.api_key.text().strip()))
+        p = PROVIDERS[self._provider]
+        others = {key: (url, secret) for key, (url, secret, _, _) in self._memory.items() if key != p.key and (url or secret)}
+        gateway = GatewayConfig(self.gateway_url.text().strip() if p.own_server else "", self.api_key.text().strip(),
+                                p.key, others)
+        return self.cleanup_on.isChecked(), self.model.currentText().strip(), self.fallback.currentText().strip(), gateway
 
     def _save(self) -> None:
         on, model, fallback, gateway = self.result()
@@ -814,6 +879,9 @@ class CleanupPage(Page):
 
     def _load_models(self) -> None:
         gateway = self.result()[3]
+        if not gateway.address:
+            self.test_result.setText("Enter your server's address first.")
+            return
         self._busy(True, "Loading models...")
 
         def done(models, error) -> None:
@@ -828,8 +896,8 @@ class CleanupPage(Page):
                     box.addItem("")  # no backup model
                 box.addItems(models)
                 box.setCurrentText(current)
-            self.test_result.setText(f"Loaded {len(models)} models." if models
-                                     else "The endpoint lists no models; type a model name.")
+            self.test_result.setText(f"Loaded {len(models)} models: choose one, then Test." if models
+                                     else "The provider lists no models; type a model name.")
         run_in_background(self, lambda: Polisher(gateway, "").models(), done)
 
     def _test(self) -> None:
@@ -923,19 +991,26 @@ class SettingsPage(Page):
 
 class WelcomePage(Page):
     def __init__(self, app, go_to):
-        super().__init__("Welcome to Rflow", "Speak anywhere, Rflow types it. Your voice is recognised on this laptop "
-                                             "and never uploaded. Three quick steps:")
+        super().__init__("Welcome to Rflow", "Speak anywhere, Rflow types it. Your voice is recognised on this computer "
+                                             "and never uploaded. A few quick steps:")
         self.app = app
         self.go_to = go_to
+        step0, layout = card()
+        layout.addWidget(text("1   Your name", "h2"))
+        self.name = QLineEdit(app.profiles.current.name)
+        self.name.setPlaceholderText("What should Rflow call you? (optional)")
+        layout.addWidget(self.name)
+        self.add(step0)
+
         step1, layout = card()
-        layout.addWidget(text("1   Choose your microphone", "h2"))
+        layout.addWidget(text("2   Choose your microphone", "h2"))
         self.microphone = MicrophoneBox(app.settings.microphone, app.microphones())
         self.microphone.changed.connect(self._microphone_chosen)
         layout.addWidget(self.microphone)
         self.add(step1)
 
         step2, layout = card()
-        layout.addWidget(text("2   Try it", "h2"))
+        layout.addWidget(text("3   Try it", "h2"))
         self.try_text = text("", muted=True)
         layout.addWidget(self.try_text)
         self.try_box = QPlainTextEdit()
@@ -947,7 +1022,7 @@ class WelcomePage(Page):
         self.add(step2)
 
         step3, layout = card()
-        layout.addWidget(text("3   Optional: AI cleanup", "h2"))
+        layout.addWidget(text("4   Optional: AI cleanup", "h2"))
         layout.addWidget(text("Connect an AI model to add punctuation, remove filler words and spell your names "
                               "right. You can do this later too.", muted=True))
         layout.addLayout(row(button("Set up AI cleanup", self._to_cleanup), stretch_at=1))
@@ -969,14 +1044,73 @@ class WelcomePage(Page):
         self.go_to("cleanup")
 
     def finish(self) -> None:
-        self.app.finish_welcome()
+        self.app.finish_welcome(self.name.text())
         self.go_to("home")
+
+
+# ---------------------------------------------------------------- profiles
+
+class ProfilesPage(Page):
+    """People sharing this computer: each profile has its own setup."""
+
+    def __init__(self, app):
+        super().__init__("Profiles", "Each profile has its own dictation key and microphone, words, AI provider and "
+                                     "keys, dictations, stats and reading tests. Useful when several people share "
+                                     "this computer, or to keep a work and a private setup apart. Click a name to "
+                                     "change it.")
+        self.app = app
+        self.list = QVBoxLayout()
+        self.list.setSpacing(10)
+        self.add(self.list)
+        new, layout = card()
+        layout.addWidget(text("New profile", "h2"))
+        self.new_name = QLineEdit()
+        self.new_name.setPlaceholderText("Name, e.g. Rahul")
+        self.new_name.returnPressed.connect(self._create)
+        layout.addLayout(row(self.new_name, button("Create and switch to it", self._create, primary=True)))
+        layout.addWidget(text("A new profile starts with the welcome: microphone, a first dictation, AI cleanup.",
+                              muted=True))
+        self.add(new)
+        self.body.addStretch()
+
+    def refresh(self) -> None:
+        clear(self.list)
+        current = self.app.profiles.current
+        for profile in self.app.profiles.items:
+            frame, layout = card(6)
+            name = QLineEdit(profile.name)
+            name.setPlaceholderText(profile.label)
+            name.setToolTip("Type to rename, then press Enter")
+            name.editingFinished.connect(lambda p=profile, box=name: self.app.rename_profile(p.id, box.text()))
+            buttons = []
+            if profile.id == current.id:
+                buttons.append(text("In use", muted=True, wrap=False))
+            else:
+                buttons.append(button("Switch to this profile", lambda _=False, p=profile: self.app.switch_profile(p.id)))
+                if profile.id != "default":  # the first profile's files are the settings folder itself
+                    buttons.append(button("Delete", lambda _=False, p=profile: self._delete(p)))
+            layout.addLayout(row(name, *buttons))
+            self.list.addWidget(frame)
+
+    def _create(self) -> None:
+        name = self.new_name.text().strip()
+        if name:
+            self.new_name.clear()
+            self.app.create_profile(name)
+
+    def _delete(self, profile) -> None:
+        if self.confirm(f"Delete the profile {profile.label}, with its words, keys, dictations, stats and reading tests?"):
+            self.app.delete_profile(profile.id)
+            self.refresh()
+
+    def confirm(self, question: str) -> bool:
+        return QMessageBox.question(self, APP_NAME, question) == QMessageBox.StandardButton.Yes
 
 
 # ---------------------------------------------------------------- the window
 
 NAV = [("home", "Home"), ("dictionary", "Dictionary"), ("reading", "Reading test"), ("cleanup", "AI cleanup"),
-       ("settings", "Settings")]
+       ("settings", "Settings"), ("profiles", "Profiles")]
 
 
 class MainWindow(QWidget):
@@ -1000,8 +1134,15 @@ class MainWindow(QWidget):
         logo = QLabel()
         logo.setPixmap(QIcon(str(ICON_FILE)).pixmap(28, 28))
         brand = row(logo, text(APP_NAME, "brand", wrap=False), stretch_at=2)
-        brand.setContentsMargins(6, 0, 0, 14)
+        brand.setContentsMargins(6, 0, 0, 12)
         side.addLayout(brand)
+        self.profile_button = QPushButton()  # whose setup this is; a click switches to another profile
+        self.profile_button.setObjectName("profile")
+        self.profile_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.profile_button.setToolTip("Switch profile")
+        self.profile_button.clicked.connect(self._profile_menu)
+        side.addWidget(self.profile_button)
+        side.addSpacing(10)
         self.nav: dict[str, QPushButton] = {}
         for key, label in NAV:
             b = QPushButton(f"{GLYPHS[key]}    {label}")
@@ -1034,7 +1175,7 @@ class MainWindow(QWidget):
 
         self.pages = {"home": HomePage(app), "dictionary": DictionaryPage(app, self.show_page),
                       "reading": ReadingTestPage(app), "cleanup": CleanupPage(app), "settings": SettingsPage(app),
-                      "welcome": WelcomePage(app, self.show_page)}
+                      "profiles": ProfilesPage(app), "welcome": WelcomePage(app, self.show_page)}
         self.stack = QStackedWidget()
         for page in self.pages.values():
             self.stack.addWidget(page)
@@ -1062,7 +1203,7 @@ class MainWindow(QWidget):
         font = QFont()
         font.setFamilies(["Segoe UI", *ICON_FONTS])
         font.setPointSize(10)
-        for b in (*self.nav.values(), self.update_link):
+        for b in (*self.nav.values(), self.update_link, self.profile_button):
             b.setFont(font)
 
     def apply_theme(self, *_) -> None:
@@ -1070,9 +1211,8 @@ class MainWindow(QWidget):
 
     def show_page(self, key: str) -> None:
         page = self.pages[key]
-        if key == "home":
-            page.refresh()
-        elif key == "dictionary":
+        self._show_profile()
+        if key in ("home", "dictionary", "profiles"):
             page.refresh()
         elif key == "welcome":
             page.refresh(self.ready)
@@ -1084,6 +1224,25 @@ class MainWindow(QWidget):
                 b.setAutoExclusive(False)
                 b.setChecked(False)
                 b.setAutoExclusive(True)
+
+    def _show_profile(self) -> None:
+        self.profile_button.setText(f"{GLYPHS['profile']}   {self.app.profiles.current.label}")
+
+    def _profile_menu(self) -> None:
+        menu = QMenu(self)
+        current = self.app.profiles.current
+        for profile in self.app.profiles.items:
+            action = menu.addAction(profile.label, lambda p=profile: self.app.switch_profile(p.id))
+            action.setCheckable(True)
+            action.setChecked(profile.id == current.id)
+        menu.addSeparator()
+        menu.addAction("New profile...", self._new_profile)
+        menu.addAction("Manage profiles", lambda: self.show_page("profiles"))
+        menu.exec(self.profile_button.mapToGlobal(self.profile_button.rect().bottomLeft()))
+
+    def _new_profile(self) -> None:
+        self.show_page("profiles")
+        self.pages["profiles"].new_name.setFocus()
 
     def current_page(self) -> str:
         return next(key for key, page in self.pages.items() if page is self.stack.currentWidget())
@@ -1099,9 +1258,10 @@ class MainWindow(QWidget):
         self.activateWindow()
 
     def refresh(self) -> None:
-        """New dictation, words or settings: update what is on screen."""
+        """New dictation, words, settings or profile name: update what is on screen."""
+        self._show_profile()
         current = self.current_page()
-        if current in ("home", "dictionary"):
+        if current in ("home", "dictionary", "profiles"):
             self.pages[current].refresh()
         elif current == "welcome":
             self.pages[current].refresh(self.ready)
@@ -1136,8 +1296,11 @@ class PreviewApp:
     """Stands in for the TrayApp: the self-test, the tests and the website's screenshots use it (no model, no hook)."""
 
     def __init__(self, settings: Settings | None = None, history: list[dict] | None = None, stats: Stats | None = None,
-                 microphones: list[str] | None = None, gateway: GatewayConfig | None = None):
+                 microphones: list[str] | None = None, gateway: GatewayConfig | None = None,
+                 profiles: Profiles | None = None, bench: Path | None = None):
         self.settings = settings or Settings(welcomed=True)
+        self.profiles = profiles or Profiles()
+        self._bench = bench or Path(os.environ.get("TEMP", ".")) / "rflow-preview-bench"
         self.gateway = gateway or GatewayConfig()
         self.history = history or []
         self.stats = stats or Stats()
@@ -1156,6 +1319,9 @@ class PreviewApp:
     def new_recorder(self):
         from sst.audio import Recorder
         return Recorder(self.settings.microphone or None)
+
+    def bench_dir(self) -> Path:
+        return self.profiles.current.folder(self._bench)
 
     def apply_settings(self, new: Settings) -> None:
         self.settings = new
@@ -1178,9 +1344,26 @@ class PreviewApp:
     def score_reading(self, folder, progress):
         raise RuntimeError("No speech model in the preview.")
 
-    def finish_welcome(self) -> None:
+    def finish_welcome(self, name: str = "") -> None:
+        if name.strip():
+            self.profiles.current.name = name.strip()
         self.settings.welcomed = True
-        self.calls.append(("finish_welcome",))
+        self.calls.append(("finish_welcome", name))
+
+    def switch_profile(self, profile_id: str) -> None:
+        self.profiles.active = profile_id
+        self.calls.append(("switch_profile", profile_id))
+
+    def create_profile(self, name: str) -> None:
+        self.switch_profile(self.profiles.add(name).id)
+
+    def rename_profile(self, profile_id: str, name: str) -> None:
+        if name.strip():
+            self.profiles.get(profile_id).name = name.strip()
+
+    def delete_profile(self, profile_id: str) -> None:
+        self.profiles.remove(profile_id)
+        self.calls.append(("delete_profile", profile_id))
 
     def window_closed(self) -> None:
         self.calls.append(("window_closed",))
