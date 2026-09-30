@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import subprocess
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,10 @@ CHECKSUM = INSTALLER + ".sha256"
 # Where GitHub serves release files from (downloads redirect from github.com to one of its file hosts).
 ALLOWED_HOSTS = {"api.github.com", "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"}
 CHECK_EVERY_HOURS = 6
+# On some laptops (security software, networks) a program's first connection stalls; the next attempt gets
+# through at once. So: a short limit per attempt, and a few attempts (each read of a download also gets this limit).
+ATTEMPTS = 3
+ATTEMPT_TIMEOUT = 8.0
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +57,7 @@ def check(current: str = __version__, url: str = LATEST_URL) -> Update | None:
     """The newest published release if it is newer than `current`, else None. Raises UpdateError when GitHub can't
     be asked (offline, rate limit...)."""
     try:
-        release = json.loads(_get(url, timeout=15))
+        release = json.loads(_get(url))
     except ValueError:
         raise UpdateError("GitHub sent an unreadable answer") from None
     if not isinstance(release, dict):
@@ -71,7 +76,7 @@ def check(current: str = __version__, url: str = LATEST_URL) -> Update | None:
 
 def download(update: Update, folder: Path, progress=lambda done, total: None) -> Path:
     """Download the installer into `folder` and check it against the published SHA-256. Returns its path."""
-    expected = _get(update.checksum_url, timeout=30).decode("ascii", "replace").split()
+    expected = _get(update.checksum_url).decode("ascii", "replace").split()
     if not expected or not re.fullmatch(r"[0-9a-fA-F]{64}", expected[0]):
         raise UpdateError("the release has no valid checksum")
     folder.mkdir(parents=True, exist_ok=True)
@@ -79,7 +84,7 @@ def download(update: Update, folder: Path, progress=lambda done, total: None) ->
     partial = target.with_suffix(".part")
     digest, done = hashlib.sha256(), 0
     try:
-        with _open(update.installer_url, timeout=60) as response, partial.open("wb") as out:
+        with _open(update.installer_url) as response, partial.open("wb") as out:
             total = int(response.headers.get("Content-Length") or update.size or 0)
             while chunk := response.read(1 << 20):
                 out.write(chunk)
@@ -101,13 +106,20 @@ def install(installer: Path) -> None:
                      creationflags=subprocess.DETACHED_PROCESS)
 
 
-def _open(url: str, timeout: float):
+def _open(url: str, timeout: float = ATTEMPT_TIMEOUT):
     request = urllib.request.Request(url, headers={"User-Agent": f"Rflow/{__version__}",
                                                    "Accept": "application/vnd.github+json, application/octet-stream"})
-    try:
-        response = urllib.request.urlopen(request, timeout=timeout)  # uses the Windows proxy settings, if any
-    except OSError as e:
-        raise UpdateError(f"could not reach GitHub: {getattr(e, 'reason', e)}") from None
+    error: OSError | None = None
+    for _ in range(ATTEMPTS):
+        try:
+            response = urllib.request.urlopen(request, timeout=timeout)  # uses the Windows proxy settings, if any
+            break
+        except urllib.error.HTTPError as e:  # GitHub answered (e.g. a rate limit): trying again won't help
+            raise UpdateError(f"GitHub answered {e.code} {e.reason}") from None
+        except OSError as e:  # no connection: on some networks the first attempt stalls and the next one works
+            error = e
+    else:
+        raise UpdateError(f"could not reach GitHub: {getattr(error, 'reason', error)}")
     host = urlsplit(response.geturl()).hostname or ""
     if host not in ALLOWED_HOSTS:  # after redirects: only GitHub's own servers
         response.close()
@@ -115,6 +127,6 @@ def _open(url: str, timeout: float):
     return response
 
 
-def _get(url: str, timeout: float) -> bytes:
-    with _open(url, timeout) as response:
+def _get(url: str) -> bytes:
+    with _open(url) as response:
         return response.read()
