@@ -34,7 +34,7 @@ from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_r
 from sst.engines import load_engine
 from sst.gateway import GatewayConfig, Polisher
 from sst.hotkey import HotkeyListener, parse_hotkey
-from sst.settings import Settings, Stats, add_to_history, read_history
+from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
 from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
 
 UPDATE_DIR = Path(os.environ.get("TEMP", Path.home())) / "Rflow-update"  # downloaded installers
@@ -229,9 +229,8 @@ class TrayApp:
     """Owns the settings and the dictation; the window (sst/window.py) shows them and asks this class for changes."""
 
     def __init__(self, quiet_start: bool = False):
-        self.settings = Settings.load()
-        self.gateway = GatewayConfig.load()
-        self.stats = Stats.load()
+        self.profiles = Profiles.load()
+        self._load_profile()
         self.recorder = Recorder(self.settings.microphone or None)
         self.dictation: Dictation | None = None
         self.listener: HotkeyListener | None = None
@@ -352,7 +351,7 @@ class TrayApp:
         s = self.settings
         model = s.cleanup_model if s.cleanup else ""
         polisher = None
-        if model and self.gateway.base_url:
+        if model and self.gateway.address:
             polisher = Polisher(self.gateway, model, s.vocabulary, fallback=s.cleanup_fallback or None)
             polisher.prepare()  # connect now, so the first dictation doesn't wait for it
         elif s.cleanup:
@@ -379,10 +378,10 @@ class TrayApp:
         self.dictation.tick(time.monotonic())
 
     def _on_result(self, heard: str, typed: str, seconds: float) -> None:
-        add_to_history(typed, heard)
+        add_to_history(typed, heard, path=self.profile.history_file)
         self.stats.add(typed, seconds, date.today())
         try:
-            self.stats.save()
+            self.stats.save(self.profile.stats_file)
         except OSError as e:
             log.warning("Could not save the stats: %s", e)
         if self.window.isVisible():
@@ -420,7 +419,7 @@ class TrayApp:
             return parse_hotkey(DEFAULT_HOTKEY).label
 
     def history_entries(self) -> list[dict]:
-        return read_history()
+        return read_history(self.profile.history_file)
 
     def microphones(self) -> list[str]:
         return input_device_names()
@@ -431,7 +430,7 @@ class TrayApp:
     def apply_settings(self, new: Settings) -> None:
         """Save the settings and use them at once (the Settings page and the welcome change them one by one)."""
         old, self.settings = self.settings, new
-        new.save()
+        new.save(self.profile.settings_file)
         self.recorder.device = new.microphone or None
         if self.dictation:
             self.dictation.sounds, self.dictation.save = new.sounds, new.save_recordings
@@ -445,7 +444,7 @@ class TrayApp:
 
     def save_cleanup(self, on: bool, model: str, fallback: str, gateway: GatewayConfig) -> None:
         if gateway != self.gateway:
-            gateway.save()
+            gateway.save(self.profile.gateway_file)
             self.gateway = gateway
         self.apply_settings(dataclasses.replace(self.settings, cleanup=on, cleanup_model=model, cleanup_fallback=fallback))
         if self.dictation:
@@ -467,11 +466,13 @@ class TrayApp:
         if not self.dictation:
             raise RuntimeError("The speech model is still loading; try again in a moment.")
         s = self.settings
-        models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.base_url else []
+        models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.address else []
         polishers = {f"Parakeet + {m.rsplit('/', 1)[-1]}": Polisher(self.gateway, m, s.vocabulary) for m in models}
         return bench.score(folder, self.dictation.engine, polishers, progress)
 
-    def finish_welcome(self) -> None:
+    def finish_welcome(self, name: str = "") -> None:
+        if name.strip():
+            self.rename_profile(self.profile.id, name)
         self.apply_settings(dataclasses.replace(self.settings, welcomed=True))
 
     def window_closed(self) -> None:
@@ -479,6 +480,72 @@ class TrayApp:
             self._notify(f"{APP_NAME} is still running", f"Dictate with {self.hotkey_label()} as usual. Click the tray "
                          f"icon to open {APP_NAME}; right-click it to quit.")
             self.apply_settings(dataclasses.replace(self.settings, told_about_tray=True))
+
+    # -- profiles: each person's own settings, words, AI provider and keys, history, stats and reading tests
+
+    def _load_profile(self) -> None:
+        self.profile = self.profiles.current
+        self.settings = Settings.load(self.profile.settings_file)
+        self.gateway = GatewayConfig.load(self.profile.gateway_file)
+        self.stats = Stats.load(self.profile.stats_file, history=self.profile.history_file)
+
+    def bench_dir(self) -> Path:
+        return self.profile.folder(bench.BENCH_DIR)
+
+    def switch_profile(self, profile_id: str) -> None:
+        if profile_id == self.profile.id or not self.profiles.get(profile_id):
+            return
+        self.profiles.active = profile_id
+        self.profiles.save()
+        self._activate_profile()
+
+    def create_profile(self, name: str) -> None:
+        profile = self.profiles.add(name)
+        self.profiles.save()
+        self.switch_profile(profile.id)  # a new profile starts with the welcome
+
+    def rename_profile(self, profile_id: str, name: str) -> None:
+        profile = self.profiles.get(profile_id)
+        if profile and name.strip() and name.strip() != profile.name:
+            profile.name = name.strip()
+            self.profiles.save()
+            self.window.refresh()
+
+    def delete_profile(self, profile_id: str) -> None:
+        """Delete another profile and its files (settings, keys, history, stats, reading tests)."""
+        profile = self.profiles.get(profile_id)
+        if not profile or profile.id == self.profile.id:
+            return  # the one in use can't go; switch first (and the first profile can't go at all)
+        self.profiles.remove(profile_id)
+        self.profiles.save()
+        shutil.rmtree(profile.folder(), ignore_errors=True)
+        shutil.rmtree(profile.folder(bench.BENCH_DIR), ignore_errors=True)
+        self.window.refresh()
+        log.info("Deleted profile %s", profile.id)
+
+    def _activate_profile(self) -> None:
+        if self.dictation and self.dictation.recording:
+            self.dictation.close()  # a recording started for the other profile is dropped
+        old_hotkey = self.settings.hotkey
+        self._load_profile()
+        self.recorder.device = self.settings.microphone or None
+        if self.dictation:
+            self.dictation.sounds, self.dictation.save = self.settings.sounds, self.settings.save_recordings
+            self._apply_cleanup()
+            if self.settings.hotkey != old_hotkey:
+                self._start_listener()
+        # Every page shows the profile's own data: build the window again rather than update each field.
+        old, self.window = self.window, MainWindow(self)
+        self.window.set_status(*self._status)
+        if self.update:
+            self.window.show_update(f"Rflow {self.update.version} is available (you have {__version__}).",
+                                    version=self.update.version)
+        if old.isVisible():
+            self.window.setGeometry(old.geometry())
+            self.window.open()
+        old.hide()
+        old.deleteLater()
+        log.info("Profile: %s (%s)", self.profile.label, self.profile.id)
 
     # -- updates
 
@@ -577,6 +644,7 @@ class TrayApp:
         QApplication.quit()
 
     def _set_status(self, message: str, ready: bool = False) -> None:
+        self._status = (message, ready)  # a window built later (another profile) shows it too
         self.status_action.setText(message)
         self.tray.setToolTip(f"{APP_NAME}: {message}")
         self.window.set_status(message, ready)

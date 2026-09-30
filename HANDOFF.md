@@ -19,7 +19,8 @@ _Last updated: 2026-09-30_
 | 6 | **Rflow 1.0**: product name, generic endpoint / key / model, in-app updates, download website | done, on `main` (PR #14), released **v1.0.0** |
 | fix | Update checks retry when the first connection stalls | done, on `main` (PR #16), released **v1.0.1** |
 | 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words | done, on `main` (PR #18), released **v1.1.0** |
-| 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer; 1.2.0 | PR #20, waiting for the owner's test + merge |
+| 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer | done, on `main` (PR #20) |
+| 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | done, on `main` (PR #22); the owner installed 1.3.0 and confirmed it works; not released yet |
 
 Released: v1.0.0, v1.0.1 and v1.1.0 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -347,6 +348,52 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   caught history cards drawn over the page (removed widgets are only deleted later, so `clear()` hides them first),
   checkboxes without a box, and native-looking dropdown arrows.
 
+## AI providers and profiles (phase 9)
+
+- The owner's request: people use different AI services (OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM...), so the AI
+  cleanup offers them by name. Also profiles (e.g. Karthi, Rahul), each person with their own setup.
+- **Providers** (`sst/gateway.py`, `PROVIDERS`): OpenAI, Anthropic, Google Gemini, Groq, Ollama (on this computer), and
+  vLLM or another OpenAI-compatible server. Each entry says its usual address, which API it speaks, whether it needs a
+  key, whether it's the user's own server (then the address can be edited), where to get a key, and a model hint. Each
+  provider gets the request it understands (`Polisher._body`):
+  - **Anthropic:** `/messages` with `x-api-key` and `anthropic-version`, the system prompt as `system`, and the answer
+    from the `content` blocks. Its model list is `/models?limit=1000`.
+  - **OpenAI:** `max_completion_tokens`, since its newest models refuse `max_tokens`. Reasoning models (o-series,
+    gpt-5) get no temperature and room to think; they are usually too slow for dictation anyway. No
+    `chat_template_kwargs`: OpenAI refuses fields it doesn't know.
+  - **Gemini** (its OpenAI-compatible endpoint): no token limit, because its "thinking" counts against it and would
+    cut the answer short. Its model ids lose their `models/` prefix.
+  - **Groq:** the plain OpenAI format.
+  - **Ollama and vLLM:** also `chat_template_kwargs: {enable_thinking: false}` (Qwen3 on the company gateway).
+  - Error messages are read from `error.message` for every provider.
+  - "Load models" leaves out models that don't write text (whisper, tts, embeddings, images, moderation...).
+- **GatewayConfig** has `provider` and `others` (the other providers' address and key, encrypted too), so switching
+  back and forth loses nothing. An old file with only an address gets its provider from the address
+  (`provider_for`): the owner's company gateway becomes "vLLM or another OpenAI-compatible server", with the same
+  address, key and model. That was checked against the real files, and a real request through the new code worked
+  (Qwen3.8-27B, 2.3 s).
+- The **AI cleanup page** has a provider dropdown. The address row appears only for Ollama and vLLM, and "Get a key"
+  only for the cloud providers. A new user starts with OpenAI selected.
+- **Profiles** (`sst/settings.py`, `Profiles` in `%APPDATA%\sst\profiles.json`): each profile has its own
+  `settings.json` (key, microphone, words, cleanup model, welcome...), `gateway.json` (provider and keys),
+  `history.jsonl`, `stats.json` and reading tests. The first profile (`default`) keeps the files where they were
+  before profiles: nothing moves, and an older Rflow still reads them. The others live in
+  `%APPDATA%\sst\profiles\<id>` and `%LOCALAPPDATA%\sst\bench\profiles\<id>`. `bench.unfinished()` only counts
+  date-named test folders, so the `profiles` folder doesn't confuse it.
+- **In the window:** a profile button under the logo (a menu to switch, "New profile...", "Manage profiles") and a
+  *Profiles* page (rename in place, switch, delete with a question, create). The Home greeting uses the name, and the
+  welcome asks for it. Switching (`TrayApp._activate_profile`) loads the other files, applies the key, microphone
+  and cleanup at once, and builds the window again, since every page shows the profile's own data. The profile in
+  use and the first profile can't be deleted.
+- `sst bench` uses the profile in use.
+- Tests: 191. Every provider's request format against the local fake, Anthropic's errors and models, the model filter,
+  `provider_for`, the encrypted `others`. Profiles: files, ids, round trip, removal, damaged files. The window: each
+  provider's fields, switching providers keeping keys, the profile button, the greeting, the Profiles page, the
+  welcome's name. The real TrayApp: creating Rahul (welcome, empty words, own key) and switching back to the first
+  profile's words and key.
+- **Not tried for real:** OpenAI, Anthropic, Gemini and Groq with real keys (only against the fakes, which check the
+  request format). The owner, or anyone with a key, should press Test once for each.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -363,16 +410,12 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 ## Next steps
 
-1. Owner: try PR #20. Quit Rflow (tray → Quit), install `dist\Rflow-Setup-1.2.0.exe` over it, and look at every page.
-   Also check: opening Rflow from the Start menu while it runs brings the window up, and closing the window keeps
-   dictation working.
-2. Merge PR #20, then tag `v1.2.0` on `main` and push the tag. Installed copies are offered the update.
+1. Release 1.3.0 when the owner says so: tag `v1.3.0` on `main` and push the tag. The website (redeployed by Vercel on
+   every merge into `main`) already describes the window, providers and profiles, but its download is the latest
+   release, so it gives 1.1.0 until then. There is no 1.2.0 release: 1.3.0 includes phase 8.
+2. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
+   against the local fakes).
 3. Roadmap:
-   - **Phase 9, AI providers and profiles** (the owner's request):
-     - choose Groq, OpenAI, Anthropic, Gemini, Ollama or vLLM (or any OpenAI-compatible endpoint); enter the key or
-       address; list the models
-     - profiles (e.g. Karthi, Rahul), each with its own setup (provider, models, words, microphone, key, reading
-       tests), switched in the window
    - **Phase 10, text without the AI endpoint:** rule-based fillers and spoken "new line" / "new paragraph"; spacing
      and capitals that fit the text before the cursor (UI Automation); snippets.
    - **Phase 11, command mode and context:** "make this formal" on selected text; per-app style.

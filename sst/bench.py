@@ -183,8 +183,12 @@ def recordings(folder: Path) -> list[tuple[Path, str]]:
 
 
 def unfinished(root: Path = BENCH_DIR) -> Path | None:
-    """The newest test folder if it still has sentences to read, so closing the window halfway loses nothing."""
-    newest = max((p for p in root.iterdir() if p.is_dir()), default=None) if root.exists() else None
+    """The newest test folder if it still has sentences to read, so closing the window halfway loses nothing. Test
+    folders are named by date and time; other folders (other profiles' tests) don't count."""
+    if not root.exists():
+        return None
+    newest = max((p for p in root.iterdir() if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{6}", p.name)),
+                 default=None)
     return newest if newest and 0 < len(recordings(newest)) < len(SENTENCES) else None
 
 

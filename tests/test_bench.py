@@ -87,6 +87,7 @@ def test_only_recorded_sentences_are_scored(tmp_path):
 
 def test_only_the_newest_test_is_resumed_and_only_while_unfinished(tmp_path):
     assert bench.unfinished(tmp_path / "missing") is None
+    (tmp_path / "profiles" / "rahul").mkdir(parents=True)  # another profile's tests: not a test folder
     (tmp_path / "2026-09-01_090000").mkdir()
     _recording(tmp_path / "2026-09-01_090000", "01", "Old sentence.")
     newest = tmp_path / "2026-09-30_090000"

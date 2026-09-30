@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import dataclasses  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 import pytest  # noqa: E402
@@ -11,8 +12,9 @@ from PySide6.QtNetwork import QLocalServer  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from sst import app as sst_app  # noqa: E402
+from sst import settings as settings_module  # noqa: E402
 from sst.gateway import GatewayConfig  # noqa: E402
-from sst.settings import Settings  # noqa: E402
+from sst.settings import Profile, Profiles, Settings  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -42,7 +44,8 @@ def test_pill_grows_to_fit_long_messages():
 
 def _fake_tray_app(settings: Settings):
     """TrayApp's methods on a stand-in: apply_settings only records, so nothing touches the real settings file."""
-    fake = SimpleNamespace(settings=settings, gateway=GatewayConfig(), dictation=None, applied=[], cleanups=0)
+    fake = SimpleNamespace(settings=settings, gateway=GatewayConfig(), dictation=None, applied=[], cleanups=0,
+                           profile=Profile("default"))
 
     def apply(new):
         fake.settings = new
@@ -66,7 +69,7 @@ def test_removing_a_word():
 
 
 def test_saving_the_cleanup_keeps_the_other_settings(monkeypatch):
-    monkeypatch.setattr(GatewayConfig, "save", lambda self: None)
+    monkeypatch.setattr(GatewayConfig, "save", lambda self, path=None: None)
     fake = _fake_tray_app(Settings(hotkey="menu", vocabulary=["Tamil"]))
     sst_app.TrayApp.save_cleanup(fake, True, "model-a", "model-b", GatewayConfig("http://localhost:11434/v1", ""))
     s = fake.settings
@@ -112,16 +115,25 @@ def tray_app(monkeypatch, tmp_path):
     from PySide6.QtTest import QTest
 
     from sst.settings import Stats
-    saved = {}
-    monkeypatch.setattr(Settings, "load", classmethod(lambda cls, path=None: Settings(welcomed=True)))
-    monkeypatch.setattr(Settings, "save", lambda self, path=None: saved.__setitem__("settings", self))
+    saved, files = {}, {}  # files: each profile's settings by path, as if on disk
+    monkeypatch.setattr(settings_module, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(sst_app.bench, "BENCH_DIR", tmp_path / "bench")
+    monkeypatch.setattr(Settings, "load", classmethod(lambda cls, path=None: files.get(path) or Settings(
+        welcomed=path == tmp_path / "settings.json")))  # the first profile is set up already, a new one isn't
+
+    def save_settings(self, path=None):
+        saved["settings"] = files[path] = self
+    monkeypatch.setattr(Settings, "save", save_settings)
     monkeypatch.setattr(Stats, "load", classmethod(lambda cls, path=None, history=None: Stats()))
     monkeypatch.setattr(Stats, "save", lambda self, path=None: saved.__setitem__("stats", self))
     monkeypatch.setattr(GatewayConfig, "load", classmethod(lambda cls, path=None: GatewayConfig()))
+    monkeypatch.setattr(GatewayConfig, "save", lambda self, path=None: saved.__setitem__("gateway", self))
+    monkeypatch.setattr(Profiles, "load", classmethod(lambda cls, path=None: Profiles()))
+    monkeypatch.setattr(Profiles, "save", lambda self, path=None: saved.__setitem__("profiles", self))
     history = []
-    monkeypatch.setattr(sst_app, "add_to_history", lambda text, heard=None: history.insert(0, {
+    monkeypatch.setattr(sst_app, "add_to_history", lambda text, heard=None, path=None: history.insert(0, {
         "time": "2026-09-30 10:15:00", "text": text}))
-    monkeypatch.setattr(sst_app, "read_history", lambda: history)
+    monkeypatch.setattr(sst_app, "read_history", lambda path=None: history)
     monkeypatch.setattr(sst_app, "load_engine", lambda name: FakeEngine())
     monkeypatch.setattr(sst_app, "HotkeyListener", FakeListener)
     monkeypatch.setattr(sst_app, "wispr_flow_running", lambda: False)
@@ -175,3 +187,21 @@ def test_opening_rflow_again_reaches_the_running_copy(monkeypatch):
     assert sst_app.show_running_window()
     assert server.waitForNewConnection(2000) or server.hasPendingConnections()
     server.close()
+
+
+def test_each_profile_has_its_own_setup(tray_app):
+    app, saved, _ = tray_app
+    first_listener = app.listener
+    app.add_words(["Tamil"])
+    app.window.open("home")
+    app.create_profile("Rahul")  # switches to it
+    assert app.profile.name == "Rahul" and app.settings.vocabulary == [] and not app.settings.welcomed
+    assert app.window.isVisible() and app.window.current_page() == "welcome"  # a new profile starts with the welcome
+    assert "Rahul" in app.window.profile_button.text()
+    app.apply_settings(dataclasses.replace(app.settings, hotkey="menu", welcomed=True))
+    assert app.listener is not first_listener and app.hotkey_label() == "Menu key"
+    app.switch_profile("default")
+    assert app.settings.vocabulary == ["Tamil"] and app.hotkey_label() == "Ctrl+Win"  # the first profile's own again
+    assert saved["profiles"].active == "default"
+    app.delete_profile("rahul")
+    assert [p.id for p in app.profiles.items] == ["default"]

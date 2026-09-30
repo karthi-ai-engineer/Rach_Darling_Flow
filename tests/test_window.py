@@ -124,18 +124,19 @@ def test_the_cleanup_page_saves_what_was_typed():
     window, app = _window(settings=Settings(welcomed=True, cleanup_model="model-a"),
                           gateway=GatewayConfig("https://gw.example/v1", "key-1"))
     page = window.pages["cleanup"]
-    assert page.result() == (False, "model-a", "", GatewayConfig("https://gw.example/v1", "key-1"))
+    # settings from before the provider choice: the address says it's a server of the user's own (vLLM or the like)
+    assert page.result() == (False, "model-a", "", GatewayConfig("https://gw.example/v1", "key-1", "vllm"))
     page.cleanup_on.setChecked(True)
     page.api_key.setText("  key-2 ")
     page.model.setCurrentText("  typed-model ")  # any model name can be typed
     _button(page, "Save").click()
-    assert app.calls[-1] == ("save_cleanup", True, "typed-model", "", GatewayConfig("https://gw.example/v1", "key-2"))
+    assert app.calls[-1] == ("save_cleanup", True, "typed-model", "", GatewayConfig("https://gw.example/v1", "key-2", "vllm"))
     assert "Active from the next dictation" in page.saved.text()
 
 
 def test_a_new_install_has_no_endpoint_or_model_and_cleanup_off():
     window, _ = _window()
-    assert window.pages["cleanup"].result() == (False, "", "", GatewayConfig())
+    assert window.pages["cleanup"].result() == (False, "", "", GatewayConfig("", "", "openai"))  # the first provider
 
 
 def test_the_update_banner_leads_to_the_update():
@@ -255,3 +256,97 @@ def test_new_test_starts_a_fresh_folder(tmp_path, monkeypatch):
     first = page.ensure_test()
     first.restart.emit()
     assert page.test is not first and page.test.index == 0
+
+
+# ---- providers and profiles
+
+def test_each_provider_asks_for_what_it_needs():
+    window, _ = _window()
+    page = window.pages["cleanup"]
+    for key, provider in w.PROVIDERS.items():
+        page.provider.setCurrentIndex(page.provider.findData(key))
+        assert page.form.isRowVisible(page.gateway_url) is provider.own_server  # an address only for your own server
+        assert (not page.key_link.isHidden()) is bool(provider.key_page)  # "Get a key" for the cloud ones
+
+
+def test_switching_providers_keeps_each_one_s_key_and_address():
+    window, app = _window()
+    page = window.pages["cleanup"]
+    page.provider.setCurrentIndex(page.provider.findData("groq"))
+    page.api_key.setText("groq-key")
+    page.model.setCurrentText("llama-3.1-8b-instant")
+    page.provider.setCurrentIndex(page.provider.findData("vllm"))
+    assert page.api_key.text() == "" and page.model.currentText() == ""  # a fresh start for the other provider
+    page.gateway_url.setText("http://my-server:8000/v1")
+    page.provider.setCurrentIndex(page.provider.findData("groq"))
+    assert page.api_key.text() == "groq-key" and page.model.currentText() == "llama-3.1-8b-instant"
+    page.cleanup_on.setChecked(True)
+    _button(page, "Save").click()
+    on, model, _, gateway = app.calls[-1][1:]
+    assert (on, model) == (True, "llama-3.1-8b-instant")
+    assert gateway == GatewayConfig("", "groq-key", "groq", {"vllm": ("http://my-server:8000/v1", "")})
+    assert gateway.address == "https://api.groq.com/openai/v1"
+
+
+def test_a_saved_provider_opens_with_its_other_keys(qt):
+    gateway = GatewayConfig("", "anthropic-key", "anthropic", {"openai": ("", "openai-key")})
+    window, _ = _window(gateway=gateway)
+    page = window.pages["cleanup"]
+    assert page.provider.currentData() == "anthropic" and page.api_key.text() == "anthropic-key"
+    page.provider.setCurrentIndex(page.provider.findData("openai"))
+    assert page.api_key.text() == "openai-key"
+
+
+def test_load_models_needs_an_address_for_your_own_server():
+    window, _ = _window()
+    page = window.pages["cleanup"]
+    page.provider.setCurrentIndex(page.provider.findData("vllm"))
+    page._load_models()
+    assert "address" in page.test_result.text()
+
+
+def _profiles_window():
+    from sst.settings import Profiles
+    profiles = Profiles()
+    profiles.current.name = "Karthi Raj"
+    profiles.add("Rahul")
+    return _window(profiles=profiles)
+
+
+def test_the_sidebar_and_home_show_whose_profile_it_is():
+    window, _ = _profiles_window()
+    assert "Karthi Raj" in window.profile_button.text()
+    assert window.pages["home"].greeting.text().endswith(", Karthi")
+
+
+def test_the_profiles_page_switches_renames_and_deletes():
+    window, app = _profiles_window()
+    window.show_page("profiles")
+    page = window.pages["profiles"]
+    assert "In use" in _labels(page)
+    _button(page, "Switch to this profile").click()
+    assert ("switch_profile", "rahul") in app.calls
+    names = [box for box in page.findChildren(w.QLineEdit) if box.text() == "Rahul"]
+    names[0].setText("Rahul K")
+    names[0].editingFinished.emit()
+    assert app.profiles.get("rahul").name == "Rahul K"
+    app.profiles.active = "default"
+    page.refresh()
+    page.confirm = lambda question: "Rahul K" in question
+    _button(page, "Delete").click()
+    assert ("delete_profile", "rahul") in app.calls and [p.id for p in app.profiles.items] == ["default"]
+
+
+def test_a_new_profile_is_made_from_its_name():
+    window, app = _profiles_window()
+    page = window.pages["profiles"]
+    page.new_name.setText("Priya")
+    page._create()
+    assert app.profiles.current.name == "Priya" and page.new_name.text() == ""
+
+
+def test_the_welcome_asks_for_a_name():
+    window, app = _window(settings=Settings())
+    window.pages["welcome"].name.setText("Priya")
+    _button(window.pages["welcome"], "Start using Rflow").click()
+    assert app.profiles.current.name == "Priya" and ("finish_welcome", "Priya") in app.calls

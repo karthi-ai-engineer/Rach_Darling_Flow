@@ -52,19 +52,35 @@ afterwards. Dictated text is kept out of Windows clipboard history (Win+V).
 | **Reading test** | how well Rflow understands your voice (below) |
 | **AI cleanup** | the model that cleans up the text (below) |
 | **Settings** | dictation key, microphone with a live level, beeps, keeping recordings, starting with Windows, updates |
+| **Profiles** | one setup per person (below) |
 
 It follows Windows' light or dark mode. Changes in Settings apply at once; AI cleanup has a Save button.
 
 **AI cleanup (optional):**
 
-1. Enter an **endpoint** (any OpenAI-compatible API: `https://api.openai.com/v1`, a local Ollama or LM Studio such as
-   `http://localhost:11434/v1`, a company AI gateway...) and, if it needs one, an **API key**.
-2. **Load models**, choose a **model** and optionally a **backup model**, click **Test**, then **Save**.
+1. Choose a **provider** and give it what it needs:
+
+   | Provider | What to enter |
+   |---|---|
+   | OpenAI, Anthropic, Google Gemini, Groq | an **API key** ("Get a key" opens the provider's page) |
+   | Ollama (on this computer) | nothing: it uses `http://localhost:11434/v1` (change it if yours runs elsewhere) |
+   | vLLM or another OpenAI-compatible server | its **address** (e.g. `http://localhost:8000/v1`, LM Studio, a company AI gateway) and a key if it needs one |
+
+2. **Load models**, choose a **model** and optionally a **backup model**, click **Test**, then **Save**. Fast chat
+   models suit dictation (e.g. gpt-4o-mini, a Haiku model, a Flash-Lite model, llama-3.1-8b-instant); models that
+   "think" first are usually too slow.
 3. Add **your words** in the Dictionary (names, company, products, tech terms), so they come out spelled right.
 
-Only the finished text goes to the endpoint, never audio. If the model fails, the backup is used; if the endpoint is
-slow or unreachable, the text is typed as heard at once and the pill says "Typed as heard". Home keeps both versions
-(hover a dictation). The key is stored in `%APPDATA%\sst\gateway.json`, encrypted for your Windows account (DPAPI).
+Each provider gets the request it understands: Anthropic its own Messages API, OpenAI without the options only
+self-hosted models need, and so on. Switching the provider back and forth keeps each one's key and address. Only the
+finished text goes to the provider, never audio. If the model fails, the backup is used; if the provider is slow or
+unreachable, the text is typed as heard at once and the pill says "Typed as heard". Home keeps both versions (hover a
+dictation). Keys are stored in `gateway.json`, encrypted for your Windows account (DPAPI).
+
+**Profiles:** several people on one computer, or a work and a private setup, each get a profile (the button under the
+logo, or the *Profiles* page). Each profile has its own dictation key, microphone, words, AI provider and keys,
+dictations, stats and reading tests; a new one starts with the welcome. The first profile keeps its files in
+`%APPDATA%\sst`, the others in `%APPDATA%\sst\profiles\<name>`.
 
 **Reading test:** the *Reading test* page measures how well Rflow understands *your* voice, microphone and words. Read
 30 short sentences aloud (Record / Stop, or Space; about 10 minutes; you can leave and continue later), then **Score**.
@@ -145,8 +161,8 @@ Rach_Darling_Flow/
    ├─ window.py               the window: Home, Dictionary, Reading test, AI cleanup, Settings, welcome; light/dark
    ├─ bench.py                the reading test's sentences and scoring: word error rate per setup, misheard words
    ├─ updates.py              in-app updates from GitHub Releases (checksum-verified)
-   ├─ settings.py             settings, history, stats and "start with Windows" (%APPDATA%\sst)
-   ├─ gateway.py              text cleanup with a model on any OpenAI-compatible endpoint: backup model, timeouts
+   ├─ settings.py             profiles, settings, history, stats and "start with Windows" (%APPDATA%\sst)
+   ├─ gateway.py              AI cleanup: the providers and their request formats, backup model, timeouts, keys (DPAPI)
    ├─ cli.py                  the `sst` command
    ├─ dictate.py              Dictation: hotkey events -> record -> transcribe -> clean up -> type
    ├─ hotkey.py               global hotkeys (low-level keyboard hook) and sending keys

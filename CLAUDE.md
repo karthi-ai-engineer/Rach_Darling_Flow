@@ -30,8 +30,9 @@ Rules for AI coding assistants (Claude Code) in this repository. Read `HANDOFF.m
 ## Project
 
 **Rflow**: dictation for Windows, like a small, private Wispr Flow. NVIDIA Parakeet recognises speech on the CPU
-through sherpa-onnx, so the voice never leaves the laptop. The text can optionally be cleaned up by a model on any
-OpenAI-compatible endpoint the user configures. Hold Ctrl+Win in any app and speak; the text is typed at the cursor.
+through sherpa-onnx, so the voice never leaves the laptop. The text can optionally be cleaned up by a model from the
+provider the user chooses (OpenAI, Anthropic, Google Gemini, Groq, Ollama, vLLM or another OpenAI-compatible server).
+Each person can have a profile with their own setup. Hold Ctrl+Win in any app and speak; the text is typed at the cursor.
 The public download site is `site/` (Vercel). The Python package keeps its internal name `sst`.
 
 ```
@@ -45,7 +46,9 @@ uv run ruff check .                              # lint
 The layout is in `README.md`. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
 shared by the app (`sst/app.py`, Qt: tray, pill, `TrayApp`) and the console command. The window is `sst/window.py`: it
 keeps no state and calls `TrayApp`, or `PreviewApp` in tests and screenshots. In-app updates are `sst/updates.py`, and
-the text cleanup is `sst/gateway.py`. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`,
+the text cleanup is `sst/gateway.py` (`PROVIDERS`: each provider's request format). Settings, keys, history, stats and
+reading tests belong to a profile (`Profiles` in `sst/settings.py`): read and write them through the profile's paths
+(`TrayApp.profile.settings_file`...), never the module's default paths. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`,
 `sst/paste.py`, `sst/settings.py` and `sst/gateway.py` (DPAPI). UI tests run Qt off-screen (`tests/test_app.py`,
 `tests/test_window.py`). To see a UI change, render it with the Windows platform but without showing it, e.g. with
 `scripts/make_site_screenshots.py`, and look at the image in both themes.
@@ -56,9 +59,10 @@ the text cleanup is `sst/gateway.py`. The Windows-only parts are `sst/app.py`, `
   pays for itself.
 - Match the existing style: compact code, comments that explain *why*, line length 130, ruff rules from `pyproject.toml`.
 - Never commit `models/`, `recordings/` (the owner's voice), `build/`, `dist/` or `.tools/`.
-- The owner's company AI gateway (its address and key) is private. Both live only in `%APPDATA%\sst\gateway.json`, and
-  the key is encrypted with DPAPI. Never put either into code, docs, tests, logs or commits; the repository is public.
-  Load them with `GatewayConfig.load()`, whose repr hides the key. Test the gateway one model at a time (a small
+- The owner's company AI gateway (its address and key) is private. Both live only in the first profile's
+  `%APPDATA%\sst\gateway.json` (provider "vLLM or another OpenAI-compatible server"), and the key is encrypted with
+  DPAPI. Never put either into code, docs, tests, logs or commits; the repository is public. Load them with
+  `GatewayConfig.load(profile.gateway_file)`, whose repr hides the key. Test the gateway one model at a time (a small
   server), and use `tests/test_gateway.py`'s local fake for automated tests.
 - Tests must not press real keys, steal focus or touch the real clipboard; use fakes like `tests/test_dictate.py`.
   End-to-end checks through `SendInput` type into whatever window has focus, so run them only with the owner's OK and

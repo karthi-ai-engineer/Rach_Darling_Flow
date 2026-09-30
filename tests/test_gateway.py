@@ -18,6 +18,8 @@ class FakeGateway:
 
     def __init__(self):
         self.requests, self.connections = [], 0
+        self.models = [{"id": "gpt-cloud", "is_cloud": True}, {"id": "zeta-local", "is_cloud": False},
+                       {"id": "Alpha-local", "is_cloud": False}, {"id": "plain-model"}]
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -29,24 +31,33 @@ class FakeGateway:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                fake.requests.append({"auth": self.headers.get("Authorization"), **body})
+                fake.requests.append({"path": self.path, "auth": self.headers.get("Authorization"),
+                                      "x-api-key": self.headers.get("x-api-key"),
+                                      "anthropic-version": self.headers.get("anthropic-version"), **body})
+                anthropic = self.path.endswith("/messages")  # Anthropic's Messages API, not OpenAI's chat/completions
                 text = body["messages"][-1]["content"]
                 model = body["model"]
                 if model.startswith("error"):
+                    if anthropic:
+                        return self._reply(400, {"type": "error", "error": {"type": "invalid_request_error",
+                                                                             "message": "backend exploded"}})
                     return self._reply(500, {"error": {"message": "backend exploded"}})
                 if model == "slow":
                     time.sleep(1.0)
                 answer = {"long": text + " and then some more words " * 10,
                           "think": "<think>let me see</think> So we merge the five PRs today.",
                           "quoted": '"So we merge the five PRs today."'}.get(model, "So we merge the five PRs today.")
+                if anthropic:
+                    return self._reply(200, {"type": "message", "role": "assistant",
+                                             "content": [{"type": "text", "text": answer}]})
                 self._reply(200, {"choices": [{"message": {"role": "assistant", "content": answer}}]})
 
             def do_GET(self):
-                fake.requests.append({"auth": self.headers.get("Authorization"), "path": self.path})
-                if self.path != "/v1/models":
+                fake.requests.append({"auth": self.headers.get("Authorization"), "x-api-key": self.headers.get("x-api-key"),
+                                      "path": self.path})
+                if self.path.split("?")[0] != "/v1/models":
                     return self._reply(404, {"detail": "not found"})
-                self._reply(200, {"data": [{"id": "gpt-cloud", "is_cloud": True}, {"id": "zeta-local", "is_cloud": False},
-                                           {"id": "Alpha-local", "is_cloud": False}, {"id": "plain-model"}]})
+                self._reply(200, {"data": fake.models})
 
             def _reply(self, status, payload):
                 data = json.dumps(payload).encode()
@@ -63,8 +74,8 @@ class FakeGateway:
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def polisher(self, model="good", fallback=None, vocabulary=()):
-        return Polisher(GatewayConfig(self.url, "test-key"), model, list(vocabulary), fallback)
+    def polisher(self, model="good", fallback=None, vocabulary=(), provider=""):
+        return Polisher(GatewayConfig(self.url, "test-key", provider), model, list(vocabulary), fallback)
 
 
 @pytest.fixture
@@ -157,7 +168,7 @@ def test_without_an_endpoint_or_model_nothing_is_sent(fake):
 
 def test_load_models_lists_local_models_first(fake):
     assert fake.polisher(model="").models() == ["Alpha-local", "zeta-local", "gpt-cloud", "plain-model"]
-    assert fake.requests[-1] == {"auth": "Bearer test-key", "path": "/v1/models"}
+    assert fake.requests[-1] == {"auth": "Bearer test-key", "x-api-key": None, "path": "/v1/models"}
 
 
 def test_load_models_reports_an_unreachable_endpoint(monkeypatch):
@@ -205,3 +216,92 @@ def test_plausible(cleaned, ok):
 
 def test_removing_fillers_from_a_short_dictation_is_plausible():
     assert plausible("um uh yes okay", "Yes, okay.")
+
+
+# ---- providers
+
+def _last_post(fake) -> dict:
+    return next(r for r in reversed(fake.requests) if "model" in r)
+
+
+def test_openai_gets_its_current_limit_name_and_no_self_hosted_options(fake):
+    assert fake.polisher(provider="openai").polish(HEARD) == "So we merge the five PRs today."
+    sent = _last_post(fake)
+    assert sent["path"] == "/v1/chat/completions" and sent["auth"] == "Bearer test-key"
+    assert sent["temperature"] == 0 and sent["max_completion_tokens"] > 0
+    assert "max_tokens" not in sent and "chat_template_kwargs" not in sent  # OpenAI refuses fields it doesn't know
+
+
+def test_openai_reasoning_models_get_room_to_think_and_no_temperature(fake):
+    fake.polisher(model="gpt-5-mini", provider="openai").polish(HEARD)
+    sent = _last_post(fake)
+    assert "temperature" not in sent and sent["max_completion_tokens"] > 2000
+
+
+def test_anthropic_gets_its_messages_api(fake):
+    polisher = fake.polisher(provider="anthropic", vocabulary=["PRs"])
+    assert polisher.polish(HEARD) == "So we merge the five PRs today."
+    sent = _last_post(fake)
+    assert sent["path"] == "/v1/messages" and sent["auth"] is None
+    assert sent["x-api-key"] == "test-key" and sent["anthropic-version"] == gateway.ANTHROPIC_VERSION
+    assert "PRs" in sent["system"] and [m["role"] for m in sent["messages"]] == ["user"]
+    assert sent["max_tokens"] > 0 and sent["temperature"] == 0
+
+
+def test_anthropic_errors_are_readable(fake):
+    polisher = fake.polisher(model="error-model", provider="anthropic")
+    assert polisher.polish(HEARD) == HEARD and "backend exploded" in polisher.last_error
+
+
+def test_gemini_gets_no_token_limit(fake):
+    fake.polisher(provider="gemini").polish(HEARD)
+    sent = _last_post(fake)
+    assert sent["temperature"] == 0 and "max_tokens" not in sent and "max_completion_tokens" not in sent
+    assert "chat_template_kwargs" not in sent
+
+
+@pytest.mark.parametrize("provider, self_hosted", [("groq", False), ("ollama", True), ("vllm", True)])
+def test_self_hosted_servers_get_the_no_thinking_option(fake, provider, self_hosted):
+    fake.polisher(provider=provider).polish(HEARD)
+    sent = _last_post(fake)
+    assert sent["max_tokens"] > 0 and ("chat_template_kwargs" in sent) is self_hosted
+
+
+def test_load_models_leaves_out_models_that_dont_write_text(fake):
+    fake.models = [{"id": "gpt-4o-mini"}, {"id": "whisper-1"}, {"id": "text-embedding-3-small"}, {"id": "tts-1"},
+                   {"id": "models/gemini-2.5-flash"}, {"id": "llama-guard-4"}, {"id": "dall-e-3"}]
+    assert fake.polisher().models() == ["gemini-2.5-flash", "gpt-4o-mini"]
+
+
+def test_anthropic_models_are_listed_with_its_headers(fake):
+    fake.models = [{"type": "model", "id": "claude-model-a", "display_name": "A"}]
+    assert fake.polisher(provider="anthropic").models() == ["claude-model-a"]
+    listed = fake.requests[-1]
+    assert listed["path"] == "/v1/models?limit=1000" and listed["x-api-key"] == "test-key" and listed["auth"] is None
+
+
+@pytest.mark.parametrize("url, provider", [
+    ("https://api.openai.com/v1", "openai"), ("https://api.anthropic.com/v1", "anthropic"),
+    ("https://generativelanguage.googleapis.com/v1beta/openai/", "gemini"), ("https://api.groq.com/openai/v1", "groq"),
+    ("http://localhost:11434/v1", "ollama"), ("http://127.0.0.1:11434/v1", "ollama"),
+    ("https://gw.example/v1", "vllm"), ("http://localhost:8000/v1", "vllm"), ("", "vllm")])
+def test_settings_from_before_the_provider_choice_get_their_provider(url, provider):
+    assert gateway.provider_for(url) == provider
+    assert GatewayConfig(url).service.key == provider
+
+
+def test_a_cloud_provider_uses_its_usual_address():
+    assert GatewayConfig("", "key", "openai").address == "https://api.openai.com/v1"
+    assert GatewayConfig("http://my-server:8000/v1/", "", "vllm").address == "http://my-server:8000/v1"
+    assert GatewayConfig().address == ""  # nothing chosen yet: no requests
+
+
+def test_every_provider_s_key_is_kept_encrypted_when_switching(tmp_path):
+    path = tmp_path / "gateway.json"
+    config = GatewayConfig("", "groq-secret", "groq", {"openai": ("", "openai-secret"),
+                                                        "vllm": ("https://gw.example/v1", "gw-secret")})
+    config.save(path)
+    text = path.read_text(encoding="utf-8")
+    assert not any(secret in text for secret in ("groq-secret", "openai-secret", "gw-secret"))
+    assert GatewayConfig.load(path) == config
+    assert "secret" not in repr(config)
