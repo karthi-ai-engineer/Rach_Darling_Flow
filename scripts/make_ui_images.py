@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication
 from sst.window import ICON_FONTS, THEMES
 
 OUT = Path(__file__).resolve().parent.parent / "sst" / "static" / "ui"
-CHECK, CHEVRON_DOWN = "", ""
+CHECK, CHEVRON_DOWN = "\ue73e", "\ue70d"
 
 
 def draw(glyph: str, colour: str, size: int, path: Path) -> None:

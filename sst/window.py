@@ -61,9 +61,9 @@ log = logging.getLogger("sst.window")
 
 # Windows' own icon font (Segoe Fluent Icons on Windows 11, MDL2 Assets on 10): crisp icons without image files.
 ICON_FONTS = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
-GLYPHS = {"home": "", "dictionary": "", "reading": "", "cleanup": "", "settings": "",
-          "copy": "", "check": "", "delete": "", "words": "", "speed": "",
-          "streak": "", "week": "", "mic": "", "update": ""}
+GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanup": "\ue99a", "settings": "\ue713",
+          "copy": "\ue8c8", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
+          "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
