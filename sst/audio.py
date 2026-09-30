@@ -1,5 +1,14 @@
-"""Microphone recording and WAV read/write."""
+"""Microphone recording and WAV read/write.
+
+Capture goes through WASAPI, Windows' own audio interface, at the microphone's own rate (the speech engine resamples):
+the old MME interface reports 44.1 kHz for every microphone and resamples silently, which hid that a Bluetooth headset
+only delivers call-quality audio. A microphone can be kept open ("warm") for a while after a dictation: opening one
+takes about 0.4 s, which cut off first words, and a warm one also keeps the moment before the key press.
+"""
+import threading
+import time
 import wave
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +20,9 @@ import sounddevice as sd
 from sst import RECORDINGS_DIR
 
 TARGET_RATE = 16_000  # what speech models expect; other rates are resampled by the engine
+PREROLL_SECONDS = 0.4  # kept from before the key press while the microphone is warm
+TAIL_SECONDS = 0.3  # recorded after the key is let go: the last word often runs past it
+WASAPI_RAW = 1  # AUDCLNT_STREAMOPTIONS_RAW: no Windows or driver voice effects (noise suppression, gain, gating)
 
 
 def _pick_rate(device: int | None) -> int:
@@ -21,7 +33,11 @@ def _pick_rate(device: int | None) -> int:
         return int(sd.query_devices(device, "input")["default_samplerate"])
 
 
-def _default_host_api() -> int:
+def _host_api() -> int:
+    """WASAPI when Windows has it (always, on Windows 10/11), else PortAudio's default."""
+    for i, api in enumerate(sd.query_hostapis()):
+        if api["name"] == "Windows WASAPI" and api["default_input_device"] >= 0:
+            return i
     return sd.query_devices(kind="input")["hostapi"]
 
 
@@ -31,77 +47,235 @@ _open_streams = 0  # recordings and level meters running right now
 def _refresh_devices() -> None:
     # PortAudio reads the device list only once; re-reading it (~45 ms) shows a headset plugged in since, or a new
     # Windows default. It restarts PortAudio, which would pull the rug from under any open stream, so not while one
-    # is open (e.g. the settings page's level meter while a dictation starts).
+    # is open (e.g. a warm microphone, or the settings page's level meter while a dictation starts).
     if not _open_streams:
         sd._terminate()
         sd._initialize()
 
 
 def input_device_names(refresh: bool = True) -> list[str]:
-    """Microphones as Windows lists them (the default host API), for the settings window."""
+    """Microphones as Windows lists them, for the settings window."""
     if refresh:
         _refresh_devices()
-    api = _default_host_api()
+    api = _host_api()
     return [d["name"] for d in sd.query_devices() if d["max_input_channels"] > 0 and d["hostapi"] == api
             and "Sound Mapper" not in d["name"]]
 
 
 def _resolve(device: int | str | None) -> int | None:
-    """A device number, or a microphone name (stable across restarts); None or an unplugged name = Windows default."""
+    """A device number, or a microphone name (stable across restarts); None or an unplugged name = Windows default.
+    Names saved before WASAPI are MME's, cut at 31 characters: they match the start of the full name."""
     if not isinstance(device, str):
         return device
-    api = _default_host_api()
-    return next((i for i, d in enumerate(sd.query_devices())
-                 if d["name"] == device and d["max_input_channels"] > 0 and d["hostapi"] == api), None)
+    api = _host_api()
+    inputs = [(i, d["name"]) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0 and d["hostapi"] == api]
+    exact = next((i for i, name in inputs if name == device), None)
+    return exact if exact is not None else next((i for i, name in inputs if name.startswith(device)), None)
+
+
+def _default_input() -> int:
+    return sd.query_hostapis(_host_api())["default_input_device"]
+
+
+def call_quality(device: int | str | None) -> bool:
+    """A Bluetooth headset's microphone: Windows opens it in call mode (16 or 8 kHz, "Hands-Free"). It hears worse,
+    and while it is open the headset plays everything in call quality too."""
+    try:
+        index = _resolve(device)
+        info = sd.query_devices(_default_input() if index is None else index)
+        return info["default_samplerate"] <= 16_000 or "hands-free" in info["name"].lower()
+    except Exception:
+        return False
+
+
+class Take:
+    """One recording. stop_later() hands it over while the tail after the key release is still being recorded;
+    audio() waits for that tail."""
+
+    def __init__(self, chunks: list[np.ndarray], rate: int):
+        self.rate, self.chunks = rate, chunks
+        self.preroll = sum(len(c) for c in chunks)  # samples from before start()
+        self.remaining = 0  # tail samples still to come
+        self.done = threading.Event()
+
+    @classmethod
+    def ready(cls, audio: np.ndarray, rate: int) -> "Take":
+        take = cls([audio], rate)
+        take.preroll = 0  # a finished recording: all of it counts
+        take.done.set()
+        return take
+
+    @property
+    def seconds(self) -> float:
+        """What has been recorded since start(), so far (not the moment before it)."""
+        return (sum(len(c) for c in self.chunks) - self.preroll) / self.rate
+
+    def audio(self, timeout: float = 2.0) -> np.ndarray:
+        self.done.wait(timeout)  # a stream closed early simply ends the tail
+        return np.concatenate(self.chunks) if self.chunks else np.zeros(0, dtype=np.float32)
 
 
 class Recorder:
-    """Records mono audio in the background between start() and stop()."""
+    """Records mono audio between start() and stop() / stop_later().
 
-    def __init__(self, device: int | str | None = None):
+    warm_seconds > 0 keeps the microphone open that long after a recording (tick() closes it), so the next one starts at
+    once, with PREROLL_SECONDS from before start(). A call-quality (Bluetooth) microphone is never kept open. `tail`
+    seconds are recorded after stop_later(). raw asks Windows for the microphone without its voice effects."""
+
+    def __init__(self, device: int | str | None = None, *, warm_seconds: float = 0.0, tail: float = 0.0,
+                 raw: bool = False):
         self.device = device  # number, microphone name, or None for the Windows default
+        self.warm_seconds, self.tail, self.raw = warm_seconds, tail, raw
         self.rate = TARGET_RATE
         self.level = 0.0  # loudness of the latest block (RMS), for the recording indicator
-        self._chunks: list[np.ndarray] = []
-        self._stream: sd.InputStream | None = None
+        self.info: dict = {}  # the device, interface, rate and mode actually opened
+        self._take: Take | None = None
+        self._closing: list[Take] = []  # takes still recording their tail
+        self._ring: deque[np.ndarray] = deque()  # the last PREROLL_SECONDS while warm and not recording
+        self._ring_samples = 0
+        self._stream = None
+        self._opened_for: tuple | None = None
+        self._idle_since = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def warm(self) -> bool:
+        return self._stream is not None
 
     def start(self) -> None:
-        global _open_streams
-        if self._stream is not None:
-            self.stop()
-        _refresh_devices()  # a long-running app must follow the microphones plugged in since the last recording
-        device = _resolve(self.device)
-        self.rate = _pick_rate(device)
-        self._chunks, self.level = [], 0.0
-        stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32", device=device, callback=self._on_audio)
-        stream.start()
-        self._stream = stream
-        _open_streams += 1
+        if self._take is not None:
+            self.stop_later()
+        if self._stream is not None and self._opened_for != (self.device, self.raw):
+            self.close()  # another microphone or mode was chosen meanwhile
+        preroll = self._stream is not None
+        if self._stream is None:
+            self._open()
+        with self._lock:
+            chunks = list(self._ring) if preroll else []
+            self._ring.clear()
+            self._ring_samples = 0
+            self._take = Take(chunks, self.rate)
+        self.level = 0.0
 
-    def _on_audio(self, indata, frames, time, status):
-        block = indata[:, 0].copy()
-        self._chunks.append(block)
-        self.level = float(np.sqrt(np.mean(block * block)))
-
-    def describe(self) -> dict:
-        """The microphone actually used, its audio interface and the rate recorded at, for the reading test's notes."""
-        try:
-            device = _resolve(self.device)
-            info = sd.query_devices(device, "input") if device is not None else sd.query_devices(kind="input")
-            return {"device": info["name"], "host_api": sd.query_hostapis(info["hostapi"])["name"], "rate": self.rate}
-        except Exception:  # only a note: never let it stop a recording from being saved
-            return {"rate": self.rate}
+    def stop_later(self) -> Take:
+        """Stop recording now, but keep the `tail` seconds that follow; the take's audio() waits for them."""
+        with self._lock:
+            take, self._take = self._take or Take.ready(np.zeros(0, dtype=np.float32), self.rate), None
+            if self._stream is not None and self.tail > 0 and not take.done.is_set():
+                take.remaining = int(self.tail * self.rate)
+                self._closing.append(take)
+            else:
+                take.done.set()
+            self._idle_since = time.monotonic()
+        self.level = 0.0
+        if not self._closing and not self._keep_warm():
+            self.close()
+        return take
 
     def stop(self) -> np.ndarray:
-        """Stop recording and return the samples, in [-1, 1] at self.rate."""
+        """Stop recording and return the samples, in [-1, 1] at self.rate (after the tail, if any)."""
+        audio = self.stop_later().audio()
+        if not self._keep_warm():
+            self.close()
+        return audio
+
+    def tick(self, now: float) -> None:
+        """Close the microphone once its tail is recorded and it has been idle for warm_seconds."""
+        if self._stream is None or self._take is not None or self._closing:
+            return
+        if not self._keep_warm() or now - self._idle_since > self.warm_seconds:
+            self.close()
+
+    def close(self) -> None:
         global _open_streams
-        if self._stream is not None:
-            self._stream.close()
-            self._stream = None
+        with self._lock:
+            stream, self._stream = self._stream, None
+            closing, self._closing = self._closing, []
+            self._ring.clear()
+            self._ring_samples = 0
+        for take in closing:
+            take.done.set()
+        if stream is not None:
+            stream.close()
             _open_streams -= 1
-        self.level = 0.0
-        chunks, self._chunks = self._chunks, []
-        return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+
+    def _keep_warm(self) -> bool:
+        return self.warm_seconds > 0 and not self.info.get("call_quality")
+
+    def _open(self) -> None:
+        global _open_streams
+        _refresh_devices()  # a long-running app must follow the microphones plugged in since the last recording
+        device = _resolve(self.device)
+        try:
+            stream = self._open_wasapi(device)
+        except Exception:  # an odd driver: the old way (PortAudio's default interface) still records
+            index = self._legacy_index(device)
+            self.rate = _pick_rate(index)
+            stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32", device=index, callback=self._on_audio)
+            self.info = self._describe(index, "windows")
+        stream.start()
+        self._stream, self._opened_for = stream, (self.device, self.raw)
+        _open_streams += 1
+
+    def _open_wasapi(self, device: int | None):
+        index = _default_input() if device is None else device
+        if sd.query_hostapis(sd.query_devices(index)["hostapi"])["name"] != "Windows WASAPI":
+            raise OSError("not a WASAPI device")
+        self.rate = int(sd.query_devices(index)["default_samplerate"])  # shared mode runs at the device's own rate
+        mode = "raw" if self.raw else "windows"
+        settings = sd.WasapiSettings(auto_convert=True)  # mono from a 2- or 4-channel microphone array
+        if self.raw:
+            settings._streaminfo.streamOption = WASAPI_RAW  # not in sounddevice's API yet, but in PortAudio's struct
+        try:
+            stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32", device=index,
+                                    callback=self._on_audio, extra_settings=settings)
+        except Exception:
+            if not self.raw:
+                raise
+            mode = "windows"  # a driver without raw mode: record with its effects rather than not at all
+            stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32", device=index,
+                                    callback=self._on_audio, extra_settings=sd.WasapiSettings(auto_convert=True))
+        self.info = self._describe(index, mode)
+        return stream
+
+    @staticmethod
+    def _legacy_index(device: int | None) -> int | None:
+        if device is None:
+            return None
+        name = sd.query_devices(device)["name"]
+        api = sd.query_devices(kind="input")["hostapi"]
+        return next((i for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0 and d["hostapi"] == api
+                     and name.startswith(d["name"])), None)
+
+    def _describe(self, index: int | None, mode: str) -> dict:
+        try:
+            info = sd.query_devices(index, "input") if index is not None else sd.query_devices(kind="input")
+            return {"device": info["name"], "host_api": sd.query_hostapis(info["hostapi"])["name"], "rate": self.rate,
+                    "mode": mode, "call_quality": call_quality(index), "warm": self.warm_seconds > 0}
+        except Exception:  # only a note: never let it stop a recording
+            return {"rate": self.rate, "mode": mode}
+
+    def _on_audio(self, indata, frames, time_info, status):
+        block = indata[:, 0].copy()
+        self.level = float(np.sqrt(np.mean(block * block)))
+        with self._lock:
+            for take in self._closing:
+                take.chunks.append(block[:take.remaining])
+                take.remaining -= len(block)
+                if take.remaining <= 0:
+                    take.done.set()
+            self._closing = [t for t in self._closing if not t.done.is_set()]
+            if self._take is not None:
+                self._take.chunks.append(block)
+            else:
+                self._ring.append(block)
+                self._ring_samples += len(block)
+                while self._ring and self._ring_samples - len(self._ring[0]) >= PREROLL_SECONDS * self.rate:
+                    self._ring_samples -= len(self._ring.popleft())
+
+    def describe(self) -> dict:
+        """The microphone actually used, its audio interface, rate and mode, for the reading test's notes."""
+        return dict(self.info) if self.info else {"rate": self.rate}
 
 
 class LevelMeter(Recorder):
@@ -199,6 +373,21 @@ def _high_band_db(voiced: np.ndarray, rate: int) -> float:
     high = spectrum[(freqs >= 4000) & (freqs <= min(7000, 0.45 * rate))].mean()
     low = spectrum[(freqs >= 300) & (freqs <= 3000)].mean()
     return float(10 * np.log10((high + 1e-20) / (low + 1e-20)))
+
+
+PEAK = 10 ** (-1 / 20)  # -1 dBFS
+
+
+def condition(audio: np.ndarray) -> np.ndarray:
+    """Ready audio for the speech engine: no DC offset, and the loudest moment at -1 dBFS. The model normalises its own
+    features, yet quiet laptop-microphone audio (speech around -35 dBFS) sometimes decoded to nothing at all; raised
+    to full scale it didn't, and word errors on the owner's 150 reading-test sentences went from 9.2% to 8.1%."""
+    audio = np.asarray(audio, dtype=np.float32)
+    if len(audio) == 0:
+        return audio
+    audio = audio - np.float32(audio.mean())
+    peak = float(np.max(np.abs(audio)))
+    return audio * np.float32(PEAK / peak) if peak > 1e-4 else audio  # near-silence stays silence, not amplified hiss
 
 
 def save_wav(path: Path, audio: np.ndarray, rate: int) -> None:
