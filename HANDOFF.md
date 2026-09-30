@@ -19,8 +19,8 @@ _Last updated: 2026-09-30_
 | 6 | **Rflow 1.0**: product name, generic endpoint / key / model, in-app updates, download website | done, on `main` (PR #14), released **v1.0.0** |
 | fix | Update checks retry when the first connection stalls | done, on `main` (PR #16), released **v1.0.1** |
 | 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words | done, on `main` (PR #18), released **v1.1.0** |
-| 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer; 1.2.0 | PR #20, waiting for the owner's test + merge |
-| 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | PR #22 (stacked on #20), waiting for the owner's test + merge |
+| 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer | done, on `main` (PR #20) |
+| 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | done, on `main` (PR #22); the owner installed 1.3.0 and confirmed it works; not released yet |
 
 Released: v1.0.0, v1.0.1 and v1.1.0 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -410,20 +410,18 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 ## Next steps
 
-1. Owner: try PR #20. Quit Rflow (tray → Quit), install `dist\Rflow-Setup-1.2.0.exe` over it, and look at every page.
-   Also check: opening Rflow from the Start menu while it runs brings the window up, and closing the window keeps
-   dictation working.
-2. Merge PR #20, then tag `v1.2.0` on `main` and push the tag. Installed copies are offered the update.
-3. Owner: try PR #22 (`dist\Rflow-Setup-1.3.0.exe`). In AI cleanup the company gateway shows as "vLLM or another
-   OpenAI-compatible server"; press Test. With a key for any cloud provider, try it too. Make a second profile, switch
-   back and forth, and delete it. Then merge PR #22 (after #20: retarget it to `main` first) and tag `v1.3.0`.
-4. Roadmap:
+1. Release 1.3.0 when the owner says so: tag `v1.3.0` on `main` and push the tag. The website (redeployed by Vercel on
+   every merge into `main`) already describes the window, providers and profiles, but its download is the latest
+   release, so it gives 1.1.0 until then. There is no 1.2.0 release: 1.3.0 includes phase 8.
+2. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
+   against the local fakes).
+3. Roadmap:
    - **Phase 10, text without the AI endpoint:** rule-based fillers and spoken "new line" / "new paragraph"; spacing
      and capitals that fit the text before the cursor (UI Automation); snippets.
    - **Phase 11, command mode and context:** "make this formal" on selected text; per-app style.
    - **Accuracy, if the reading test calls for it:** trim silence (VAD); a Whisper model if IT adds one to the gateway.
    - **Later:** code signing (removes the SmartScreen warning), and a "paste last transcript" hotkey.
-5. Waiting on the owner:
+4. Waiting on the owner:
    - Japanese/Tamil needed?
    - the word list
    - the apps used most
