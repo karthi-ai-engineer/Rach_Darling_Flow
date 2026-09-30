@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -21,7 +22,19 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QFontMetrics, QGuiApplication, QIcon, QPainter
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -39,14 +52,17 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
+    QStackedWidget,
     QSystemTrayIcon,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
-from sst import RECORDINGS_DIR, __version__, updates
-from sst.audio import Recorder, input_device_names
+from sst import RECORDINGS_DIR, __version__, bench, updates
+from sst.audio import Recorder, input_device_names, save_wav
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import load_engine
 from sst.gateway import GatewayConfig, GatewayError, Polisher
@@ -417,6 +433,219 @@ class HistoryWindow(QWidget):
             self.status.setText("Copied.")
 
 
+class ReadingTest(QWidget):
+    """The reading test: read the sentences aloud, then see how many words each setup gets wrong (sst/bench.py)."""
+
+    scored = Signal(object)  # from the scoring thread
+    progressed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, recorder, score, add_words, microphone: str, folder: Path | None = None):
+        super().__init__(None, Qt.WindowType.Window)
+        self.setWindowTitle(f"{APP_NAME} reading test")
+        self.setWindowIcon(QIcon(str(ICON_FILE)))
+        self.recorder, self._score, self._add_words = recorder, score, add_words
+        self.folder = folder or bench.BENCH_DIR / time.strftime("%Y-%m-%d_%H%M%S")
+        self.index, self.recording = 0, False
+        self.scored.connect(self._show_results)
+        self.progressed.connect(lambda text: self.status.setText(text))
+        self.failed.connect(self._score_failed)
+
+        # page 1: reading
+        intro = QLabel(f"Read each sentence aloud the way you normally dictate. Microphone: {microphone}. "
+                       "Rflow then counts the words it gets wrong, with and without text cleanup. About 10 minutes.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: gray")
+        self.counter = QLabel()
+        self.sentence = QLabel()
+        self.sentence.setWordWrap(True)
+        self.sentence.setMinimumHeight(110)
+        self.sentence.setFont(QFont("Segoe UI", 17))
+        self.level = QProgressBar()
+        self.level.setRange(0, 100)
+        self.level.setTextVisible(False)
+        self.level.setFixedHeight(8)
+        self.status = QLabel("Press Record (or Space), read the sentence, then Stop.")
+        self.record_button = QPushButton("Record")
+        self.record_button.clicked.connect(self.toggle_recording)
+        self.redo_button = QPushButton("Redo")
+        self.redo_button.clicked.connect(self.toggle_recording)
+        self.back_button = QPushButton("Back")
+        self.back_button.clicked.connect(lambda: self.go(self.index - 1))
+        self.next_button = QPushButton("Next")
+        self.next_button.clicked.connect(lambda: self.go(self.index + 1))
+        self.score_button = QPushButton("Score")
+        self.score_button.clicked.connect(self.start_scoring)
+        buttons = QHBoxLayout()
+        for button in (self.record_button, self.redo_button, self.back_button, self.next_button):
+            buttons.addWidget(button)
+        buttons.addStretch()
+        buttons.addWidget(self.score_button)
+        reading = QWidget()
+        reading_layout = QVBoxLayout(reading)
+        for widget in (intro, self.counter, self.sentence, self.level, self.status):
+            reading_layout.addWidget(widget)
+        reading_layout.addStretch()
+        reading_layout.addLayout(buttons)
+
+        # page 2: results
+        self.report = QTextBrowser()
+        self.report.setOpenExternalLinks(False)
+        self.suggestions = QListWidget()
+        self.suggestions.setMaximumHeight(120)
+        add = QPushButton("Add to Your words")
+        add.clicked.connect(self._add_selected)
+        again = QPushButton("Score again")
+        again.clicked.connect(self.start_scoring)
+        open_folder = QPushButton("Open folder")
+        open_folder.clicked.connect(lambda: _open_folder(self.folder))
+        self.results_status = QLabel("")
+        self.results_status.setWordWrap(True)
+        self.results_status.setStyleSheet("color: gray")
+        results_buttons = QHBoxLayout()
+        for button in (add, again, open_folder):
+            results_buttons.addWidget(button)
+        results_buttons.addStretch()
+        results = QWidget()
+        results_layout = QVBoxLayout(results)
+        results_layout.addWidget(self.report, 1)
+        worth = QLabel("Worth adding to Your words (untick any you don't want):")
+        worth.setWordWrap(True)
+        results_layout.addWidget(worth)
+        results_layout.addWidget(self.suggestions)
+        results_layout.addWidget(self.results_status)
+        results_layout.addLayout(results_buttons)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(reading)
+        self.pages.addWidget(results)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.pages)
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self._space)
+        self.meter = QTimer(self)
+        self.meter.setInterval(50)
+        self.meter.timeout.connect(lambda: self.level.setValue(min(100, int(self.recorder.level * 400))))
+        self.resize(640, 420)
+        self.go(next(iter(self._to_read()), 0))  # a resumed test opens at the first sentence not read yet
+        if self.recorded():
+            self.status.setText(f"Continuing your unfinished test ({self.recorded()} of {len(bench.SENTENCES)} read).")
+
+    def recorded(self) -> int:
+        return len(bench.recordings(self.folder)) if self.folder.exists() else 0
+
+    def _to_read(self) -> list[int]:
+        return [i for i in range(len(bench.SENTENCES)) if not (self.folder / f"{i + 1:02}.wav").exists()]
+
+    def go(self, index: int) -> None:
+        if self.recording:
+            return
+        self.index = max(0, min(index, len(bench.SENTENCES) - 1))
+        done = (self.folder / f"{self.index + 1:02}.wav").exists()
+        self.counter.setText(f"Sentence {self.index + 1} of {len(bench.SENTENCES)}" + ("  ·  recorded" if done else ""))
+        self.sentence.setText(bench.SENTENCES[self.index])
+        self.record_button.setEnabled(not done)
+        self.redo_button.setEnabled(done)
+        self.back_button.setEnabled(self.index > 0)
+        self.next_button.setEnabled(self.index < len(bench.SENTENCES) - 1)
+        count = self.recorded()
+        self.score_button.setEnabled(count > 0)
+        self.score_button.setText(f"Score ({count} recorded)" if count else "Score")
+
+    def _space(self) -> None:
+        if self.pages.currentIndex() == 0:
+            self.toggle_recording()
+
+    def toggle_recording(self) -> None:
+        if not self.recording:
+            try:
+                self.recorder.start()
+            except Exception as e:
+                self.status.setText(f"Could not open the microphone: {e}")
+                return
+            self.recording = True
+            self.meter.start()
+            for button in (self.redo_button, self.back_button, self.next_button, self.score_button):
+                button.setEnabled(False)
+            self.record_button.setEnabled(True)
+            self.record_button.setText("Stop")
+            self.status.setText("Recording... read the sentence, then press Stop (or Space).")
+            return
+        self.recording = False
+        self.meter.stop()
+        self.level.setValue(0)
+        self.record_button.setText("Record")
+        audio = self.recorder.stop()
+        if len(audio) < self.recorder.rate * 0.5:
+            self.status.setText("That was too short; press Record and read the sentence again.")
+            self.go(self.index)
+            return
+        self.folder.mkdir(parents=True, exist_ok=True)
+        stem = self.folder / f"{self.index + 1:02}"
+        save_wav(stem.with_suffix(".wav"), audio, self.recorder.rate)
+        stem.with_suffix(".txt").write_text(bench.SENTENCES[self.index], encoding="utf-8")
+        remaining = self._to_read()
+        if remaining:
+            self.status.setText("Saved. Next sentence:")
+            later = [i for i in remaining if i > self.index]
+            self.go(later[0] if later else remaining[0])
+        else:
+            self.status.setText("All sentences recorded. Press Score.")
+            self.go(self.index)
+
+    def start_scoring(self) -> None:
+        if self.recording or not self.recorded():
+            return
+        self.score_button.setEnabled(False)
+        self.results_status.setText("Scoring...")
+        self.status.setText("Scoring...")
+
+        def work() -> None:
+            try:
+                self.scored.emit(self._score(self.folder, self.progressed.emit))
+            except Exception as e:
+                log.exception("Scoring the reading test failed")
+                self.failed.emit(str(e))
+        threading.Thread(target=work, name="reading-test-score", daemon=True).start()
+
+    def _show_results(self, results) -> None:
+        best = min(results.setups, key=lambda s: s.error_rate)
+        rows = "".join(
+            f"<tr><td>{'<b>' if s is best else ''}{s.name}{'</b>' if s is best else ''}</td>"
+            f"<td align=right>{s.error_rate:.1%}</td><td align=right>{s.wrong} / {s.total}</td>"
+            f"<td align=right>{s.seconds_per_sentence:.2f} s</td></tr>" for s in results.setups)
+        misheard = "".join(f"<li>{said or '<i>(extra word)</i>'} → {heard or '<i>(missed)</i>'} ({times}×)</li>"
+                           for said, heard, times in results.misheard[:10])
+        self.report.setHtml(
+            f"<h3>{len(results.sentences)} sentences scored</h3>"
+            f"<table cellpadding=6><tr><th align=left>Setup</th><th>Word errors</th><th>Wrong / total</th>"
+            f"<th>Time per sentence</th></tr>{rows}</table>"
+            f"<p>Lowest error rate: <b>{best.name}</b>.</p>"
+            + (f"<h4>Most misheard (by speech recognition)</h4><ul>{misheard}</ul>" if misheard else ""))
+        self.suggestions.clear()
+        for word in results.suggestions:
+            item = QListWidgetItem(word)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            self.suggestions.addItem(item)
+        # The folder name only: a full path would make the window wider than the screen allows for it.
+        self.results_status.setText(f"Saved as report.md in the {self.folder.name} test folder.")
+        self.results_status.setToolTip(str(self.folder))
+        self.pages.setCurrentIndex(1)
+        self.go(self.index)
+
+    def _score_failed(self, message: str) -> None:
+        self.status.setText(f"Scoring failed: {message}")
+        self.results_status.setText(f"Scoring failed: {message}")
+        self.go(self.index)
+
+    def _add_selected(self) -> None:
+        chosen = [self.suggestions.item(i).text() for i in range(self.suggestions.count())
+                  if self.suggestions.item(i).checkState() == Qt.CheckState.Checked]
+        added = self._add_words(chosen)
+        self.results_status.setText(f"Added {added} word(s) to Your words. Press Score again to see the difference."
+                                    if added else "Those words are already in Your words.")
+
+
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.CreateMutexW.restype = ctypes.c_void_p
 _kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
@@ -499,6 +728,7 @@ class TrayApp:
         menu.addSeparator()
         menu.addAction("History...", self.show_history)
         menu.addAction("Settings...", self.show_settings)
+        menu.addAction("Reading test...", self.show_reading_test)
         menu.addAction("Check for updates", lambda: self.check_for_updates(manual=True))
         menu.addAction("Open logs folder", lambda: _open_folder(LOG_DIR))
         menu.addSeparator()
@@ -515,7 +745,10 @@ class TrayApp:
         self.pump.setInterval(15)
         self.pump.timeout.connect(self._pump)
         threading.Thread(target=self._load, name="model-loader", daemon=True).start()
+        self.reading: ReadingTest | None = None
         if getattr(sys, "frozen", False):  # the source checkout is updated with git, not by the app
+            # The installer of an update that has finished (it started this version) isn't needed any more.
+            QTimer.singleShot(60_000, lambda: shutil.rmtree(UPDATE_DIR, ignore_errors=True))
             QTimer.singleShot(20_000, self.check_for_updates)
             self.update_timer = QTimer()
             self.update_timer.setInterval(updates.CHECK_EVERY_HOURS * 3600 * 1000)
@@ -650,6 +883,35 @@ class TrayApp:
                 self._start_listener()
         log.info("Settings saved: %s", new)
 
+    # -- reading test
+
+    def show_reading_test(self) -> None:
+        if not self.dictation:
+            self._notify(APP_NAME, "The speech model is still loading; try again in a moment.")
+            return
+        if self.reading is None or not self.reading.isVisible():
+            self.reading = ReadingTest(Recorder(self.settings.microphone or None), self._score_reading, self._add_words,
+                                       self.settings.microphone or "Windows default", folder=bench.unfinished())
+        self.reading.show()
+        self.reading.raise_()
+        self.reading.activateWindow()
+
+    def _score_reading(self, folder: Path, progress) -> bench.Results:
+        """Parakeet alone, then with the cleanup model and the backup model, one at a time (the endpoint may be small)."""
+        s = self.settings
+        models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.base_url else []
+        polishers = {f"Parakeet + {m.rsplit('/', 1)[-1]}": Polisher(self.gateway, m, s.vocabulary) for m in models}
+        return bench.score(folder, self.dictation.engine, polishers, progress)
+
+    def _add_words(self, new_words: list[str]) -> int:
+        known = {w.lower() for w in self.settings.vocabulary}
+        added = [w for w in new_words if w.lower() not in known]
+        if added:
+            self.settings.vocabulary = self.settings.vocabulary + added
+            self.settings.save()
+            self._apply_cleanup()  # the cleanup uses the new words from the next dictation (and the next scoring)
+        return len(added)
+
     # -- updates
 
     def check_for_updates(self, manual: bool = False) -> None:
@@ -766,6 +1028,7 @@ def self_test() -> int:
     history.refresh()
     history.show_update("Rflow 9.9.9 is available (you have 1.0.0).")
     history.grab()
+    ReadingTest(Recorder(), lambda folder, progress: None, lambda words: 0, "Test microphone").grab()
     _with_red_dot(QIcon(str(ICON_FILE)))
     from sst.engines.parakeet import MODEL_DIR
     wav = MODEL_DIR / "test_wavs" / "0.wav"

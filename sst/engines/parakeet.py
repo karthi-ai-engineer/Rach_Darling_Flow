@@ -1,4 +1,5 @@
 """NVIDIA Parakeet (English) running locally on the CPU via sherpa-onnx."""
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,7 @@ class ParakeetEngine:
             )
         import sherpa_onnx
 
+        self._lock = threading.Lock()  # dictation and the reading test may transcribe at the same time
         tokens = str(model_dir / "tokens.txt")
         encoder = _find(model_dir, "encoder")
         if encoder:  # transducer (TDT) export: encoder + decoder + joiner
@@ -49,6 +51,10 @@ class ParakeetEngine:
             )
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
+        with self._lock:
+            return self._transcribe(audio, sample_rate)
+
+    def _transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         texts = (self._decode(piece, sample_rate) for piece in split_at_pauses(audio, sample_rate, MAX_PIECE_SECONDS))
         return " ".join(text for text in texts if text)
 

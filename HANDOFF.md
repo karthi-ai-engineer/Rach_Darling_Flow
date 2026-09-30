@@ -16,7 +16,12 @@ _Last updated: 2026-09-30_
 | 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | done, on `main` (PR #8) |
 | 4 | A real app: tray icon, recording pill, settings, history, logs (Qt) | done, on `main` (PR #10) |
 | 5 | AI text cleanup (model chosen in Settings), key encrypted; one-piece transcription up to 3 min | done, on `main` (PR #12) |
-| 6 | **Rflow 1.0**: product name, generic endpoint / key / model, in-app updates, download website, v1.0.0 | PR #14, waiting for merge + Vercel + release |
+| 6 | **Rflow 1.0**: product name, generic endpoint / key / model, in-app updates, download website | done, on `main` (PR #14), released **v1.0.0** |
+| fix | Update checks retry when the first connection stalls | done, on `main` (PR #16), released **v1.0.1** |
+| 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words; 1.1.0 | PR #18, waiting for the owner's test + merge |
+
+Released: v1.0.0 and v1.0.1 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel, `site/`).
+The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated itself to 1.0.1.
 
 ## Continue on another device
 
@@ -139,7 +144,7 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - Microphone: none is chosen, so the Windows default is used, which is the Bluetooth earbuds when they are connected.
   2 of that day's 6 recordings were phone quality (no sound above 4 kHz). The long reading was full band, so most
   errors are the model on this voice, not the mic.
-- The analysis scripts were ad hoc. Phase 6 should add a proper reading test (`sst bench`) with reference texts.
+- The analysis scripts were ad hoc. Phase 7 replaced them with the reading test (see below).
 
 ## Company AI gateway (tested 2026-09-30)
 
@@ -176,7 +181,8 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - **Connection quirk:** from Python (not curl) the first connection to the gateway sometimes stalls. Use a 4 s
   connect timeout with retries, keep the connection alive, and warm it up at start. `trust_env=False`, since it's
   internal.
-- The test scripts were ad hoc (httpx, one model per run). Phase 5 should turn them into `sst bench gateway`.
+- The test scripts were ad hoc (httpx, one model per run). The reading test (phase 7) now compares the cleanup models
+  on the owner's own recordings, one model at a time.
 
 ## Text cleanup (phase 5)
 
@@ -259,6 +265,36 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - The Settings screenshot exposed a layout bug: a long word-wrapped QLabel inside a QFormLayout overlapped and got
   clipped. The text is now one short line, with the details in a tooltip.
 
+## Reading test (phase 7)
+
+- Tray menu → "Reading test..." opens `ReadingTest` (`sst/app.py`). It shows one of the 30 sentences in `sst/bench.py`
+  (everyday dictation with the owner's kind of words: GitHub, pull request, merge commit, branch, Rflow, Parakeet,
+  Vercel, Tamil, Japanese, Teams, CodeQL, Karthi, numbers). It has Record / Stop (Space too), Redo, Back / Next and a
+  live level. It records with the microphone chosen in Settings, and rejects recordings under 0.5 s.
+- Each recording is saved as `NN.wav` + `NN.txt` (the sentence) in `%LOCALAPPDATA%\sst\bench\<date_time>`. Closing the
+  window halfway loses nothing: the next "Reading test..." continues the newest folder while it has sentences left
+  (`bench.unfinished()`).
+- **Score** (`bench.score()`, on a thread):
+  - Transcribes every recording with Parakeet first, then cleans up all the texts with the cleanup model, then with the
+    backup model, one request at a time and with no fallback, so each model is measured on its own.
+  - Word error rate = (substituted + missing + extra words) / words in the sentence. `bench.words()` makes the
+    comparison fair: case, punctuation and hyphens don't count, "70" equals "seventy", ok = okay.
+  - The alignment is Levenshtein; among equally short alignments it pairs words that look alike, so "Tamil → Tamar" is
+    listed, not "Tamil → please".
+  - Writes `results.json` and `report.md` next to the recordings.
+- The results page shows a table per setup (errors, wrong / total, seconds per sentence; the best in bold) and the most
+  misheard words. Suggested words (misheard, not common words, spelled as in the sentence) can be ticked and added to
+  Your words, which activates them at once, and then **Score again** shows the difference.
+- `sst bench <folder> [--model <name>]...` (`rflow-cli bench` when installed) re-scores a folder from the command line,
+  by default with the models in Settings.
+- `ParakeetEngine.transcribe` has a lock now: dictating while the test scores must not use one recognizer from two
+  threads.
+- The installed app deletes `%TEMP%\Rflow-update` (the downloaded installer, 500 MB) 60 s after it starts.
+- A dry run on the model's test WAV against the gateway (both models, one at a time): 0% errors for every setup;
+  Qwen3.8-27B 2.75 s (cold), Qwen3-30B 0.90 s per sentence. The owner's real run is still to come.
+- Not done in this phase: trimming silence (VAD) and a Whisper comparison. The owner's reading test results should
+  decide whether they're worth it.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -270,29 +306,23 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - The console command (`sst dictate`) has no cleanup; the tray app does.
 - The installer isn't code-signed, so SmartScreen warns on the first install. In-app updates don't trigger it, because
   a file downloaded by the app isn't marked as coming from the internet.
-- The full in-app update path (1.0.0 installed, then Update to a newer release) can only be tried once a second
-  release exists. The unit tests cover the check, the download, the checksum and the installer command line.
+- The Python client's first connection to the company gateway, and sometimes to GitHub, stalls on the dev laptop. Both
+  clients use short connect timeouts with retries (`sst/gateway.py`, `sst/updates.py`).
 
 ## Next steps
 
-1. Merge PR #14 into `main`.
-2. Owner: on vercel.com, Add New > Project, import `karthi-ai-engineer/Rach_Darling_Flow`, set Root Directory to `site`,
-   Framework to "Other", and Deploy. Optionally rename the project to `rflow` (for rflow.vercel.app).
-3. Publish 1.0.0: tag `v1.0.0` on `main` and push it. The Release workflow builds and publishes; check that the website's
-   download button then works.
-4. Owner: install 1.0.0 over the current version. In Settings, pick the backup model once (Load models), and choose the
-   laptop mic. Then publish a small 1.0.1 to try the Update button end to end.
-5. Roadmap:
-   - **Phase 7, accuracy on the owner's voice:**
-     - `sst bench`: a reading test with reference texts (about 30 sentences), scored for word errors
-     - compare Parakeet alone, and with cleanup model 1 or 2
-     - trim silence (VAD)
-     - maybe a Whisper model if IT adds one to the gateway
+1. Owner: try PR #18. Either install `dist\Rflow-Setup-1.1.0.exe` over the current version or run `uv run sst app`
+   (quit the installed Rflow first). In Settings, choose the laptop mic and pick the backup model (Load models). Then
+   tray → Reading test..., read the 30 sentences, Score, add the suggested words, and Score again.
+2. Merge PR #18, then tag `v1.1.0` on `main` and push the tag. Installed copies are offered the update within 6 hours
+   (or at once with "Check for updates").
+3. Roadmap:
    - **Phase 8, text without the AI endpoint:** rule-based fillers and spoken "new line" / "new paragraph"; spacing and
      capitals that fit the text before the cursor (UI Automation); snippets.
    - **Phase 9, command mode and context:** "make this formal" on selected text; per-app style.
+   - **Accuracy, if the reading test calls for it:** trim silence (VAD); a Whisper model if IT adds one to the gateway.
    - **Later:** code signing (removes the SmartScreen warning), and a "paste last transcript" hotkey.
-6. Waiting on the owner:
+4. Waiting on the owner:
    - Japanese/Tamil needed?
    - the word list
    - the apps used most

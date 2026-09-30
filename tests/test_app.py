@@ -91,3 +91,87 @@ def test_history_window_leads_to_settings(monkeypatch):
     button = next(b for b in window.findChildren(sst_app.QPushButton) if b.text() == "Settings...")
     button.click()
     assert opened == [True]
+
+
+class FakeRecorder:
+    rate, level = 16_000, 0.0
+
+    def __init__(self, seconds=1.0):
+        self.seconds, self.starts = seconds, 0
+
+    def start(self):
+        self.starts += 1
+
+    def stop(self):
+        import numpy as np
+        return np.zeros(int(self.seconds * self.rate), dtype=np.float32)
+
+
+def _reading_test(tmp_path, recorder=None, score=None, add_words=None):
+    return sst_app.ReadingTest(recorder or FakeRecorder(), score or (lambda folder, progress: None),
+                               add_words or (lambda words: 0), "Test microphone", folder=tmp_path / "test")
+
+
+def test_reading_test_saves_each_sentence_and_moves_on(tmp_path):
+    from sst import bench
+    window = _reading_test(tmp_path)
+    assert window.sentence.text() == bench.SENTENCES[0] and not window.score_button.isEnabled()
+    window.toggle_recording()
+    assert window.recording and window.record_button.text() == "Stop"
+    window.toggle_recording()
+    assert (tmp_path / "test" / "01.wav").exists()
+    assert (tmp_path / "test" / "01.txt").read_text(encoding="utf-8") == bench.SENTENCES[0]
+    assert window.index == 1 and window.sentence.text() == bench.SENTENCES[1]  # moved on to the next sentence
+    assert window.score_button.isEnabled() and "1 recorded" in window.score_button.text()
+
+
+def test_space_records_and_a_too_short_recording_is_not_kept(tmp_path):
+    window = _reading_test(tmp_path, recorder=FakeRecorder(seconds=0.2))
+    window._space()
+    window._space()
+    assert not (tmp_path / "test" / "01.wav").exists() and window.index == 0 and "too short" in window.status.text()
+
+
+def test_an_unfinished_test_continues_at_the_first_sentence_not_read(tmp_path):
+    from sst import bench
+    first = _reading_test(tmp_path)
+    for _ in range(2):
+        first.toggle_recording()
+        first.toggle_recording()
+    again = _reading_test(tmp_path)  # the same folder, as the tray app passes bench.unfinished()
+    assert again.index == 2 and again.sentence.text() == bench.SENTENCES[2] and "2 of 30 read" in again.status.text()
+
+
+def test_redo_replaces_a_recording(tmp_path):
+    recorder = FakeRecorder()
+    window = _reading_test(tmp_path, recorder=recorder)
+    window.toggle_recording()
+    window.toggle_recording()
+    window.go(0)
+    assert window.redo_button.isEnabled() and not window.record_button.isEnabled()
+    window.redo_button.click()
+    window.toggle_recording()
+    assert recorder.starts == 2 and window.recorded() == 1
+
+
+def test_results_show_every_setup_and_add_the_ticked_words(tmp_path):
+    from sst.bench import Results, Setup
+    results = Results(str(tmp_path), ["s1"], [Setup("Parakeet alone", 4, 20, [0.5]), Setup("Parakeet + m", 2, 20, [0.7])],
+                      [("tamil", "tamar", 2)], ["Tamil", "CodeQL"])
+    added = []
+    window = _reading_test(tmp_path, add_words=lambda words: added.extend(words) or len(words))
+    window._show_results(results)
+    assert window.pages.currentIndex() == 1
+    html = window.report.toHtml()
+    assert "Parakeet alone" in html and "20.0%" in html and "10.0%" in html and "tamar" in html
+    window.suggestions.item(1).setCheckState(sst_app.Qt.CheckState.Unchecked)
+    window._add_selected()
+    assert added == ["Tamil"] and "Added 1 word" in window.results_status.text()
+
+
+def test_adding_words_skips_ones_already_there():
+    from types import SimpleNamespace
+    fake = SimpleNamespace(settings=Settings(vocabulary=["GitHub"]), _apply_cleanup=lambda: None)
+    fake.settings.save = lambda: None
+    assert sst_app.TrayApp._add_words(fake, ["github", "Tamil", "CodeQL"]) == 2
+    assert fake.settings.vocabulary == ["GitHub", "Tamil", "CodeQL"]
