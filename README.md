@@ -17,9 +17,10 @@ administrator rights, no Python and no internet connection: the ~650 MB speech m
   window (history, the Settings button, update banner); **right-click** it for the menu (Settings, Check for updates, Quit).
 - **Updates:** when a new version is published, Rflow shows a banner in its window and a notification. **Update now**
   downloads it, checks it against its published SHA-256, installs it and restarts Rflow.
-- Settings and history live in `%APPDATA%\sst`, recordings in `%LOCALAPPDATA%\sst\recordings`, logs in
-  `%LOCALAPPDATA%\sst\logs`. Uninstall from *Settings → Apps*.
-- `rflow-cli.exe` next to it is the command-line tool, e.g. `rflow-cli devices` or `rflow-cli file x.wav`.
+- Settings and history live in `%APPDATA%\sst`, recordings in `%LOCALAPPDATA%\sst\recordings`, reading tests in
+  `%LOCALAPPDATA%\sst\bench`, logs in `%LOCALAPPDATA%\sst\logs`. Uninstall from *Settings → Apps*.
+- `rflow-cli.exe` next to it is the command-line tool, e.g. `rflow-cli devices`, `rflow-cli file x.wav` or
+  `rflow-cli bench <folder>`.
 
 ## Use
 
@@ -51,13 +52,22 @@ Only the finished text goes to the endpoint, never audio. If the model fails, th
 slow or unreachable, the text is typed as heard at once and the pill says "Typed as heard". History keeps both versions
 (hover a line). The key is stored in `%APPDATA%\sst\gateway.json`, encrypted for your Windows account (DPAPI).
 
+**Reading test:** right-click the tray icon → *Reading test...* to measure how well Rflow understands *your* voice,
+microphone and words. Read 30 short sentences aloud (Record / Stop, or Space; about 10 minutes; you can close the window
+and continue later), then **Score**. Rflow shows the share of words it got wrong with speech recognition alone and with
+your cleanup model and backup model, the time per sentence, and the words it misheard most. Tick the suggested words
+and click **Add to Your words**, then **Score again** to see the difference. Recordings and results (`report.md`,
+`results.json`) stay in `%LOCALAPPDATA%\sst\bench\<date>`; `rflow-cli bench <folder>` scores a folder again (e.g. with
+`--model <name>` to try another model).
+
 - Using Wispr Flow too? Quit it first: it also listens to Ctrl+Win, and both would type. Rflow warns you if it's running.
 - Nothing typed into one particular app? That app is probably running as administrator; Windows doesn't let normal
   programs type into those.
 
 **From the source** (developers): `uv run sst app` starts the tray app; `dictate.cmd` / `uv run sst dictate` is the same
 in a console window, without cleanup. Also `uv run sst web` (a Record button in the browser, served on 127.0.0.1 only),
-`uv run sst start` (record in the terminal), `uv run sst file x.wav` and `uv run sst devices`.
+`uv run sst start` (record in the terminal), `uv run sst file x.wav`, `uv run sst devices` and
+`uv run sst bench <folder>` (score a reading test).
 
 ## Setup (from source)
 
@@ -114,7 +124,8 @@ Rach_Darling_Flow/
 ├─ models/                    downloaded models (git-ignored)
 ├─ recordings/                your recordings + transcripts (git-ignored)
 └─ sst/                       the Python package (the app's internal name)
-   ├─ app.py                  the tray app: tray icon, recording pill, settings, history, update banner (Qt)
+   ├─ app.py                  the tray app: tray icon, recording pill, settings, history, update banner, reading test (Qt)
+   ├─ bench.py                the reading test's sentences and scoring: word error rate per setup, misheard words
    ├─ updates.py              in-app updates from GitHub Releases (checksum-verified)
    ├─ settings.py             settings, history and "start with Windows" (%APPDATA%\sst)
    ├─ gateway.py              text cleanup with a model on any OpenAI-compatible endpoint: backup model, timeouts
