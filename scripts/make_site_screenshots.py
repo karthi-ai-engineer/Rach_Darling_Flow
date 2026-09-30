@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 
 from sst import window as w
 from sst.gateway import GatewayConfig
-from sst.settings import Settings, Stats
+from sst.settings import Profiles, Settings, Stats
 
 OUT = Path(__file__).resolve().parent.parent / "site" / "img"
 EXAMPLES = [  # (minutes ago, text)
@@ -34,9 +34,12 @@ def preview() -> w.PreviewApp:
     stats.add(" ".join(["word"] * 9800), 9800 / 2.3, date.today() - timedelta(days=30))  # the month before
     settings = Settings(welcomed=True, cleanup=True, cleanup_model="gpt-4o-mini", cleanup_fallback="gpt-4.1-nano",
                         vocabulary=["Rflow", "GitHub", "Kubernetes", "Priya", "Q3 roadmap"])
+    profiles = Profiles()
+    profiles.current.name = "Alex"
+    profiles.add("Sam")
     return w.PreviewApp(settings=settings, history=history, stats=stats,
                         microphones=["Microphone (Realtek(R) Audio)", "Headset (Bluetooth)"],
-                        gateway=GatewayConfig("https://api.openai.com/v1", "sk-example-key"))
+                        gateway=GatewayConfig("", "sk-example-key", "openai"), profiles=profiles)
 
 
 def shot(app: w.PreviewApp, page: str, name: str, size=(1000, 660)) -> None:
@@ -53,7 +56,7 @@ def main() -> None:
     QApplication([])
     app = preview()
     shot(app, "home", "app.png")
-    shot(app, "cleanup", "settings.png", size=(1000, 560))
+    shot(app, "cleanup", "settings.png", size=(1000, 600))
     app.settings.welcomed = False
     shot(app, "welcome", "welcome.png", size=(1000, 760))
     print("Wrote", ", ".join(sorted(p.name for p in OUT.glob("*.png"))))

@@ -113,7 +113,7 @@
       <div class="card"><div class="icon">🎙️</div><h3>Hold, or go hands-free</h3>
         <p>Hold <kbd>Ctrl</kbd>+<kbd>Win</kbd> while you talk, or tap it (or <kbd>Ctrl</kbd>+<kbd>Win</kbd>+<kbd>Space</kbd>) to keep recording. <kbd>Esc</kbd> cancels.</p></div>
       <div class="card"><div class="icon">✨</div><h3>Clean text, if you want it</h3>
-        <p>Optionally let an AI model you choose (OpenAI, Ollama, your company's endpoint...) add punctuation, drop "um"s and spell your terms right.</p></div>
+        <p>Optionally let an AI model you choose (OpenAI, Anthropic, Google Gemini, Groq, or Ollama and vLLM on your own server) add punctuation, drop "um"s and spell your terms right.</p></div>
       <div class="card"><div class="icon">💬</div><h3>Always shows what it's doing</h3>
         <p>A small pill at the bottom of the screen: a live level while you speak, then "Typed". It never steals focus.</p></div>
       <div class="card"><div class="icon">⬆️</div><h3>Updates itself</h3>
@@ -156,6 +156,8 @@
         <div class="card"><h3>Dictionary</h3><p>Names and terms Rflow should spell your way.</p></div>
         <div class="card"><h3>Reading test</h3><p>Read 30 sentences and see how well Rflow understands you.</p></div>
         <div class="card"><h3>Settings</h3><p>Your key and microphone, with a live level to check it.</p></div>
+        <div class="card"><h3>AI cleanup</h3><p>Your provider, key and model, with a Test button.</p></div>
+        <div class="card"><h3>Profiles</h3><p>One setup per person, when several people share the computer.</p></div>
       </div>
       <p class="sub" style="margin: 18px 0 0">Closing the window keeps Rflow running in the background, so dictation
         still works everywhere.</p>
@@ -167,10 +169,12 @@
   <div class="wrap two">
     <div>
       <h2>Your key, your microphone, your words</h2>
-      <p class="sub">Pick the microphone, the dictation key and whether to clean up the text. For the cleanup, enter any
-        OpenAI-compatible endpoint and choose a model from its list, with a backup model in case it fails. Add the names
-        and terms you use, so they come out right.</p>
-      <p class="sub">If the endpoint is slow or unreachable, Rflow simply types what it heard, so dictation never waits.</p>
+      <p class="sub">Pick the microphone, the dictation key and whether to clean up the text. For the cleanup, choose your
+        AI provider (OpenAI, Anthropic, Google Gemini, Groq, or Ollama, vLLM or any OpenAI-compatible server of your
+        own), paste its key and pick a model from its list, with a backup model in case it fails. Add the names and
+        terms you use, so they come out right.</p>
+      <p class="sub">If the provider is slow or unreachable, Rflow simply types what it heard, so dictation never waits.
+        Sharing the computer? Each person gets a profile with their own key, words, provider and history.</p>
     </div>
     <img class="shot" src="img/settings.png" alt="Rflow's AI cleanup page: endpoint, key, model and backup model">
   </div>
@@ -180,8 +184,9 @@
   <div class="wrap">
     <h2>Questions</h2>
     <details><summary>Is my voice sent anywhere?</summary>
-      <p>No. Speech is recognised on your laptop by NVIDIA Parakeet. Only if you switch on text cleanup is the finished
-        text (never audio) sent to the endpoint you entered.</p></details>
+      <p>No. Speech is recognised on your laptop by NVIDIA Parakeet. Only if you switch on AI cleanup is the finished
+        text (never audio) sent to the provider you chose. With Ollama or vLLM on your own computer or server, even
+        that stays with you. Your API keys are encrypted for your Windows account.</p></details>
     <details><summary>Windows says "Windows protected your PC"</summary>
       <p>The installer isn't code-signed yet. Click <b>More info</b>, then <b>Run anyway</b>.</p></details>
     <details><summary>What does it need?</summary>
