@@ -545,6 +545,7 @@ class ReadingTest(QWidget):
         super().__init__()
         self.recorder, self._score, self._add_words, self.microphone = recorder, score, add_words, microphone
         self.folder = folder or bench.BENCH_DIR / time.strftime("%Y-%m-%d_%H%M%S")
+        self.report_folder = self.folder  # where the shown results were saved: this test, or 'summary' for all
         # A test already started keeps its set; a new one reads the set it was given.
         started = (self.folder / bench.SESSION_FILE).exists() or bool(self.recorded())
         self.block = bench.read_session(self.folder)["block"] if started else block
@@ -590,12 +591,14 @@ class ReadingTest(QWidget):
         results_layout.addWidget(self.report, 1)
         results_layout.addWidget(text("Worth adding to Your words (untick any you don't want):"))
         results_layout.addWidget(self.suggestions)
-        results_layout.addWidget(self.results_status)
-        results_layout.addLayout(row(button("Add to Your words", self._add_selected, primary=True),
-                                     button("Score again", self.start_scoring),
+        add_row = row(button("Add to Your words", self._add_selected, primary=True), self.results_status)
+        add_row.setStretch(1, 1)  # the note takes the rest of the line
+        results_layout.addLayout(add_row)
+        # Two rows: one would make the page wider than the window's smallest size.
+        results_layout.addLayout(row(button("Score again", self.start_scoring),
                                      button("Score all tests", lambda: self.start_scoring(every=True)),
-                                     button("Open folder", lambda: open_folder(self.folder)),
-                                     button("New test", self.restart.emit), stretch_at=5))
+                                     button("Open folder", lambda: open_folder(self.report_folder)),
+                                     button("New test", self.restart.emit), stretch_at=4))
 
         self.pages = QStackedWidget()
         self.pages.addWidget(reading)
@@ -720,8 +723,9 @@ class ReadingTest(QWidget):
             f"<h3>{len(results.recordings)} sentences scored" + (f" from {sessions} tests" if sessions > 1 else "") + "</h3>"
             "<table cellpadding=5><tr><th align=left>Setup</th><th>Word errors</th><th>95% range</th>"
             f"<th align=left>Against the first</th><th>Names and terms</th><th>Time</th></tr>{rows}</table>"
-            f"<p>Lowest error rate: <b>{best.name}</b>. With few sentences the range is wide: read more sets and "
-            "score all tests for a surer answer.</p>"
+            f"<p>Lowest error rate: <b>{best.name}</b>."
+            + (" One set gives a wide range: read more sets and score all tests for a surer answer." if sessions == 1
+               else "") + "</p>"
             + "".join(f"<p>⚠ {warning}</p>" for warning in microphone_warnings(results))
             + (f"<h4>Most misheard (by speech recognition)</h4><ul>{misheard}</ul>" if misheard else ""))
         self.suggestions.clear()
@@ -731,9 +735,9 @@ class ReadingTest(QWidget):
             item.setCheckState(Qt.CheckState.Checked)
             self.suggestions.addItem(item)
         # The folder name only: a full path would make the window wider than the screen allows for it.
-        where = self.folder.parent / "summary" if sessions > 1 else self.folder
-        self.results_status.setText(f"Saved as report.md in the {where.name} folder.")
-        self.results_status.setToolTip(str(where))
+        self.report_folder = self.folder.parent / "summary" if sessions > 1 else self.folder
+        self.results_status.setText(f"Saved as report.md in the {self.report_folder.name} folder.")
+        self.results_status.setToolTip(str(self.report_folder))
         self.pages.setCurrentIndex(1)
         self.go(self.index)
 
