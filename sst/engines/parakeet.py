@@ -7,9 +7,10 @@ from sst import MODELS_DIR
 from sst.audio import split_at_pauses
 
 MODEL_DIR = MODELS_DIR / "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
-# Longer audio is transcribed in pieces cut at pauses: as one piece, onnxruntime fails somewhere
-# between 4 and 9 minutes of audio (a 514 s recording crashed; split, it transcribes fine).
-MAX_PIECE_SECONDS = 30
+# Audio longer than this is transcribed in pieces cut at pauses: as one piece, onnxruntime fails somewhere
+# between 4 and 9 minutes (257 s worked, 514 s crashed). Up to 3 minutes (a whole dictation) stays one piece:
+# cutting at 30 s dropped a whole sentence that the model gets right with the full context.
+MAX_PIECE_SECONDS = 180
 
 
 def _find(model_dir: Path, prefix: str) -> Path | None:
