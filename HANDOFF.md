@@ -114,6 +114,42 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   script runs it. The dependency scan of all 92 bundled binaries finds nothing missing on a plain Windows (Qt brings
   its own C++ runtime).
 - The installer is 520 MB (Qt added 20 MB), 762 MB installed.
+- The owner installed phase 4 on 2026-09-30 and dictated with it (the tray app, pill and History work).
+
+## Accuracy on the owner's voice (first check, 2026-09-30)
+
+- The owner read the "What I need from you" list aloud: 76.5 s, one hands-free dictation in the installed app.
+  Compared with that text (148 words):
+
+  | Decoding | Word errors |
+  |---|---|
+  | as dictated (greedy, cut into 30 s pieces) | 28% |
+  | one piece | 24% |
+  | beam search | no better |
+
+  Leaving out the owner's own reading changes (skipped or added words), about 13–17% of words are wrong. This model
+  scores about 6% on standard English benchmarks.
+- Typical errors are tech words and names: commit → clot, "the five PRs" → "a file PR", Claude → cloud, Tamil →
+  dropped / "Tamar", polishing → publishing, "tech words" → "that was". One whole sentence was dropped when cut at
+  30 s, and decoded correctly as one piece.
+- **Next fix:** raise `MAX_PIECE_SECONDS` in `sst/engines/parakeet.py`. 257 s in one piece works; it crashed at 514 s.
+- Microphone: none is chosen, so the Windows default is used, which is the Bluetooth earbuds when they are connected.
+  2 of that day's 6 recordings were phone quality (no sound above 4 kHz). The long reading was full band, so most
+  errors are the model on this voice, not the mic.
+- The analysis scripts were ad hoc. Phase 6 should add a proper reading test (`sst bench`) with reference texts.
+
+## Company AI gateway (the next task, from the owner)
+
+- `https://tw-gateway.twave.co.jp/v1` is OpenAI-compatible: models, chat/completions, responses, completions,
+  embeddings, images/generations, audio/transcriptions. It is internal (172.16.5.107) and reachable from the dev laptop
+  in about 50 ms.
+- Auth is the owner's gateway API key, sent as `Authorization: Bearer <key>` or `X-API-Key: <key>`. The key lives only
+  in `%APPDATA%\sst\gateway.json` (`{"base_url": ..., "api_key": ...}`), outside the repository. **Never commit it.**
+- Task:
+  - list the models
+  - test only the models hosted on the company's own GPU server, **one at a time** (a small server, with cold starts)
+  - measure transcription accuracy and speed on the owner's recordings, and text polish quality and speed
+  - pick the best and fastest, then use it in sst
 
 ## Known limitations
 
@@ -128,8 +164,9 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 1. Merge in order: #2, #4, #6, #8, then #10 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the
    tag, and the Release workflow publishes the installer.
-2. Try the phase 4 installer: the tray icon, the pill, Settings (choose the laptop mic), History. Also try `Setup.exe`
-   on a second laptop.
+2. Test the company gateway's own-server models (see above), then use the best: probably transcription
+   (Whisper-class, maybe also Japanese/Tamil) and text polish. Raise MAX_PIECE_SECONDS. Choose the laptop mic.
+   Also try `Setup.exe` on a second laptop.
 3. Roadmap to a Wispr Flow-class app:
    - **Phase 5, clean text:**
      - remove fillers (um, uh, you know)
