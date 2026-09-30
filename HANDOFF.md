@@ -150,6 +150,30 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   - test only the models hosted on the company's own GPU server, **one at a time** (a small server, with cold starts)
   - measure transcription accuracy and speed on the owner's recordings, and text polish quality and speed
   - pick the best and fastest, then use it in sst
+- **Results (2026-09-30).** 24 models: 17 cloud (OpenAI, skipped as asked) and 7 local (`is_cloud: false`), tested one
+  at a time:
+
+  | Local model | Speed | First word | Polish (word error 23.6% before) | Transcription |
+  |---|---|---|---|---|
+  | Qwen/Qwen3-30B-A3B-Instruct-2507-FP8 | **43 tok/s** | 0.14–0.24 s | 22.9% (fixes "commit"; rewords a bit) | not supported |
+  | unsloth/Qwen3.8-27B-NVFP4 | 28 tok/s | 0.24–0.35 s | 23.6%; short sentence 20% → **10%** (most faithful) | not listed |
+  | Qwen/Qwen3.6-35B-A3B-FP8 | 20 tok/s | 1.3 s | 24.3% | HTTP 500 |
+  | Qwen/Qwen-AgentWorld-35B-A3B | 26 tok/s | 0.26 s | 24.3%, identical output: same model as 3.6 | HTTP 500 |
+  | Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf | 17.6 tok/s | 0.29 s | 25.0% (kept "clot") | not listed |
+  | qwen3, sensenova-u1.5 | – | – | "Backend unavailable" (switched off; retried after 90 s) | – |
+
+- **No local model transcribes speech.** Only the cloud `whisper-1` does. Keep Parakeet on the laptop for
+  speech-to-text. vLLM can serve Whisper, so IT could add `whisper-large-v3-turbo` locally; worth asking.
+- **Polish:**
+  - With the owner's word list in the prompt, the LLMs fix names that sound like a vocabulary word ("STD" → "SST",
+    "hashtag 2" → "#2", "clot" → "commit").
+  - They can't bring back words the recognizer dropped, and they don't fix "cloud" → "Claude" when "cloud" also
+    makes sense.
+  - A typical one-sentence dictation polishes in 0.5–0.7 s; the 76 s reading takes 4–5 s.
+- **Connection quirk:** from Python (not curl) the first connection to the gateway sometimes stalls. Use a 4 s
+  connect timeout with retries, keep the connection alive, and warm it up at start. `trust_env=False`, since it's
+  internal.
+- The test scripts were ad hoc (httpx, one model per run). Phase 5 should turn them into `sst bench gateway`.
 
 ## Known limitations
 
