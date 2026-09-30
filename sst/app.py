@@ -317,7 +317,9 @@ class SettingsDialog(QDialog):
 
 
 class HistoryWindow(QWidget):
-    def __init__(self):
+    """What a click on the tray icon opens: the recent dictations, plus the way to Settings (users look for it here)."""
+
+    def __init__(self, open_settings=None):
         super().__init__(None, Qt.WindowType.Window)
         self.setWindowTitle(f"{APP_NAME} history")
         self.setWindowIcon(QIcon(str(ICON_FILE)))
@@ -326,9 +328,13 @@ class HistoryWindow(QWidget):
         self.list.itemDoubleClicked.connect(lambda item: self._copy(item))
         copy = QPushButton("Copy")
         copy.clicked.connect(lambda: self._copy(self.list.currentItem()))
-        self.status = QLabel("Double-click a line to copy it.")
+        self.status = QLabel("Double-click a line to copy it. Hover to see what was heard.")
         self.status.setStyleSheet("color: gray")
         row = QHBoxLayout()
+        if open_settings:
+            settings = QPushButton("Settings...")
+            settings.clicked.connect(open_settings)
+            row.addWidget(settings)
         row.addWidget(self.status)
         row.addStretch()
         row.addWidget(copy)
@@ -387,7 +393,7 @@ class TrayApp:
         self.icon = QIcon(str(ICON_FILE))
         self.recording_icon = _with_red_dot(self.icon)
         self.pill = Pill(level=lambda: self.recorder.level)
-        self.history = HistoryWindow()
+        self.history = HistoryWindow(open_settings=self.show_settings)
 
         self.tray = QSystemTrayIcon(self.icon)
         menu = QMenu()

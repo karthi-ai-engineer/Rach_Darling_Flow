@@ -73,3 +73,12 @@ def test_cleanup_can_be_switched_off():
     dialog = sst_app.SettingsDialog(Settings(cleanup_model="Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"), [])
     dialog.cleanup.setCurrentIndex(0)
     assert dialog.result_settings().cleanup_model == ""
+
+
+def test_history_window_leads_to_settings(monkeypatch):
+    monkeypatch.setattr(sst_app, "read_history", lambda: [])
+    opened = []
+    window = sst_app.HistoryWindow(open_settings=lambda: opened.append(True))
+    button = next(b for b in window.findChildren(sst_app.QPushButton) if b.text() == "Settings...")
+    button.click()
+    assert opened == [True]
