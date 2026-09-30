@@ -5,6 +5,7 @@
   uv run sst start                 record, press Enter to stop, print the text (repeats until you quit)
   uv run sst file <audio.wav>      transcribe an existing WAV file
   uv run sst devices               list microphones (* = default)
+  uv run sst bench <folder>        score a reading test recorded with the tray app
   uv run sst web                   open a Record / Stop page in the browser
 
 Options: --engine parakeet   --device <number from `sst devices`>
@@ -81,6 +82,19 @@ def cmd_app(args) -> None:
     sys.exit(app_main())
 
 
+def cmd_bench(args) -> None:
+    from sst import bench
+    from sst.gateway import GatewayConfig, Polisher
+    from sst.settings import Settings
+
+    settings, gateway = Settings.load(), GatewayConfig.load()
+    models = args.model or [m for m in (settings.cleanup_model, settings.cleanup_fallback) if m]
+    polishers = {f"Parakeet + {m}": Polisher(gateway, m, settings.vocabulary) for m in models} if gateway.base_url else {}
+    results = bench.score(Path(args.folder), _load(args.engine), polishers, progress=lambda text: print(" ", text))
+    print()
+    print(results.report())
+
+
 def cmd_web(args) -> None:
     from sst.web import serve
 
@@ -102,6 +116,9 @@ def main() -> None:
     p_file = sub.add_parser("file", help="transcribe a WAV file")
     p_file.add_argument("path")
     sub.add_parser("devices", help="list microphones")
+    p_bench = sub.add_parser("bench", help="score a reading test folder (recorded with the tray app's Reading test)")
+    p_bench.add_argument("folder")
+    p_bench.add_argument("--model", action="append", help="cleanup model to compare (repeatable); default: the ones in Settings")
     p_web = sub.add_parser("web", help="open the record/stop page in your browser")
     p_web.add_argument("--port", type=int, default=8765)
     p_web.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
@@ -110,7 +127,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="  %(message)s")  # e.g. the per-dictation timing line
     try:
         commands = {"app": cmd_app, "dictate": cmd_dictate, "start": cmd_start, "file": cmd_file,
-                    "devices": cmd_devices, "web": cmd_web}
+                    "devices": cmd_devices, "bench": cmd_bench, "web": cmd_web}
         commands[args.command](args)
     except KeyboardInterrupt:
         print("\nStopped.")
