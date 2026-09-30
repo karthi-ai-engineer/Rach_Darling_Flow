@@ -18,10 +18,12 @@ _Last updated: 2026-09-30_
 | 5 | AI text cleanup (model chosen in Settings), key encrypted; one-piece transcription up to 3 min | done, on `main` (PR #12) |
 | 6 | **Rflow 1.0**: product name, generic endpoint / key / model, in-app updates, download website | done, on `main` (PR #14), released **v1.0.0** |
 | fix | Update checks retry when the first connection stalls | done, on `main` (PR #16), released **v1.0.1** |
-| 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words; 1.1.0 | PR #18, waiting for the owner's test + merge |
+| 7 | **Reading test**: accuracy on the user's own voice, per cleanup model; misheard words → Your words | done, on `main` (PR #18), released **v1.1.0** |
+| 8 | **The Rflow window**: a complete app like Wispr Flow (Home, Dictionary, Reading test, AI cleanup, Settings), first-run welcome, branded installer; 1.2.0 | PR #20, waiting for the owner's test + merge |
 
-Released: v1.0.0 and v1.0.1 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel, `site/`).
-The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated itself to 1.0.1.
+Released: v1.0.0, v1.0.1 and v1.1.0 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel,
+`site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
+itself to 1.0.1.
 
 ## Continue on another device
 
@@ -295,6 +297,56 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 - Not done in this phase: trimming silence (VAD) and a Whisper comparison. The owner's reading test results should
   decide whether they're worth it.
 
+## The Rflow window (phase 8)
+
+- The owner's request: Rflow should open as a complete application, like Wispr Flow, so that people who download it
+  from the website or a link can set it up and change everything inside the app.
+- `sst/window.py`, `MainWindow`: a sidebar (Home, Dictionary, Reading test, AI cleanup, Settings; the status and the
+  version at the bottom) and a page stack. It is native Qt with one stylesheet (`stylesheet(theme)`, the website's
+  colours) that follows Windows' light/dark mode (`styleHints().colorSchemeChanged`). An embedded browser
+  (QtWebEngine) would have added ~150 MB and a slower start for the same look. The icons come from Windows' own icon
+  font (Segoe Fluent Icons, or MDL2 Assets on Windows 10). The checkbox tick and the dropdown arrows are small PNGs in
+  `sst/static/ui`, drawn by `scripts/make_ui_images.py`, because a Qt stylesheet can only show images from files.
+- The window keeps no state. It calls the app: `TrayApp` in `sst/app.py` (`apply_settings`, `save_cleanup`,
+  `add_words`, `remove_word`, `score_reading`, `finish_welcome`, `window_closed`, updates), or `PreviewApp` in the
+  self-test, the tests and `scripts/make_site_screenshots.py`. Settings apply at once; AI cleanup has a Save button,
+  because a half-typed endpoint or key shouldn't be used.
+- **Home:**
+  - a greeting and how to dictate with the chosen key
+  - the stats: words this week and in total, words per minute, day streak. `Stats` in `sst/settings.py`, file
+    `%APPDATA%\sst\stats.json`, updated on every dictation; `Dictation.on_result` now also gives the recording's
+    length. The first time, it starts from the history, which has no lengths, so words per minute is shown after half
+    a minute of new dictation.
+  - the recent dictations grouped by day, with copy buttons
+- **Dictionary:** Your words, with add (comma-separated) and remove. It says so when AI cleanup is off.
+- **Reading test:** the phase 7 test, now a page (`ReadingTestPage`), with a "New test" button. Leaving the page stops a
+  recording. Space records only while the test has the focus (`WidgetWithChildrenShortcut`).
+- **Settings:** key, microphone with a live level (`MicrophoneBox` + `audio.LevelMeter`), beeps, keep recordings, start
+  with Windows, check for updates, logs, website, report a problem.
+- **Welcome** (first run, `Settings.welcomed` false): step 1 the microphone with its level; step 2 try a dictation in a
+  text box (the real dictation pastes into it); step 3 optional AI cleanup. Existing users see it once too, since
+  their settings file has no `welcomed` yet.
+- **Opening Rflow again** (Start menu, desktop) shows the running window: the running app listens on the local pipe
+  `Rflow-window-<user>` (`QLocalServer`), and a second start (`show_running_window()`) asks it to open and exits.
+  `--startup` (sign-in) starts with only the tray icon. Closing the window hides it; the first time, a notification
+  says that Rflow keeps running (`Settings.told_about_tray`).
+- **Audio fix:** `Recorder.start()` re-reads the device list by restarting PortAudio, which closes every open stream. With
+  a level meter open, a dictation starting would have pulled the rug from under it (and the reading test's recorder
+  had the same risk). `audio._open_streams` now counts open streams, and the list is only re-read when none is open.
+- **Installer:** Rflow-branded wizard pictures in `packaging/images` (`scripts/make_installer_images.py`, BMP at
+  100–200% scaling), the welcome page switched on, and texts that say what Rflow does and that it opens after Finish.
+  Only options every Inno Setup 6 knows are used: the CI build machine's copy is preinstalled, and its version isn't
+  pinned.
+- **Website:** `site/img/app.png` (Home), `settings.png` (AI cleanup) and the new `welcome.png` are rendered from the
+  real window by `scripts/make_site_screenshots.py`, with generic example data. There is a new section, "A real app,
+  not just a tray icon".
+- Tests: 156. `tests/test_window.py` builds every page with `PreviewApp`. `tests/test_app.py` runs the real `TrayApp`
+  with the settings in memory, a fake model and a fake keyboard hook: loading, a dictation shown on Home, a key
+  change applied at once, words added, close to tray, and a second start showing the window.
+- Checked visually: every page rendered with Windows fonts, light and dark, at 1000×700 and at the minimum 780×540. That
+  caught history cards drawn over the page (removed widgets are only deleted later, so `clear()` hides them first),
+  checkboxes without a box, and native-looking dropdown arrows.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -311,15 +363,19 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
 
 ## Next steps
 
-1. Owner: try PR #18. Either install `dist\Rflow-Setup-1.1.0.exe` over the current version or run `uv run sst app`
-   (quit the installed Rflow first). In Settings, choose the laptop mic and pick the backup model (Load models). Then
-   tray → Reading test..., read the 30 sentences, Score, add the suggested words, and Score again.
-2. Merge PR #18, then tag `v1.1.0` on `main` and push the tag. Installed copies are offered the update within 6 hours
-   (or at once with "Check for updates").
+1. Owner: try PR #20. Quit Rflow (tray → Quit), install `dist\Rflow-Setup-1.2.0.exe` over it, and look at every page.
+   Also check: opening Rflow from the Start menu while it runs brings the window up, and closing the window keeps
+   dictation working.
+2. Merge PR #20, then tag `v1.2.0` on `main` and push the tag. Installed copies are offered the update.
 3. Roadmap:
-   - **Phase 8, text without the AI endpoint:** rule-based fillers and spoken "new line" / "new paragraph"; spacing and
-     capitals that fit the text before the cursor (UI Automation); snippets.
-   - **Phase 9, command mode and context:** "make this formal" on selected text; per-app style.
+   - **Phase 9, AI providers and profiles** (the owner's request):
+     - choose Groq, OpenAI, Anthropic, Gemini, Ollama or vLLM (or any OpenAI-compatible endpoint); enter the key or
+       address; list the models
+     - profiles (e.g. Karthi, Rahul), each with its own setup (provider, models, words, microphone, key, reading
+       tests), switched in the window
+   - **Phase 10, text without the AI endpoint:** rule-based fillers and spoken "new line" / "new paragraph"; spacing
+     and capitals that fit the text before the cursor (UI Automation); snippets.
+   - **Phase 11, command mode and context:** "make this formal" on selected text; per-app style.
    - **Accuracy, if the reading test calls for it:** trim silence (VAD); a Whisper model if IT adds one to the gateway.
    - **Later:** code signing (removes the SmartScreen warning), and a "paste last transcript" hotkey.
 4. Waiting on the owner:
