@@ -13,7 +13,8 @@ _Last updated: 2026-09-29_
 | setup | GitHub CI (lint, tests, CodeQL), Dependabot, templates, CLAUDE.md, this file | PR #4 (CI green), waiting for merge |
 | 2 | Windows installer (`Setup.exe`, no Python needed), CI app build, release pipeline | PR #6, waiting for a test on another laptop + merge |
 | 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | PR #8, the owner confirmed it works (installed app, 2026-09-29), waiting for merge |
-| 4 | A real app: tray icon, recording pill, settings, history, logs (Qt) | PR #10, waiting for a hands-on test + merge |
+| 4 | A real app: tray icon, recording pill, settings, history, logs (Qt) | PR #10, the owner uses it (pill, History), waiting for merge |
+| 5 | AI text cleanup through the company gateway, model chosen in Settings; one-piece transcription up to 3 min | PR #12, waiting for a hands-on test + merge |
 
 ## Continue on another device
 
@@ -175,43 +176,73 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   internal.
 - The test scripts were ad hoc (httpx, one model per run). Phase 5 should turn them into `sst bench gateway`.
 
+## Text cleanup (phase 5)
+
+- The owner's decision: in Settings, choose **1. `unsloth/Qwen3.8-27B-NVFP4`** (best quality) or **2.
+  `Qwen/Qwen3-30B-A3B-Instruct-2507-FP8`** (fastest), or Off. Saving activates it from the next dictation. Only the
+  model changes; everything else stays the same.
+- `sst/gateway.py`, standard library only (http.client, no proxy):
+  - `Polisher.polish(text)` never raises. Each dictation gets 2 s plus 0.04 s per word to answer.
+  - The other model is tried after an HTTP error. A timeout gives the heard text; there's no second wait.
+  - An unreachable gateway (e.g. at home) is skipped for 60 s.
+  - An implausible answer (much shorter or longer) is not used.
+  - `<think>` tags and wrapping quotes are removed.
+  - Connects with a 1.5 s timeout and 3 tries (the first-connect stall), keeps the connection alive, and
+    `prepare()` connects when recording starts.
+- `Dictation.cleanup` is swapped by the app on Save. The state `typed_raw` shows an amber pill, "Typed as heard",
+  plus at most one tray notification per 10 minutes. History stores `heard` next to `text`.
+- The key lives in `%APPDATA%\sst\gateway.json` (Settings edits it; masked field; "Test" button). It is never in git
+  or the logs (`GatewayConfig.__repr__` masks it).
+- The system prompt: fix recognition errors using the user's vocabulary, add punctuation and capitals, remove
+  fillers, keep the wording, don't answer. Settings' "Your words" feed the vocabulary.
+- Against the real gateway:
+
+  | | First cleanup | Next dictation | Connect |
+  |---|---|---|---|
+  | Model 1 | 1.12 s | 0.64 s | 1.6 s, while speaking (the stall happened and was hidden) |
+  | Model 2 | 0.67 s | 0.35 s | 0.05 s |
+  | Fallback (switched-off `qwen3` chosen) | 1.17 s via model 1 | | |
+
+  "STD dictation" → "SST Dictation", "pr's" → "PRs", and fillers were removed.
+- `MAX_PIECE_SECONDS` is 180: a whole dictation (max 3 min) is transcribed in one piece.
+- Tests: 94. `tests/test_gateway.py` runs a fake gateway on localhost (good, error, slow, unreachable, implausible
+  answers, keep-alive, fallback).
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
 - Ctrl+Win isn't sent through the real hook in automated tests (Wispr Flow on the dev laptop would react). The hook
   plumbing is tested with the Menu key, Esc and Ctrl+Alt+X, and Ctrl+Win by the Matcher unit tests. The owner
   confirmed that Ctrl+Win dictation works in the installed app.
-- English only. Punctuation and capitals come from the model as they are; there is no cleanup of filler words yet.
+- English only. The cleanup can't bring back words the recognizer dropped, and it leaves real words that are wrong
+  in context ("charted" for "chatting", "cloud" for "Claude").
+- The console command (`sst dictate`) has no cleanup; the tray app does.
 - The installer isn't code-signed, so SmartScreen warns on first run.
 
 ## Next steps
 
-1. Merge in order: #2, #4, #6, #8, then #10 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the
-   tag, and the Release workflow publishes the installer.
-2. Test the company gateway's own-server models (see above), then use the best: probably transcription
-   (Whisper-class, maybe also Japanese/Tamil) and text polish. Raise MAX_PIECE_SECONDS. Choose the laptop mic.
-   Also try `Setup.exe` on a second laptop.
-3. Roadmap to a Wispr Flow-class app:
-   - **Phase 5, clean text:**
-     - remove fillers (um, uh, you know)
-     - handle self-corrections ("at 2... no, at 3")
-     - spoken "new line" / "new paragraph"
-     - spacing and capitals that fit the text before the cursor (UI Automation)
-     - a personal dictionary (replacements), and snippets (a spoken shortcut expands into saved text)
+1. Merge in order: #2, #4, #6, #8, #10, then #12 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push
+   the tag, and the Release workflow publishes the installer.
+2. Owner:
+   - install the phase 5 build
+   - in Settings, choose a cleanup model, check the API key (Test), add the word list
+   - choose the laptop mic
+3. Roadmap:
    - **Phase 6, accuracy on the owner's voice:**
-     - a reading test with known text to measure the word error rate (WER)
+     - `sst bench`: a reading test with reference texts (about 30 sentences), scored for word errors
+     - compare Parakeet, Parakeet + cleanup model 1 or 2, and a Whisper model if IT adds one to the gateway (vLLM
+       serves Whisper; it would also cover Japanese/Tamil)
      - trim silence (VAD)
-     - compare Parakeet with Whisper large-v3-turbo; add Whisper only if Japanese or Tamil is needed
-   - **Phase 7, AI polish and command mode:** an optional small local LLM (e.g. Qwen2.5 1.5B, llama.cpp) to tidy text;
-     select text, hold the key and say "make this formal". Expect about 2–4 s on this CPU, so it stays optional.
-   - **Phase 8, context:** per-app style (casual in Slack, formal in Outlook, plain in terminals and code editors).
+   - **Phase 7, text without the gateway:** rule-based fillers and spoken "new line" / "new paragraph" for when cleanup
+     is off; self-corrections; spacing and capitals that fit the text before the cursor (UI Automation); snippets.
+   - **Phase 8, command mode and context:** select text, hold the key and say "make this formal" (gateway model);
+     per-app style (casual in Slack, formal in Outlook, plain in terminals and code editors).
    - **Phase 9, distribution:** auto-update from GitHub Releases, code signing (needs a certificate), a "paste last
      transcript" hotkey.
 4. Waiting on the owner:
    - Japanese/Tamil needed?
-   - may text ever go to a cloud AI, or strictly local?
-   - a list of names and terms for the dictionary
+   - the word list for the dictionary
    - the apps used most
    - code-signing budget
    - the product name (SST Dictation?)
-   - whether the office has an internal AI gateway (ask IT)
+   - ask IT: a local Whisper model on the gateway, and switching on `qwen3` / `sensenova-u1.5`

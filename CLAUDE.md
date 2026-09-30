@@ -47,6 +47,9 @@ shared by the tray app (`sst/app.py`, Qt) and the console command. The Windows-o
   pays for itself.
 - Match the existing style: compact code, comments that explain *why*, line length 130, ruff rules from `pyproject.toml`.
 - Never commit `models/`, `recordings/` (the owner's voice), `build/`, `dist/` or `.tools/`.
+- The company AI gateway key is personal. It lives only in `%APPDATA%\sst\gateway.json`. Never commit it, print it or
+  write it into logs, docs or tests. Load it with `GatewayConfig.load()`, whose repr hides it. Test the gateway one
+  model at a time (a small server), and use `tests/test_gateway.py`'s local fake for automated tests.
 - Tests must not press real keys, steal focus or touch the real clipboard; use fakes like `tests/test_dictate.py`.
   End-to-end checks through `SendInput` type into whatever window has focus, so run them only with the owner's OK and
   only while a test window is in front.
