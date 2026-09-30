@@ -40,7 +40,8 @@ class Dictation:
     It reports progress through `on_state(state, message)`, where state is one of
     recording, transcribing, typed (message = the text), typed_raw (typed as heard because the cleanup
     couldn't help; message = the reason), idle, cancelled, ignored, warning, error; and each typed text
-    through `on_result(heard, typed)`. Both are called from the caller's thread and from the worker thread.
+    through `on_result(heard, typed, seconds of audio)`. Both are called from the caller's thread and from the worker
+    thread.
     `cleanup` is an optional sst.gateway.Polisher (or anything with prepare(), polish(text) and last_error).
     """
 
@@ -51,7 +52,7 @@ class Dictation:
         self.listener: HotkeyListener | None = None  # told when recording, so that Esc cancels only then
         self.cleanup = None  # set and replaced by the app when the chosen model changes; None = type what was heard
         self.on_state: Callable[[str, str], None] = lambda state, message: None
-        self.on_result: Callable[[str, str], None] = lambda heard, typed: None
+        self.on_result: Callable[[str, str, float], None] = lambda heard, typed, seconds: None
         self.recording = False
         self._holding = False  # the press that started this recording has not been released yet
         self._started = 0.0
@@ -145,7 +146,7 @@ class Dictation:
                 if self.save:
                     save_recording(audio, rate, typed)
                 if typed:
-                    self.on_result(text, typed)
+                    self.on_result(text, typed, len(audio) / rate)
                 if typed and cleanup and cleanup.last_error:
                     self.on_state("typed_raw", cleanup.last_error)
                 else:

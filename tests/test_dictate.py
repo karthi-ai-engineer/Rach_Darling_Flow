@@ -173,10 +173,10 @@ def test_the_cleaned_text_is_typed_and_both_texts_are_reported(make):
     d, typed, states = make()
     results = []
     d.cleanup = FakeCleanup()
-    d.on_result = lambda heard, text: results.append((heard, text))
+    d.on_result = lambda heard, text, seconds: results.append((heard, text, seconds))
     feed(d, (0, "press"), (0.7, "release"))
     assert typed == ["Hello, world. "] and states[-1] == "typed"
-    assert results == [("hello world", "Hello, world.")]
+    assert results == [("hello world", "Hello, world.", 1.0)]  # with the recording's length, for the speaking speed
     assert d.cleanup.prepared == 1  # the gateway connection was opened while the user was speaking
 
 
