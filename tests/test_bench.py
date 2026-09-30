@@ -8,7 +8,7 @@ from sst.bench import align, errors, words
 
 
 @pytest.mark.parametrize("text, expected", [
-    ("Let's move the Stand-up!", ["lets", "move", "the", "stand", "up"]),
+    ("Let's move the Stand-up!", ["let", "us", "move", "the", "stand", "up"]),
     ("in about 70 seconds", ["in", "about", "seventy", "seconds"]),
     ("20 to 50 names", ["twenty", "to", "fifty", "names"]),
     ("room for 6 at 2 o'clock", ["room", "for", "six", "at", "two", "oclock"]),
@@ -19,6 +19,23 @@ from sst.bench import align, errors, words
 ])
 def test_words_are_normalised_for_a_fair_comparison(text, expected):
     assert words(text) == expected
+
+
+@pytest.mark.parametrize("reference, heard", [
+    ("I'll be away, so I'm off.", "I will be away so I am off"),  # Parakeet often writes the long form
+    ("We can't and won't, don't worry.", "we can not and will not do not worry"),
+    ("They're sure we've seen it.", "they are sure we have seen it"),
+    ("The children built a sandcastle.", "the children built a sand castle"),  # one word or two: the same
+    ("Push it upstream.", "push it up stream"),
+])
+def test_the_same_answer_written_differently_is_not_an_error(reference, heard):
+    assert errors(reference, heard)[0] == 0
+
+
+def test_joining_words_never_hides_a_real_mistake():
+    assert errors("the sand and the castle", "the sandcastle")[0] > 0  # both words are in the sentence on their own
+    assert errors("Check it with CodeQL.", "check it with code ql")[0] == 2  # a name typed wrong is a mistake
+    assert errors("It's fine.", "its fine")[0] == 0 and words("It's") == ["its"]  # 's is ambiguous: left alone
 
 
 def test_digits_and_spelled_numbers_are_the_same_answer():

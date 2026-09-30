@@ -219,7 +219,10 @@ def _number_words(n: int) -> str:
 
 def words(text: str) -> list[str]:
     """Normalised words for a fair comparison: case, punctuation and hyphens don't count, "70" equals "seventy"."""
-    text = text.lower().replace("-", " ").replace("'", "").replace("’", "")
+    text = text.lower().replace("’", "'").replace("-", " ")
+    for pattern, full in _CONTRACTIONS:  # "I'll" and "I will" are the same answer; Parakeet often writes the long form
+        text = re.sub(pattern, full, text)
+    text = text.replace("'", "")
     out = []
     for token in re.findall(r"[a-z]+|\d+", text):
         if token.isdigit() and int(token) < 1_000_000:
@@ -229,9 +232,39 @@ def words(text: str) -> list[str]:
     return [w for w in out if w not in FILLERS]  # the sentences have no fillers; hearing one isn't a mistake
 
 
+# Only the unambiguous ones: "'s" and "'d" can mean two things (it's / its, I'd = I would or I had).
+_CONTRACTIONS = [(r"\bwon't\b", "will not"), (r"\bcan't\b", "can not"), (r"\bcannot\b", "can not"),
+                 (r"\blet's\b", "let us"), (r"n't\b", " not"), (r"'re\b", " are"), (r"'ve\b", " have"),
+                 (r"'ll\b", " will"), (r"\bi'm\b", "i am")]
+
+
+def compared(reference: str, heard: str) -> tuple[list[str], list[str]]:
+    """Both texts as normalised words, with a word written as one or as two joined up ("sandcastle" and "sand
+    castle"), so spelling a compound differently isn't counted as two mistakes. Names and terms are not joined: "code
+    ql" typed for "CodeQL" is a mistake the user has to fix."""
+    ref, hyp = words(reference), words(heard)
+    return _join(ref, set(hyp)), _join(hyp, set(ref))
+
+
+def _join(items: list[str], other: set[str]) -> list[str]:
+    out, k = [], 0
+    while k < len(items):
+        joined = items[k] + items[k + 1] if k + 1 < len(items) else ""
+        if joined in other and joined not in _TERM_WORDS and not {items[k], items[k + 1]} <= other:
+            out.append(items[k] + items[k + 1])
+            k += 2
+        else:
+            out.append(items[k])
+            k += 1
+    return out
+
+
 def term_words(terms=TERMS) -> set[str]:
     """The normalised words of the names and terms ("sherpa-onnx" -> sherpa, onnx), leaving out common words."""
     return {w for term in terms for w in words(term) if w not in _COMMON}
+
+
+_TERM_WORDS = term_words()
 
 
 def align(reference: list[str], heard: list[str]) -> list[tuple[str, str]]:
@@ -269,8 +302,8 @@ def align(reference: list[str], heard: list[str]) -> list[tuple[str, str]]:
 
 def errors(reference: str, heard: str) -> tuple[int, int, list[tuple[str, str]]]:
     """(wrong words, words in the reference, the wrong (ref, heard) pairs)."""
-    ref = words(reference)
-    wrong = [pair for pair in align(ref, words(heard)) if pair[0] != pair[1]]
+    ref, hyp = compared(reference, heard)
+    wrong = [pair for pair in align(ref, hyp) if pair[0] != pair[1]]
     return len(wrong), len(ref), wrong
 
 
