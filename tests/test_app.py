@@ -1,12 +1,17 @@
-"""The tray app's windows, built off-screen (nothing appears on the screen, nothing takes focus)."""
+"""The tray app: the pill, what TrayApp does for the window, and "open Rflow again" (built off-screen: nothing appears
+on the screen, nothing takes focus)."""
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from types import SimpleNamespace  # noqa: E402
+
 import pytest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtNetwork import QLocalServer  # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from sst import app as sst_app  # noqa: E402
+from sst.gateway import GatewayConfig  # noqa: E402
 from sst.settings import Settings  # noqa: E402
 
 
@@ -35,143 +40,138 @@ def test_pill_grows_to_fit_long_messages():
     assert pill.width() > short
 
 
-def test_settings_dialog_returns_what_was_chosen():
-    chosen = Settings(hotkey="menu", microphone="Mic B", sounds=False, save_recordings=True)
-    dialog = sst_app.SettingsDialog(chosen, ["Mic A", "Mic B"])
-    assert dialog.result_settings() == chosen
+def _fake_tray_app(settings: Settings):
+    """TrayApp's methods on a stand-in: apply_settings only records, so nothing touches the real settings file."""
+    fake = SimpleNamespace(settings=settings, gateway=GatewayConfig(), dictation=None, applied=[], cleanups=0)
 
-
-def test_settings_dialog_keeps_a_custom_hotkey_and_an_unplugged_microphone():
-    chosen = Settings(hotkey="ctrl+shift+f9", microphone="Old headset")
-    dialog = sst_app.SettingsDialog(chosen, ["Mic A"])
-    assert dialog.result_settings() == chosen
-    assert "not connected" in dialog.microphone.currentText()
-
-
-def test_history_window_lists_entries_and_copies(monkeypatch):
-    monkeypatch.setattr(sst_app, "read_history", lambda: [{"time": "2026-09-30 10:15:00", "text": "hello world"}])
-    window = sst_app.HistoryWindow()
-    window.refresh()
-    assert window.list.count() == 1 and "hello world" in window.list.item(0).text()
-    window._copy(window.list.item(0))
-    assert QApplication.clipboard().text() == "hello world"
-
-
-def test_settings_dialog_returns_the_cleanup_settings_words_and_endpoint():
-    from sst.gateway import GatewayConfig
-    chosen = Settings(cleanup=True, cleanup_model="model-a", cleanup_fallback="model-b", vocabulary=["Claude Code", "GitHub"])
-    dialog = sst_app.SettingsDialog(chosen, [], GatewayConfig("https://gw.example/v1", "key-1"))
-    assert dialog.result_settings() == chosen
-    assert dialog.result_gateway() == GatewayConfig("https://gw.example/v1", "key-1")
-    dialog.vocabulary.setPlainText("Tamil, Wispr Flow\n\n  SST  ")
-    dialog.api_key.setText("  key-2 ")
-    dialog.model.setCurrentText("  typed-model ")
-    assert dialog.result_settings().vocabulary == ["Tamil", "Wispr Flow", "SST"]
-    assert dialog.result_settings().cleanup_model == "typed-model"  # any model name can be typed
-    assert dialog.result_gateway().api_key == "key-2"
-
-
-def test_a_new_install_has_no_endpoint_or_model_and_cleanup_off():
-    dialog = sst_app.SettingsDialog(Settings(), [])
-    result = dialog.result_settings()
-    assert (result.cleanup, result.cleanup_model, result.cleanup_fallback) == (False, "", "")
-    assert dialog.result_gateway().base_url == ""
-
-
-def test_cleanup_can_be_switched_off_keeping_the_model():
-    dialog = sst_app.SettingsDialog(Settings(cleanup=True, cleanup_model="model-a"), [])
-    dialog.cleanup_on.setChecked(False)
-    assert dialog.result_settings().cleanup is False and dialog.result_settings().cleanup_model == "model-a"
-
-
-def test_history_window_leads_to_settings(monkeypatch):
-    monkeypatch.setattr(sst_app, "read_history", lambda: [])
-    opened = []
-    window = sst_app.HistoryWindow(open_settings=lambda: opened.append(True))
-    button = next(b for b in window.findChildren(sst_app.QPushButton) if b.text() == "Settings...")
-    button.click()
-    assert opened == [True]
-
-
-class FakeRecorder:
-    rate, level = 16_000, 0.0
-
-    def __init__(self, seconds=1.0):
-        self.seconds, self.starts = seconds, 0
-
-    def start(self):
-        self.starts += 1
-
-    def stop(self):
-        import numpy as np
-        return np.zeros(int(self.seconds * self.rate), dtype=np.float32)
-
-
-def _reading_test(tmp_path, recorder=None, score=None, add_words=None):
-    return sst_app.ReadingTest(recorder or FakeRecorder(), score or (lambda folder, progress: None),
-                               add_words or (lambda words: 0), "Test microphone", folder=tmp_path / "test")
-
-
-def test_reading_test_saves_each_sentence_and_moves_on(tmp_path):
-    from sst import bench
-    window = _reading_test(tmp_path)
-    assert window.sentence.text() == bench.SENTENCES[0] and not window.score_button.isEnabled()
-    window.toggle_recording()
-    assert window.recording and window.record_button.text() == "Stop"
-    window.toggle_recording()
-    assert (tmp_path / "test" / "01.wav").exists()
-    assert (tmp_path / "test" / "01.txt").read_text(encoding="utf-8") == bench.SENTENCES[0]
-    assert window.index == 1 and window.sentence.text() == bench.SENTENCES[1]  # moved on to the next sentence
-    assert window.score_button.isEnabled() and "1 recorded" in window.score_button.text()
-
-
-def test_space_records_and_a_too_short_recording_is_not_kept(tmp_path):
-    window = _reading_test(tmp_path, recorder=FakeRecorder(seconds=0.2))
-    window._space()
-    window._space()
-    assert not (tmp_path / "test" / "01.wav").exists() and window.index == 0 and "too short" in window.status.text()
-
-
-def test_an_unfinished_test_continues_at_the_first_sentence_not_read(tmp_path):
-    from sst import bench
-    first = _reading_test(tmp_path)
-    for _ in range(2):
-        first.toggle_recording()
-        first.toggle_recording()
-    again = _reading_test(tmp_path)  # the same folder, as the tray app passes bench.unfinished()
-    assert again.index == 2 and again.sentence.text() == bench.SENTENCES[2] and "2 of 30 read" in again.status.text()
-
-
-def test_redo_replaces_a_recording(tmp_path):
-    recorder = FakeRecorder()
-    window = _reading_test(tmp_path, recorder=recorder)
-    window.toggle_recording()
-    window.toggle_recording()
-    window.go(0)
-    assert window.redo_button.isEnabled() and not window.record_button.isEnabled()
-    window.redo_button.click()
-    window.toggle_recording()
-    assert recorder.starts == 2 and window.recorded() == 1
-
-
-def test_results_show_every_setup_and_add_the_ticked_words(tmp_path):
-    from sst.bench import Results, Setup
-    results = Results(str(tmp_path), ["s1"], [Setup("Parakeet alone", 4, 20, [0.5]), Setup("Parakeet + m", 2, 20, [0.7])],
-                      [("tamil", "tamar", 2)], ["Tamil", "CodeQL"])
-    added = []
-    window = _reading_test(tmp_path, add_words=lambda words: added.extend(words) or len(words))
-    window._show_results(results)
-    assert window.pages.currentIndex() == 1
-    html = window.report.toHtml()
-    assert "Parakeet alone" in html and "20.0%" in html and "10.0%" in html and "tamar" in html
-    window.suggestions.item(1).setCheckState(sst_app.Qt.CheckState.Unchecked)
-    window._add_selected()
-    assert added == ["Tamil"] and "Added 1 word" in window.results_status.text()
+    def apply(new):
+        fake.settings = new
+        fake.applied.append(new)
+    fake.apply_settings = apply
+    fake._apply_cleanup = lambda: setattr(fake, "cleanups", fake.cleanups + 1)
+    return fake
 
 
 def test_adding_words_skips_ones_already_there():
-    from types import SimpleNamespace
-    fake = SimpleNamespace(settings=Settings(vocabulary=["GitHub"]), _apply_cleanup=lambda: None)
-    fake.settings.save = lambda: None
-    assert sst_app.TrayApp._add_words(fake, ["github", "Tamil", "CodeQL"]) == 2
+    fake = _fake_tray_app(Settings(vocabulary=["GitHub"]))
+    assert sst_app.TrayApp.add_words(fake, ["github", "Tamil", "CodeQL", "Tamil"]) == 2
     assert fake.settings.vocabulary == ["GitHub", "Tamil", "CodeQL"]
+    assert sst_app.TrayApp.add_words(fake, ["TAMIL"]) == 0 and len(fake.applied) == 1  # nothing new: nothing saved
+
+
+def test_removing_a_word():
+    fake = _fake_tray_app(Settings(vocabulary=["GitHub", "Tamil"]))
+    sst_app.TrayApp.remove_word(fake, "GitHub")
+    assert fake.settings.vocabulary == ["Tamil"]
+
+
+def test_saving_the_cleanup_keeps_the_other_settings(monkeypatch):
+    monkeypatch.setattr(GatewayConfig, "save", lambda self: None)
+    fake = _fake_tray_app(Settings(hotkey="menu", vocabulary=["Tamil"]))
+    sst_app.TrayApp.save_cleanup(fake, True, "model-a", "model-b", GatewayConfig("http://localhost:11434/v1", ""))
+    s = fake.settings
+    assert (s.cleanup, s.cleanup_model, s.cleanup_fallback, s.hotkey, s.vocabulary) == (True, "model-a", "model-b", "menu",
+                                                                                         ["Tamil"])
+    assert fake.gateway.base_url == "http://localhost:11434/v1"
+
+
+def test_the_first_close_tells_once_that_rflow_keeps_running():
+    told = []
+    fake = _fake_tray_app(Settings())
+    fake._notify = lambda title, message, *_: told.append(title)
+    fake.hotkey_label = lambda: "Ctrl+Win"
+    sst_app.TrayApp.window_closed(fake)
+    sst_app.TrayApp.window_closed(fake)
+    assert told == ["Rflow is still running"] and fake.settings.told_about_tray
+
+
+class FakeListener:
+    """Stands in for the keyboard hook: no real keys are watched."""
+
+    def __init__(self, hotkey):
+        import queue
+        self.hotkey, self.events, self.recording, self.running = hotkey, queue.Queue(), False, False
+
+    def start(self):
+        self.running = True
+
+    def stop(self):
+        self.running = False
+
+
+class FakeEngine:
+    name = "fake"
+
+    def transcribe(self, audio, rate):
+        return "hello"
+
+
+@pytest.fixture
+def tray_app(monkeypatch, tmp_path):
+    """The real TrayApp with everything outside the process faked: settings in memory, no model, no hook."""
+    from PySide6.QtTest import QTest
+
+    from sst.settings import Stats
+    saved = {}
+    monkeypatch.setattr(Settings, "load", classmethod(lambda cls, path=None: Settings(welcomed=True)))
+    monkeypatch.setattr(Settings, "save", lambda self, path=None: saved.__setitem__("settings", self))
+    monkeypatch.setattr(Stats, "load", classmethod(lambda cls, path=None, history=None: Stats()))
+    monkeypatch.setattr(Stats, "save", lambda self, path=None: saved.__setitem__("stats", self))
+    monkeypatch.setattr(GatewayConfig, "load", classmethod(lambda cls, path=None: GatewayConfig()))
+    history = []
+    monkeypatch.setattr(sst_app, "add_to_history", lambda text, heard=None: history.insert(0, {
+        "time": "2026-09-30 10:15:00", "text": text}))
+    monkeypatch.setattr(sst_app, "read_history", lambda: history)
+    monkeypatch.setattr(sst_app, "load_engine", lambda name: FakeEngine())
+    monkeypatch.setattr(sst_app, "HotkeyListener", FakeListener)
+    monkeypatch.setattr(sst_app, "wispr_flow_running", lambda: False)
+    monkeypatch.setattr(sst_app, "input_device_names", lambda refresh=True: ["Mic A"])
+    monkeypatch.setattr(sst_app, "SERVER_NAME", f"Rflow-test-app-{os.getpid()}")
+    app = sst_app.TrayApp(quiet_start=True)
+    for _ in range(100):  # the model "loads" on its thread
+        if app.dictation:
+            break
+        QTest.qWait(20)
+    yield app, saved, history
+    app.window.hide()
+    app.quit()
+
+
+def test_the_tray_app_and_its_window_work_together(tray_app):
+    app, saved, history = tray_app
+    assert app.dictation and app.listener.running and app.window.ready
+    assert "Ready: hold Ctrl+Win" in app.window.status_label.text()
+    app.window.open("home")
+    app._on_result("hello world", "Hello, world.", 2.0)  # what the dictation reports after typing
+    assert history[0]["text"] == "Hello, world." and saved["stats"].words == 2
+    assert "Hello, world." in [label.text() for label in app.window.pages["home"].findChildren(QLabel)]
+    settings_page = app.window.pages["settings"]
+    first_listener = app.listener
+    settings_page.hotkey.setCurrentIndex(settings_page.hotkey.findData("menu"))  # applied at once
+    assert saved["settings"].hotkey == "menu" and app.listener is not first_listener and not first_listener.running
+    assert app.hotkey_label() == "Menu key"
+    assert app.add_words(["Tamil"]) == 1 and saved["settings"].vocabulary == ["Tamil"]
+    app.window.close()
+    assert not app.window.isVisible() and saved["settings"].told_about_tray
+
+
+def test_the_tray_app_shows_its_window_when_opened_again(tray_app):
+    app, _, _ = tray_app
+    assert not app.window.isVisible()  # started at sign-in: only the tray icon
+    assert sst_app.show_running_window()
+    from PySide6.QtTest import QTest
+    for _ in range(50):
+        if app.window.isVisible():
+            break
+        QTest.qWait(20)
+    assert app.window.isVisible()
+
+
+def test_opening_rflow_again_reaches_the_running_copy(monkeypatch):
+    monkeypatch.setattr(sst_app, "SERVER_NAME", f"Rflow-test-{os.getpid()}")
+    assert not sst_app.show_running_window()  # nothing is running: the caller starts normally
+    server = QLocalServer()
+    assert server.listen(sst_app.SERVER_NAME)
+    assert sst_app.show_running_window()
+    assert server.waitForNewConnection(2000) or server.hasPendingConnections()
+    server.close()

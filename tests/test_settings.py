@@ -1,7 +1,8 @@
 import json
+from datetime import date, timedelta
 
 from sst import settings
-from sst.settings import Settings, add_to_history, read_history
+from sst.settings import Settings, Stats, add_to_history, read_history
 
 
 def test_missing_file_gives_defaults(tmp_path):
@@ -77,3 +78,50 @@ def test_history_keeps_what_was_heard_when_the_cleanup_changed_it(tmp_path):
     newest, oldest = read_history(path)
     assert oldest == {"time": oldest["time"], "text": "Hello, world.", "heard": "hello world"}
     assert "heard" not in newest
+
+
+def test_the_first_run_flags_are_off_for_a_new_user_and_saved(tmp_path):
+    path = tmp_path / "settings.json"
+    assert not Settings().welcomed and not Settings().told_about_tray
+    Settings(welcomed=True, told_about_tray=True).save(path)
+    assert Settings.load(path) == Settings(welcomed=True, told_about_tray=True)
+
+
+def test_stats_count_words_speed_week_and_streak():
+    today = date(2026, 9, 30)
+    stats = Stats()
+    stats.add("one two three four", 2.0, today - timedelta(days=8))  # outside this week
+    stats.add("five six", None, today - timedelta(days=1))  # length unknown: not in the speed
+    stats.add("seven eight nine", 1.0, today)
+    assert (stats.words, stats.dictations, stats.words_this_week(today)) == (9, 3, 5)
+    assert stats.streak(today) == 2 and stats.streak(today + timedelta(days=1)) == 2  # today isn't over yet
+    assert stats.streak(today + timedelta(days=2)) == 0
+    assert stats.words_per_minute is None  # too little speech to say
+    stats.add(" ".join(["word"] * 70), 30.0, today)
+    assert stats.words_per_minute == 140  # 77 timed words in 33 s
+
+
+def test_stats_round_trip_and_start_from_the_history(tmp_path):
+    history = tmp_path / "history.jsonl"
+    add_to_history("Hello there, world.", path=history)
+    add_to_history("Again.", path=history)
+    stats = Stats.load(tmp_path / "stats.json", history=history)
+    assert (stats.words, stats.dictations, stats.seconds) == (4, 2, 0.0)
+    assert stats.days == {date.today().isoformat(): 4}
+    stats.add("more words", 1.0, date.today())
+    stats.save(tmp_path / "stats.json")
+    assert Stats.load(tmp_path / "stats.json", history=history) == stats
+
+
+def test_damaged_stats_start_again_from_the_history(tmp_path):
+    path = tmp_path / "stats.json"
+    path.write_text('{"words": "many"}', encoding="utf-8")
+    assert Stats.load(path, history=tmp_path / "none.jsonl") == Stats()
+
+
+def test_stats_keep_a_limited_number_of_days(monkeypatch):
+    monkeypatch.setattr(settings, "STATS_DAYS", 3)
+    stats = Stats()
+    for n in range(5):
+        stats.add("word", 1.0, date(2026, 9, 1) + timedelta(days=n))
+    assert list(stats.days) == ["2026-09-03", "2026-09-04", "2026-09-05"] and stats.words == 5

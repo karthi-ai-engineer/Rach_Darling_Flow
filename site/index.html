@@ -51,6 +51,8 @@
   .card h3 { margin: 0 0 6px; font-size: 17px; }
   .card p { margin: 0; color: var(--muted); font-size: 15px; }
   .icon { font-size: 22px; margin-bottom: 8px; }
+  .grid.pair { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid.pair .card { padding: 16px; }
   .steps { counter-reset: step; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
   .step { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; position: relative; }
   .step::before { counter-increment: step; content: counter(step); display: inline-grid; place-items: center; width: 30px; height: 30px;
@@ -69,7 +71,7 @@
   footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
   @media (max-width: 860px) {
     .hero, .two { grid-template-columns: 1fr; gap: 32px; padding-top: 28px; }
-    .grid, .steps { grid-template-columns: 1fr; }
+    .grid, .grid.pair, .steps { grid-template-columns: 1fr; }
     nav a:not(.keep) { display: none; }
   }
 </style>
@@ -95,14 +97,14 @@
       </div>
       <p class="release" id="release">Windows 10 and 11, 64-bit · free</p>
     </div>
-    <img class="shot" src="img/app.png" alt="The Rflow window with recent dictations and an update banner">
+    <img class="shot" src="img/app.png" alt="The Rflow window: how to dictate, your stats and your recent dictations">
   </div>
 </div>
 
 <section id="features">
   <div class="wrap">
     <h2>Dictation that stays out of the way</h2>
-    <p class="sub">A small tray app with one job: turn what you say into text, wherever you are typing.</p>
+    <p class="sub">A small app with one job: turn what you say into text, wherever you are typing.</p>
     <div class="grid">
       <div class="card"><div class="icon">⌨️</div><h3>Works in every app</h3>
         <p>Chat, email, documents, code editors, the browser: the text goes where your cursor is. Your clipboard is left as it was.</p></div>
@@ -125,7 +127,7 @@
     <h2>How it works</h2>
     <p class="sub">Three steps, and you're dictating.</p>
     <div class="steps">
-      <div class="step"><h3>Install</h3><p>Run <b>Rflow-Setup.exe</b>. No admin rights needed; the speech model is included, so it also works offline.</p></div>
+      <div class="step"><h3>Install</h3><p>Run <b>Rflow-Setup.exe</b>. No admin rights needed; the speech model is included, so it also works offline. Rflow then helps you pick your microphone.</p></div>
       <div class="step"><h3>Click in a text box</h3><p>Any app: Teams, Slack, Outlook, Word, VS Code, your browser...</p></div>
       <div class="step"><h3>Hold Ctrl+Win and speak</h3><p>Let go when you're done. The text appears where your cursor is, usually in well under a second.</p></div>
     </div>
@@ -136,8 +138,27 @@
         <tr><td>tap <kbd>Ctrl</kbd>+<kbd>Win</kbd></td><td>hands-free: tap again to stop</td></tr>
         <tr><td><kbd>Ctrl</kbd>+<kbd>Win</kbd>+<kbd>Space</kbd></td><td>hands-free as well</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>cancel the recording</td></tr>
-        <tr><td>click the tray icon</td><td>history, settings, updates</td></tr>
+        <tr><td>open Rflow</td><td>your dictations, words and settings</td></tr>
       </table>
+    </div>
+  </div>
+</section>
+
+<section id="app">
+  <div class="wrap two">
+    <img class="shot" src="img/welcome.png" alt="Rflow's welcome: choose the microphone, try a first dictation, then optionally AI cleanup">
+    <div>
+      <h2>A real app, not just a tray icon</h2>
+      <p class="sub">Open Rflow from the Start menu, or click its icon near the clock. The first time, it helps you choose
+        your microphone and try your first dictation. After that, everything is in one window:</p>
+      <div class="grid pair">
+        <div class="card"><h3>Home</h3><p>Your recent dictations, ready to copy again, and your words per minute.</p></div>
+        <div class="card"><h3>Dictionary</h3><p>Names and terms Rflow should spell your way.</p></div>
+        <div class="card"><h3>Reading test</h3><p>Read 30 sentences and see how well Rflow understands you.</p></div>
+        <div class="card"><h3>Settings</h3><p>Your key and microphone, with a live level to check it.</p></div>
+      </div>
+      <p class="sub" style="margin: 18px 0 0">Closing the window keeps Rflow running in the background, so dictation
+        still works everywhere.</p>
     </div>
   </div>
 </section>
@@ -151,7 +172,7 @@
         and terms you use, so they come out right.</p>
       <p class="sub">If the endpoint is slow or unreachable, Rflow simply types what it heard, so dictation never waits.</p>
     </div>
-    <img class="shot" src="img/settings.png" alt="Rflow settings: key, microphone, text cleanup with endpoint and model">
+    <img class="shot" src="img/settings.png" alt="Rflow's AI cleanup page: endpoint, key, model and backup model">
   </div>
 </section>
 

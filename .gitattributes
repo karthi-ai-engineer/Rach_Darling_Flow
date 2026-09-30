@@ -4,3 +4,4 @@
 *.png binary
 *.wav binary
 *.onnx binary
+*.bmp binary

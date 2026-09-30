@@ -43,9 +43,12 @@ uv run ruff check .                              # lint
 ```
 
 The layout is in `README.md`. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
-shared by the tray app (`sst/app.py`, Qt) and the console command. In-app updates are `sst/updates.py`, and the text
-cleanup is `sst/gateway.py`. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`, `sst/paste.py`,
-`sst/settings.py` and `sst/gateway.py` (DPAPI). UI tests run Qt off-screen (`tests/test_app.py`).
+shared by the app (`sst/app.py`, Qt: tray, pill, `TrayApp`) and the console command. The window is `sst/window.py`: it
+keeps no state and calls `TrayApp`, or `PreviewApp` in tests and screenshots. In-app updates are `sst/updates.py`, and
+the text cleanup is `sst/gateway.py`. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`,
+`sst/paste.py`, `sst/settings.py` and `sst/gateway.py` (DPAPI). UI tests run Qt off-screen (`tests/test_app.py`,
+`tests/test_window.py`). To see a UI change, render it with the Windows platform but without showing it, e.g. with
+`scripts/make_site_screenshots.py`, and look at the image in both themes.
 
 ## Conventions
 

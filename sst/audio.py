@@ -24,11 +24,22 @@ def _default_host_api() -> int:
     return sd.query_devices(kind="input")["hostapi"]
 
 
-def input_device_names(refresh: bool = True) -> list[str]:
-    """Microphones as Windows lists them (the default host API), for the settings window."""
-    if refresh:  # PortAudio reads the device list only once; re-read it to see headsets plugged in since
+_open_streams = 0  # recordings and level meters running right now
+
+
+def _refresh_devices() -> None:
+    # PortAudio reads the device list only once; re-reading it (~45 ms) shows a headset plugged in since, or a new
+    # Windows default. It restarts PortAudio, which would pull the rug from under any open stream, so not while one
+    # is open (e.g. the settings page's level meter while a dictation starts).
+    if not _open_streams:
         sd._terminate()
         sd._initialize()
+
+
+def input_device_names(refresh: bool = True) -> list[str]:
+    """Microphones as Windows lists them (the default host API), for the settings window."""
+    if refresh:
+        _refresh_devices()
     api = _default_host_api()
     return [d["name"] for d in sd.query_devices() if d["max_input_channels"] > 0 and d["hostapi"] == api
             and "Sound Mapper" not in d["name"]]
@@ -54,16 +65,17 @@ class Recorder:
         self._stream: sd.InputStream | None = None
 
     def start(self) -> None:
-        # Re-read the device list first (~45 ms): a long-running app must follow a headset plugged in,
-        # or a new default microphone chosen in Windows, since the list was last read.
-        sd._terminate()
-        sd._initialize()
+        global _open_streams
+        if self._stream is not None:
+            self.stop()
+        _refresh_devices()  # a long-running app must follow the microphones plugged in since the last recording
         device = _resolve(self.device)
         self.rate = _pick_rate(device)
         self._chunks, self.level = [], 0.0
-        self._stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32",
-                                      device=device, callback=self._on_audio)
-        self._stream.start()
+        stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32", device=device, callback=self._on_audio)
+        stream.start()
+        self._stream = stream
+        _open_streams += 1
 
     def _on_audio(self, indata, frames, time, status):
         block = indata[:, 0].copy()
@@ -72,12 +84,22 @@ class Recorder:
 
     def stop(self) -> np.ndarray:
         """Stop recording and return the samples, in [-1, 1] at self.rate."""
+        global _open_streams
         if self._stream is not None:
             self._stream.close()
             self._stream = None
+            _open_streams -= 1
         self.level = 0.0
         chunks, self._chunks = self._chunks, []
         return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
+
+
+class LevelMeter(Recorder):
+    """Only the loudness, for a level bar in the window (e.g. while choosing a microphone); no audio is kept."""
+
+    def _on_audio(self, indata, frames, time, status):
+        block = indata[:, 0]
+        self.level = float(np.sqrt(np.mean(block * block)))
 
 
 def record_until_enter(device: int | None = None) -> tuple[np.ndarray, int]:

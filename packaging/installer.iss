@@ -35,11 +35,19 @@ SetupIconFile=..\sst\static\sst.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 WizardStyle=modern
+; Rflow-branded pictures (scripts/make_installer_images.py); Inno Setup picks the size that fits the display scaling.
+WizardImageFile=images\wizard-164.bmp,images\wizard-205.bmp,images\wizard-246.bmp,images\wizard-328.bmp
+WizardSmallImageFile=images\wizard-small-55.bmp,images\wizard-small-69.bmp,images\wizard-small-83.bmp,images\wizard-small-110.bmp
+DisableWelcomePage=no
 ; The model is ~95% of the size; LZMA2 brings it to about 60%. Solid mode would only add memory use.
 Compression=lzma2/normal
 SolidCompression=no
 LZMAUseSeparateProcess=yes
 LZMANumBlockThreads=4
+
+[Messages]
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nRflow types what you say, in any app: hold Ctrl+Win, speak, and let go. Your speech is recognised on this computer; your voice is never uploaded.%n%nIt needs no administrator rights and no internet connection.
+FinishedLabel=[name] is installed.%n%nWhen you click Finish, Rflow opens and helps you choose your microphone and try your first dictation. After that, hold Ctrl+Win in any app and speak.
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
