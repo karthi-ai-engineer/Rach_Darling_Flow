@@ -28,6 +28,8 @@ class Settings:
     microphone: str = ""  # a device name from input_device_names(); "" = the Windows default
     sounds: bool = True
     save_recordings: bool = True
+    warm_mic: bool = True  # keep the microphone open a few minutes after dictating: instant start, no lost first word
+    raw_audio: bool = False  # ask Windows for the microphone without its voice effects (noise suppression, gating)
     cleanup: bool = False  # clean up the text with an AI model before typing it
     cleanup_model: str = ""  # a model id on the user's endpoint (sst.gateway)
     cleanup_fallback: str = ""  # optional backup model, tried when the first one fails

@@ -245,8 +245,10 @@ def run(folders: list[Path], engine, pipelines: list[Pipeline], progress: Callab
         session = bench.read_session(folder)
         for wav, sentence in bench.recordings(folder):
             audio, rate = load_wav(wav)
-            recordings.append(Recording(str(wav), sentence, folder.name, session["block"],
-                                        session.get("device") or session.get("microphone") or "unknown", measure(audio, rate)))
+            microphone = session.get("device") or session.get("microphone") or "unknown"
+            if session.get("mode") == "raw":  # raw and Windows-processed recordings are compared apart
+                microphone += " (raw)"
+            recordings.append(Recording(str(wav), sentence, folder.name, session["block"], microphone, measure(audio, rate)))
             audio_by_recording.append((folder, wav, audio, rate))
     scores = []
     for pipeline in pipelines:

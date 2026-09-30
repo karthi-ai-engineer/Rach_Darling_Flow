@@ -395,3 +395,43 @@ def test_the_welcome_asks_for_a_name():
     window.pages["welcome"].name.setText("Priya")
     _button(window.pages["welcome"], "Start using Rflow").click()
     assert app.profiles.current.name == "Priya" and ("finish_welcome", "Priya") in app.calls
+
+
+# ---- capture settings
+
+def test_the_microphone_settings_apply_at_once_and_warn_about_bluetooth(monkeypatch):
+    monkeypatch.setattr(w, "call_quality", lambda device: device == "Headset (Buds)")
+    window, app = _window()
+    page = window.pages["settings"]
+    assert page.warm_mic.isChecked() and not page.raw_audio.isChecked()  # warm by default (the owner's choice)
+    assert page.call_warning.isHidden()
+    page.raw_audio.setChecked(True)
+    page.warm_mic.setChecked(False)
+    assert app.settings.raw_audio and not app.settings.warm_mic
+    page.microphone.combo.addItem("Headset (Buds)", "Headset (Buds)")
+    page.microphone.combo.setCurrentIndex(page.microphone.combo.findData("Headset (Buds)"))
+    assert not page.call_warning.isHidden() and app.settings.microphone == "Headset (Buds)"
+
+
+def test_the_reading_test_saves_what_came_after_record_not_the_lead_in(tmp_path):
+    from sst.audio import Take
+
+    class Warm(FakeRecorder):
+        tail = 0.3
+
+        def stop_later(self):
+            self.stops += 1
+            take = Take([np.full(int(0.4 * self.rate), 0.5, dtype=np.float32)], self.rate)  # lead-in
+            take.chunks.append(np.zeros(int(0.3 * self.rate), dtype=np.float32))  # too short a reading
+            take.done.set()
+            return take
+
+        def close(self):
+            self.closed = True
+    recorder = Warm()
+    test = _reading_test(tmp_path, recorder=recorder)
+    test.toggle_recording()
+    test.toggle_recording()
+    assert "too short" in test.status.text() and test.recorded() == 0
+    test.stop()
+    assert recorder.closed  # leaving the page closes even a warm microphone
