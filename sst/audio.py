@@ -20,30 +20,62 @@ def _pick_rate(device: int | None) -> int:
         return int(sd.query_devices(device, "input")["default_samplerate"])
 
 
+def _default_host_api() -> int:
+    return sd.query_devices(kind="input")["hostapi"]
+
+
+def input_device_names(refresh: bool = True) -> list[str]:
+    """Microphones as Windows lists them (the default host API), for the settings window."""
+    if refresh:  # PortAudio reads the device list only once; re-read it to see headsets plugged in since
+        sd._terminate()
+        sd._initialize()
+    api = _default_host_api()
+    return [d["name"] for d in sd.query_devices() if d["max_input_channels"] > 0 and d["hostapi"] == api
+            and "Sound Mapper" not in d["name"]]
+
+
+def _resolve(device: int | str | None) -> int | None:
+    """A device number, or a microphone name (stable across restarts); None or an unplugged name = Windows default."""
+    if not isinstance(device, str):
+        return device
+    api = _default_host_api()
+    return next((i for i, d in enumerate(sd.query_devices())
+                 if d["name"] == device and d["max_input_channels"] > 0 and d["hostapi"] == api), None)
+
+
 class Recorder:
     """Records mono audio in the background between start() and stop()."""
 
-    def __init__(self, device: int | None = None):
-        self.device = device
+    def __init__(self, device: int | str | None = None):
+        self.device = device  # number, microphone name, or None for the Windows default
         self.rate = TARGET_RATE
+        self.level = 0.0  # loudness of the latest block (RMS), for the recording indicator
         self._chunks: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
 
     def start(self) -> None:
-        self.rate = _pick_rate(self.device)
-        self._chunks = []
+        # Re-read the device list first (~45 ms): a long-running app must follow a headset plugged in,
+        # or a new default microphone chosen in Windows, since the list was last read.
+        sd._terminate()
+        sd._initialize()
+        device = _resolve(self.device)
+        self.rate = _pick_rate(device)
+        self._chunks, self.level = [], 0.0
         self._stream = sd.InputStream(samplerate=self.rate, channels=1, dtype="float32",
-                                      device=self.device, callback=self._on_audio)
+                                      device=device, callback=self._on_audio)
         self._stream.start()
 
     def _on_audio(self, indata, frames, time, status):
-        self._chunks.append(indata[:, 0].copy())
+        block = indata[:, 0].copy()
+        self._chunks.append(block)
+        self.level = float(np.sqrt(np.mean(block * block)))
 
     def stop(self) -> np.ndarray:
         """Stop recording and return the samples, in [-1, 1] at self.rate."""
         if self._stream is not None:
             self._stream.close()
             self._stream = None
+        self.level = 0.0
         chunks, self._chunks = self._chunks, []
         return np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float32)
 
