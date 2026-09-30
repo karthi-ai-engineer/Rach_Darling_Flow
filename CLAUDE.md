@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-Rules for AI coding assistants (Claude Code) in this repository. Read `HANDOFF.md` first: it says where the work stands.
+Rules for AI coding assistants (Claude Code) in this repository. Read `HANDOFF.md` first (its "Start here" section):
+it says where the work stands, how the owner likes to work, and what isn't in git (the model, the owner's recordings).
+The accuracy research behind phases 10-13 is in `docs/research/` (summary: `docs/accuracy.md`).
 
 ## Authorship: karthi-ai-engineer only
 
