@@ -28,7 +28,7 @@ from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QFo
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
-from sst import __version__, bench, updates
+from sst import __version__, bench, evaluate, updates
 from sst.audio import Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import load_engine
@@ -461,14 +461,17 @@ class TrayApp:
     def remove_word(self, word: str) -> None:
         self.apply_settings(dataclasses.replace(self.settings, vocabulary=[w for w in self.settings.vocabulary if w != word]))
 
-    def score_reading(self, folder: Path, progress) -> bench.Results:
-        """Parakeet alone, then with the cleanup model and the backup model, one at a time (the endpoint may be small)."""
+    def score_reading(self, folders: list[Path], progress) -> evaluate.Results:
+        """Parakeet alone, then with the cleanup model and the backup model, one at a time (the endpoint may be small).
+        The report goes into the test's folder, or into 'summary' when several tests are scored together."""
         if not self.dictation:
             raise RuntimeError("The speech model is still loading; try again in a moment.")
         s = self.settings
         models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.address else []
-        polishers = {f"Parakeet + {m.rsplit('/', 1)[-1]}": Polisher(self.gateway, m, s.vocabulary) for m in models}
-        return bench.score(folder, self.dictation.engine, polishers, progress)
+        polishers = {m.rsplit("/", 1)[-1]: Polisher(self.gateway, m, s.vocabulary) for m in models}
+        results = evaluate.run(folders, self.dictation.engine, evaluate.pipelines_for(polishers), progress)
+        results.save(evaluate.output_folder(folders))
+        return results
 
     def finish_welcome(self, name: str = "") -> None:
         if name.strip():

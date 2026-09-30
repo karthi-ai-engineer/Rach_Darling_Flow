@@ -1,5 +1,6 @@
 """The Rflow window, built off-screen with PreviewApp in place of the tray app (no model, no microphone, no hook)."""
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from sst import bench  # noqa: E402
 from sst import window as w  # noqa: E402
+from sst.audio import save_wav  # noqa: E402
 from sst.gateway import GatewayConfig  # noqa: E402
 from sst.settings import Settings, Stats  # noqa: E402
 
@@ -182,7 +184,7 @@ class FakeRecorder:
 
 
 def _reading_test(tmp_path, recorder=None, score=None, add_words=None):
-    return w.ReadingTest(recorder or FakeRecorder(), score or (lambda folder, progress: None),
+    return w.ReadingTest(recorder or FakeRecorder(), score or (lambda folders, progress: None),
                          add_words or (lambda words: 0), "Test microphone", folder=tmp_path / "test")
 
 
@@ -234,16 +236,59 @@ def test_leaving_the_page_stops_a_recording_without_keeping_it(tmp_path):
     assert not test.recording and recorder.stops == 1 and test.recorded() == 0
 
 
+def test_a_test_notes_its_set_and_microphone_with_the_first_recording(tmp_path):
+    class DescribedRecorder(FakeRecorder):
+        def describe(self):
+            return {"device": "Headset (Earbuds)", "host_api": "MME", "rate": self.rate}
+    test = w.ReadingTest(DescribedRecorder(), lambda folders, progress: None, lambda words: 0, "Earbuds",
+                         folder=tmp_path / "test", block="C")
+    assert test.sentence.text() == bench.BLOCKS["C"][0] and "Set C" in test.counter.text()
+    test.toggle_recording()
+    test.toggle_recording()
+    session = bench.read_session(tmp_path / "test")
+    assert (session["block"], session["microphone"], session["device"]) == ("C", "Earbuds", "Headset (Earbuds)")
+    assert (tmp_path / "test" / "01.txt").read_text(encoding="utf-8") == bench.BLOCKS["C"][0]
+    again = w.ReadingTest(FakeRecorder(), lambda folders, progress: None, lambda words: 0, "Laptop",
+                          folder=tmp_path / "test", block="A")  # resumed: keeps its own set
+    assert again.block == "C" and again.sentence.text() == bench.BLOCKS["C"][1]
+
+
+def test_score_all_tests_scores_every_test_next_to_this_one(tmp_path):
+    asked = []
+    test = w.ReadingTest(FakeRecorder(), lambda folders, progress: asked.append(folders), lambda words: 0, "mic",
+                         folder=tmp_path / "2026-10-01_100000")
+    old = tmp_path / "2026-10-01_090000"
+    bench.write_session(old, "A", "mic", {})
+    save_wav(old / "01.wav", np.zeros(16000, dtype=np.float32), 16000)
+    (old / "01.txt").write_text("x", encoding="utf-8")
+    test.toggle_recording()
+    test.toggle_recording()
+    test.start_scoring(every=True)
+    test.start_scoring()
+    deadline = time.monotonic() + 5
+    while len(asked) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert sorted(asked, key=len) == [[test.folder], [old, test.folder]]
+
+
 def test_results_show_every_setup_and_add_the_ticked_words(tmp_path):
-    from sst.bench import Results, Setup
-    results = Results(str(tmp_path), ["s1"], [Setup("Parakeet alone", 4, 20, [0.5]), Setup("Parakeet + m", 2, 20, [0.7])],
-                      [("tamil", "tamar", 2)], ["Tamil", "CodeQL"])
+    from sst.audio import AudioStats
+    from sst.evaluate import Recording, Results, Score
+    wide, narrow = AudioStats(2.0, -20, -70, -3, 0, -30), AudioStats(2.0, -20, -60, -3, 0, -80)
+    recordings = [Recording("1.wav", "s1", "t1", "A", "Laptop", wide), Recording("2.wav", "s2", "t2", "C", "Earbuds", narrow)]
+    alone = Score("Parakeet alone", ["a", "b"], [3, 1], [10, 10], [1, 0], [2, 1], [0, 0], [5, 1], [50, 50], [0.4, 0.6],
+                  interval=(0.1, 0.3))
+    cleaned = Score("Parakeet + m", ["a", "b"], [1, 1], [10, 10], [0, 0], [2, 1], [0, 0], [2, 1], [50, 50], [0.7, 0.9],
+                    interval=(0.05, 0.15), difference=(-0.1, -0.2, -0.02))
+    results = Results([str(tmp_path)], recordings, [alone, cleaned], [("tamil", "tamar", 2)], ["Tamil", "CodeQL"])
     added = []
     test = _reading_test(tmp_path, add_words=lambda words: added.extend(words) or len(words))
     test._show_results(results)
     assert test.pages.currentIndex() == 1
     html = test.report.toHtml()
     assert "Parakeet alone" in html and "20.0%" in html and "10.0%" in html and "tamar" in html
+    assert "better" in html and "from 2 tests" in html
+    assert "Earbuds" in html and "phone call" in html and "Laptop</b>" not in html  # only the narrowband one warned
     test.suggestions.item(1).setCheckState(Qt.CheckState.Unchecked)
     test._add_selected()
     assert added == ["Tamil"] and "Added 1 word" in test.results_status.text()

@@ -534,26 +534,31 @@ class DictionaryPage(Page):
 # ---------------------------------------------------------------- Reading test
 
 class ReadingTest(QWidget):
-    """The reading test: read the sentences aloud, then see how many words each setup gets wrong (sst/bench.py)."""
+    """The reading test: read a set of sentences aloud, then see how many words each setup gets wrong (sst/evaluate.py)."""
 
     scored = Signal(object)  # from the scoring thread
     progressed = Signal(str)
     failed = Signal(str)
     restart = Signal()  # "New test"
 
-    def __init__(self, recorder, score, add_words, microphone: str, folder: Path | None = None):
+    def __init__(self, recorder, score, add_words, microphone: str, folder: Path | None = None, block: str = "A"):
         super().__init__()
-        self.recorder, self._score, self._add_words = recorder, score, add_words
+        self.recorder, self._score, self._add_words, self.microphone = recorder, score, add_words, microphone
         self.folder = folder or bench.BENCH_DIR / time.strftime("%Y-%m-%d_%H%M%S")
+        # A test already started keeps its set; a new one reads the set it was given.
+        started = (self.folder / bench.SESSION_FILE).exists() or bool(self.recorded())
+        self.block = bench.read_session(self.folder)["block"] if started else block
+        self.sentences = bench.BLOCKS[self.block]
         self.index, self.recording = 0, False
         self.scored.connect(self._show_results)
         self.progressed.connect(lambda message: self.status.setText(message))
         self.failed.connect(self._score_failed)
 
         # page 1: reading
-        intro = text(f"Read each sentence aloud the way you normally dictate. Microphone: {microphone}. Rflow then "
-                     "counts the words it gets wrong, with and without AI cleanup. About 10 minutes; you can stop "
-                     "and continue later.", muted=True)
+        purpose = "a practice set" if self.block in bench.TUNING else "a test set"
+        intro = text(f"Read each sentence aloud the way you normally dictate. Set {self.block} of {len(bench.BLOCKS)} "
+                     f"({purpose}), microphone: {microphone}. Rflow then counts the words it gets wrong, with and "
+                     "without AI cleanup. About 6 minutes; you can stop and continue later.", muted=True)
         self.counter = text(wrap=False)
         self.sentence = text("", "sentence")
         self.sentence.setMinimumHeight(110)
@@ -588,8 +593,9 @@ class ReadingTest(QWidget):
         results_layout.addWidget(self.results_status)
         results_layout.addLayout(row(button("Add to Your words", self._add_selected, primary=True),
                                      button("Score again", self.start_scoring),
+                                     button("Score all tests", lambda: self.start_scoring(every=True)),
                                      button("Open folder", lambda: open_folder(self.folder)),
-                                     button("New test", self.restart.emit), stretch_at=4))
+                                     button("New test", self.restart.emit), stretch_at=5))
 
         self.pages = QStackedWidget()
         self.pages.addWidget(reading)
@@ -605,25 +611,26 @@ class ReadingTest(QWidget):
         self.meter.timeout.connect(lambda: self.level.setValue(min(100, int(self.recorder.level * 400))))
         self.go(next(iter(self._to_read()), 0))  # a resumed test opens at the first sentence not read yet
         if self.recorded():
-            self.status.setText(f"Continuing your unfinished test ({self.recorded()} of {len(bench.SENTENCES)} read).")
+            self.status.setText(f"Continuing your unfinished test ({self.recorded()} of {len(self.sentences)} read).")
 
     def recorded(self) -> int:
         return len(bench.recordings(self.folder)) if self.folder.exists() else 0
 
     def _to_read(self) -> list[int]:
-        return [i for i in range(len(bench.SENTENCES)) if not (self.folder / f"{i + 1:02}.wav").exists()]
+        return [i for i in range(len(self.sentences)) if not (self.folder / f"{i + 1:02}.wav").exists()]
 
     def go(self, index: int) -> None:
         if self.recording:
             return
-        self.index = max(0, min(index, len(bench.SENTENCES) - 1))
+        self.index = max(0, min(index, len(self.sentences) - 1))
         done = (self.folder / f"{self.index + 1:02}.wav").exists()
-        self.counter.setText(f"Sentence {self.index + 1} of {len(bench.SENTENCES)}" + ("  ·  recorded" if done else ""))
-        self.sentence.setText(bench.SENTENCES[self.index])
+        self.counter.setText(f"Set {self.block}  ·  sentence {self.index + 1} of {len(self.sentences)}"
+                             + ("  ·  recorded" if done else ""))
+        self.sentence.setText(self.sentences[self.index])
         self.record_button.setEnabled(not done)
         self.redo_button.setEnabled(done)
         self.back_button.setEnabled(self.index > 0)
-        self.next_button.setEnabled(self.index < len(bench.SENTENCES) - 1)
+        self.next_button.setEnabled(self.index < len(self.sentences) - 1)
         count = self.recorded()
         self.score_button.setEnabled(count > 0)
         self.score_button.setText(f"Score ({count} recorded)" if count else "Score")
@@ -656,10 +663,13 @@ class ReadingTest(QWidget):
             self.status.setText("That was too short; press Record and read the sentence again.")
             self.go(self.index)
             return
-        self.folder.mkdir(parents=True, exist_ok=True)
+        if not (self.folder / bench.SESSION_FILE).exists():  # which set, microphone and rate: for the report
+            describe = getattr(self.recorder, "describe", None)
+            bench.write_session(self.folder, self.block, self.microphone,
+                                describe() if describe else {"rate": self.recorder.rate})
         stem = self.folder / f"{self.index + 1:02}"
         save_wav(stem.with_suffix(".wav"), audio, self.recorder.rate)
-        stem.with_suffix(".txt").write_text(bench.SENTENCES[self.index], encoding="utf-8")
+        stem.with_suffix(".txt").write_text(self.sentences[self.index], encoding="utf-8")
         remaining = self._to_read()
         if remaining:
             self.status.setText("Saved. Next sentence:")
@@ -679,34 +689,40 @@ class ReadingTest(QWidget):
             self.status.setText("Recording stopped. Press Record to read the sentence again.")
             self.go(self.index)
 
-    def start_scoring(self) -> None:
+    def start_scoring(self, every: bool = False) -> None:
+        """This test, or every test of the profile together (their folders sit next to this one)."""
         if self.recording or not self.recorded():
             return
+        folders = bench.sessions(self.folder.parent) if every else [self.folder]
         self.score_button.setEnabled(False)
         self.results_status.setText("Scoring...")
         self.status.setText("Scoring...")
 
         def work() -> None:
             try:
-                self.scored.emit(self._score(self.folder, self.progressed.emit))
+                self.scored.emit(self._score(folders, self.progressed.emit))
             except Exception as e:
                 log.exception("Scoring the reading test failed")
                 self.failed.emit(str(e))
         threading.Thread(target=work, name="reading-test-score", daemon=True).start()
 
     def _show_results(self, results) -> None:
-        best = min(results.setups, key=lambda s: s.error_rate)
+        best = min(results.scores, key=lambda s: s.error_rate)
         rows = "".join(
             f"<tr><td>{'<b>' if s is best else ''}{s.name}{'</b>' if s is best else ''}</td>"
-            f"<td align=right>{s.error_rate:.1%}</td><td align=right>{s.wrong} / {s.total}</td>"
-            f"<td align=right>{s.seconds_per_sentence:.2f} s</td></tr>" for s in results.setups)
+            f"<td align=right>{s.error_rate:.1%}</td><td align=right>{_interval(s.interval)}</td>"
+            f"<td>{_verdict(s.difference)}</td><td align=right>{s.term_error_rate:.1%}</td>"
+            f"<td align=right>{s.percentile(50):.2f} s</td></tr>" for s in results.scores)
         misheard = "".join(f"<li>{said or '<i>(extra word)</i>'} → {heard or '<i>(missed)</i>'} ({times}×)</li>"
                            for said, heard, times in results.misheard[:10])
+        sessions = len({r.session for r in results.recordings})
         self.report.setHtml(
-            f"<h3>{len(results.sentences)} sentences scored</h3>"
-            f"<table cellpadding=6><tr><th align=left>Setup</th><th>Word errors</th><th>Wrong / total</th>"
-            f"<th>Time per sentence</th></tr>{rows}</table>"
-            f"<p>Lowest error rate: <b>{best.name}</b>.</p>"
+            f"<h3>{len(results.recordings)} sentences scored" + (f" from {sessions} tests" if sessions > 1 else "") + "</h3>"
+            "<table cellpadding=5><tr><th align=left>Setup</th><th>Word errors</th><th>95% range</th>"
+            f"<th align=left>Against the first</th><th>Names and terms</th><th>Time</th></tr>{rows}</table>"
+            f"<p>Lowest error rate: <b>{best.name}</b>. With few sentences the range is wide: read more sets and "
+            "score all tests for a surer answer.</p>"
+            + "".join(f"<p>⚠ {warning}</p>" for warning in microphone_warnings(results))
             + (f"<h4>Most misheard (by speech recognition)</h4><ul>{misheard}</ul>" if misheard else ""))
         self.suggestions.clear()
         for word in results.suggestions:
@@ -715,8 +731,9 @@ class ReadingTest(QWidget):
             item.setCheckState(Qt.CheckState.Checked)
             self.suggestions.addItem(item)
         # The folder name only: a full path would make the window wider than the screen allows for it.
-        self.results_status.setText(f"Saved as report.md in the {self.folder.name} test folder.")
-        self.results_status.setToolTip(str(self.folder))
+        where = self.folder.parent / "summary" if sessions > 1 else self.folder
+        self.results_status.setText(f"Saved as report.md in the {where.name} folder.")
+        self.results_status.setToolTip(str(where))
         self.pages.setCurrentIndex(1)
         self.go(self.index)
 
@@ -733,10 +750,40 @@ class ReadingTest(QWidget):
                                     if added else "Those words are already in Your words.")
 
 
+def _interval(interval) -> str:
+    return f"{interval[0]:.0%}–{interval[1]:.0%}" if interval else ""
+
+
+def _verdict(difference) -> str:
+    """A setup against the first one: better or worse only when the whole 95% range says so."""
+    if difference is None:
+        return "the baseline"
+    mean, low, high = (100 * x for x in difference)
+    return f"{mean:+.1f} points, " + ("better" if high < 0 else "worse" if low > 0 else "no clear difference")
+
+
+def microphone_warnings(results) -> list[str]:
+    """Plain advice from the measured audio: phone-quality Bluetooth, clipping, a very quiet microphone."""
+    out = []
+    for microphone, indexes in results.microphones().items():
+        flags = [flag for k in indexes for flag in results.recordings[k].stats.flags]
+        if flags.count("narrowband") * 2 > len(indexes):
+            out.append(f"<b>{microphone}</b> sounds like a phone call (nothing above 4 kHz), as a Bluetooth headset "
+                       "does while its microphone is on. Speech recognition loses consonants there; the laptop's own "
+                       "microphone is usually better.")
+        if "clipped" in flags:
+            out.append(f"<b>{microphone}</b> was too loud in {flags.count('clipped')} recording(s): lower its level in "
+                       "Windows' sound settings.")
+        if flags.count("quiet") * 2 > len(indexes):
+            out.append(f"<b>{microphone}</b> is very quiet: speak closer to it or raise its level.")
+    return out
+
+
 class ReadingTestPage(Page):
     def __init__(self, app):
-        super().__init__("Reading test", "How well does Rflow understand your voice, microphone and words? Read 30 "
-                                         "short sentences, then compare speech recognition alone and with AI cleanup.")
+        super().__init__("Reading test", "How well does Rflow understand your voice, microphone and words? Read a "
+                                         "set of 30 short sentences, then compare speech recognition alone and with "
+                                         "AI cleanup. There are 5 sets; the more you read, the surer the numbers.")
         self.app = app
         self.test: ReadingTest | None = None
         self.holder = QVBoxLayout()
@@ -750,7 +797,8 @@ class ReadingTestPage(Page):
             microphone, root = self.app.settings.microphone, self.app.bench_dir()  # each profile has its own tests
             folder = None if new else folder or bench.unfinished(root)
             self.test = ReadingTest(self.app.new_recorder(), self.app.score_reading, self.app.add_words,
-                                    microphone or "Windows default", folder=folder or root / time.strftime("%Y-%m-%d_%H%M%S"))
+                                    microphone or "Windows default", folder=folder or root / time.strftime("%Y-%m-%d_%H%M%S"),
+                                    block=bench.next_block(root))
             self.test.restart.connect(lambda: self.ensure_test(new=True))
             self.holder.addWidget(self.test)
         return self.test
@@ -1341,7 +1389,7 @@ class PreviewApp:
     def remove_word(self, word: str) -> None:
         self.settings.vocabulary = [w for w in self.settings.vocabulary if w != word]
 
-    def score_reading(self, folder, progress):
+    def score_reading(self, folders, progress):
         raise RuntimeError("No speech model in the preview.")
 
     def finish_welcome(self, name: str = "") -> None:
