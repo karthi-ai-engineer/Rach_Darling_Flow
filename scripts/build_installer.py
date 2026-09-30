@@ -51,6 +51,12 @@ def smoke_test() -> None:
     if result.returncode != 0 or not text or text == "(nothing recognised)":
         sys.exit(f"Smoke test failed: sst.exe did not transcribe {wav.name}\n{result.stdout}\n{result.stderr}")
     print(f"  sst.exe transcribed {wav.name}: {text!r}")
+    # The tray app has no console to report into: it builds every window off-screen, transcribes, and sets the exit code.
+    gui = subprocess.run([str(APP_DIR / "SST Dictation.exe"), "--self-test"], stdin=subprocess.DEVNULL, timeout=300)
+    if gui.returncode != 0:
+        sys.exit(f"Smoke test failed: SST Dictation.exe --self-test exited with {gui.returncode} "
+                 f"(see %LOCALAPPDATA%\\sst\\logs)")
+    print("  SST Dictation.exe --self-test passed (windows, Qt plugins, model)")
 
 
 def find_iscc() -> Path:
