@@ -116,6 +116,35 @@ def test_downloads_from_other_servers_are_refused(github, tmp_path, monkeypatch)
         updates.download(update, tmp_path)
 
 
+def test_a_stalled_first_connection_is_retried(github, monkeypatch):
+    # On some laptops a program's first connection hangs until the timeout; the next attempt gets through at once.
+    github.publish("v1.1.0")
+    real_urlopen, calls = updates.urllib.request.urlopen, []
+
+    def stalls_once(request, timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise updates.urllib.error.URLError(TimeoutError("timed out"))
+        return real_urlopen(request, timeout=timeout)
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", stalls_once)
+    assert updates.check(current="1.0.0", url=updates.LATEST_URL).version == "1.1.0"
+    assert calls == [updates.ATTEMPT_TIMEOUT] * 2
+
+
+def test_an_answer_from_github_is_not_retried(github, monkeypatch):
+    calls = []
+
+    def rate_limited(request, timeout):
+        calls.append(1)
+        raise updates.urllib.error.HTTPError(request.full_url, 403, "rate limit exceeded", {}, None)
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", rate_limited)
+    with pytest.raises(UpdateError, match="GitHub answered 403"):
+        updates.check(current="1.0.0", url=updates.LATEST_URL)
+    assert calls == [1]
+
+
 def test_github_unreachable_is_a_readable_error(monkeypatch):
     with pytest.raises(UpdateError, match="could not reach GitHub"):
         updates.check(current="1.0.0", url="http://127.0.0.1:9/releases/latest")
