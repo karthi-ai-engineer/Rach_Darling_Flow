@@ -23,7 +23,8 @@ _Last updated: 2026-09-30_
 | 9 | **AI providers and profiles**: OpenAI, Anthropic, Gemini, Groq, Ollama, vLLM; one setup per person; 1.3.0 | done, on `main` (PR #22); the owner installed 1.3.0 and confirmed it works; not released yet |
 | 10 | **Accuracy lab**: five sets of sentences, session notes, audio measurements, `sst eval` with 95% ranges | done, on `main` (PR #24); the owner read all five sets |
 | fix | Fairer scoring (contractions, compounds, Ctrl), only names suggested, eval report printing | PR #25 open |
-| 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | PR open, stacked on #25 |
+| 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | PR #27 open, stacked on #25 |
+| 12 | **Hotwords**: Parakeet listens for Your words (bpe.vocab from NVIDIA's archive, beam search, score 1.0, guard) | PR open, stacked on #27 |
 
 Released: v1.0.0, v1.0.1 and v1.1.0 (GitHub Releases). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -476,6 +477,44 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   recordings), and raw against Windows mode.
 - Tests: 235.
 
+## Hotwords (phase 12)
+
+- **The vocabulary:** sherpa-onnx needs the model's word pieces with scores (`bpe.vocab`) to spell Your words in them,
+  and its model download doesn't have it. NVIDIA's `parakeet-unified-en-0.6b.nemo` on Hugging Face is a 2.5 GB tar;
+  `scripts/download_model.py` reads its tar headers with HTTP range requests and fetches only
+  `*_tokenizer.vocab` (10 KB, sentencepiece `piece<TAB>score`). It keeps it as `bpe.vocab` only if its pieces equal
+  `tokens.txt` in order (1024 pieces + `<blk>`: they do). The installer takes every file of the model folder, so
+  it ships. CI's model cache key is the script's hash, so it refetches.
+- **`ParakeetEngine`** (`sst/engines/parakeet.py`):
+  - With a matching `bpe.vocab`: `modified_beam_search`, 4 paths, `modeling_unit="bpe"`, `hotwords_score=1.0`.
+    `engine.words` (Your words, set by `TrayApp._apply_cleanup` and by `sst eval`) go to each recording as
+    `create_stream(hotwords="A/B")`, so a new word works at once.
+  - Without it, greedy as before, with a warning in the log.
+  - `runaway()`: a boosted word twice in a row means boosting went wrong, and that recording is decoded again without
+    the words.
+  - `signature` is a property: model, decoding, a hash of the words, and the preparation.
+- **The owner's reading test** (150 sentences), words = 31 names and terms from `bench.TERMS`:
+  - errors 8.2% → **7.1%**
+  - test sets 6.0% → **5.4%**
+  - names 41% → **24.5%**
+  - other words 6.4% → 6.1%
+  - names put in wrongly: 2 (1 "Claude")
+
+  With the owner's actual Your words (Parakeet, Vercel): 8.1%. **The gain comes from the words in Your words.**
+- **Strength sweep** (tuning / test / names put in wrongly):
+  - 0.5: 9.8% / 5.7% / 2
+  - **1.0: 9.3% / 5.4% / 2**
+  - 1.5: 10.0% / 5.2% / 13
+  - 2.0: 14.0% / 6.9% / 58
+  - 2.5 repeats "Claude Claude Claude" and 4.0 falls apart. The guard (then comparing with greedy) made no difference
+    at 1.0.
+- **Speed:** 161 s of speech in 14.8 s (greedy 13.7 s); the sample WAV in 0.46 s (0.34 s). Beam search without words:
+  8.5% against greedy's 8.2% (noise).
+- The Dictionary page says that speech recognition listens for Your words, and to add names and terms, not everyday
+  words.
+- `sst eval --words "A,B"` tries other words, and `--no-words` uses none.
+- Tests: 243.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -497,18 +536,18 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
    release, so it gives 1.1.0 until then. There is no 1.2.0 release: 1.3.0 includes phase 8.
 2. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
    against the local fakes).
-3. **The owner reads again with phase 11:** a few sets with "Turn off Windows' voice effects" on, and a few with it
+3. **The owner fills Your words** with the names and terms they dictate (Karthi, Rahul, Claude, Groq, Qwen, CodeQL,
+   company and product names...): phase 12's gain depends on it.
+4. **The owner reads again with phase 11:** a few sets with "Turn off Windows' voice effects" on, and a few with it
    off (both with the warm microphone), then `sst eval`. Raw against Windows mode decides the default; the lost first
    words should be gone in both. A set with a Bluetooth headset selected in Settings is still missing.
-4. Roadmap (details in `docs/accuracy.md`):
-   - **Phase 12, hotwords:** a `bpe.vocab` for the model, then Your words as sherpa-onnx hotwords (check that it works
-     with the unified model's decoder; TDT v2 otherwise).
+5. Roadmap (details in `docs/accuracy.md`):
    - **Phase 13, correction:** word confidence, sound-alike matching against Your words, and an LLM called only when a
      word is uncertain.
    - **Then** the old phase 10 (text without the AI endpoint: fillers, "new line", spacing from the text before the
      cursor, snippets) and phase 11 (command mode, per-app style).
    - **Later:** code signing (removes the SmartScreen warning), and a "paste last transcript" hotkey.
-5. Waiting on the owner:
+6. Waiting on the owner:
    - Japanese/Tamil needed?
    - the word list
    - the apps used most

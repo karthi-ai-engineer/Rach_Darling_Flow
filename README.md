@@ -53,7 +53,7 @@ in Settings if you prefer; a Bluetooth headset's microphone is never kept open.
 | Page | What it's for |
 |---|---|
 | **Home** | how to dictate, your words this week and in total, words per minute, day streak, and your recent dictations by day, each with a copy button |
-| **Dictionary** | *Your words*: names, products and terms the AI cleanup should spell your way |
+| **Dictionary** | *Your words*: names, products and terms that speech recognition listens for and the AI cleanup spells your way |
 | **Reading test** | how well Rflow understands your voice (below) |
 | **AI cleanup** | the model that cleans up the text (below) |
 | **Settings** | dictation key, microphone with a live level (and a warning for a Bluetooth headset's microphone, which records in call quality), keeping it ready, Windows' voice effects on or off, beeps, keeping recordings, starting with Windows, updates |
@@ -75,6 +75,8 @@ It follows Windows' light or dark mode. Changes in Settings apply at once; AI cl
    models suit dictation (e.g. gpt-4o-mini, a Haiku model, a Flash-Lite model, llama-3.1-8b-instant); models that
    "think" first are usually too slow.
 3. Add **your words** in the Dictionary (names, company, products, tech terms), so they come out spelled right.
+   Speech recognition listens for them too, even with AI cleanup off: on the owner's reading test, errors on names and
+   terms fell from 40% to 24.5%. Add names and terms, not everyday words, which would be heard where you didn't say them.
 
 Each provider gets the request it understands: Anthropic its own Messages API, OpenAI without the options only
 self-hosted models need, and so on. Switching the provider back and forth keeps each one's key and address. Only the
@@ -102,7 +104,8 @@ scores this test; **Score all tests** scores every test together, which gives a 
 Tick the suggested words and click **Add to Your words**, then **Score again** to see the difference. Recordings and
 results (`report.md`, `results.json`, and `session.json` with the set and microphone) stay in
 `%LOCALAPPDATA%\sst\bench\<date>`, and results for all tests go to `bench\summary`. `rflow-cli eval` scores every test
-again from the command line: `--model <name>` tries another cleanup model, `--no-cleanup` skips cleanup, and
+again from the command line: `--model <name>` tries another cleanup model, `--no-cleanup` skips cleanup,
+`--words "A,B"` tries other words instead of Your words (`--no-words`: none), and
 `--degrade narrowband` (or `gain:-20`) shows what a worse microphone would do to the same recordings. How this feeds the
 accuracy work is in [docs/accuracy.md](docs/accuracy.md).
 
@@ -124,7 +127,7 @@ Needs Windows 10/11 and [uv](https://docs.astral.sh/uv/).
 git clone https://github.com/karthi-ai-engineer/Rach_Darling_Flow.git
 cd Rach_Darling_Flow
 uv sync                                          # install dependencies into .venv
-uv run python scripts/download_model.py parakeet # ~630 MB model into models/
+uv run python scripts/download_model.py parakeet # ~630 MB model into models/, and its bpe.vocab for Your words
 ```
 
 ## Development

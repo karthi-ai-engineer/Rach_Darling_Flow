@@ -40,7 +40,7 @@ is the only enhancement worth trying; mixing the original back in is what recove
 |---|---|---|
 | 10 Accuracy lab | Five sets of sentences (A-B tuning, C-E test), session notes, audio measurements, `sst eval` with names-and-terms errors, 95% ranges, degradations | The ranges are narrow enough to see a 2-3 point change |
 | 11 Capture | WASAPI, warm stream with lead-in and tail, Bluetooth detection, raw mode, peak to -1 dBFS, retry of empty results | Fewer lost first and last words; no empty results; raw vs Windows mode by reading test |
-| 12 Hotwords | A bpe.vocab for the model (not in the published download), hotwords from Your words, score sweep | Names and terms errors down, other words flat, few terms put in wrongly |
+| 12 Hotwords | bpe.vocab read out of NVIDIA's .nemo, Your words as hotwords (beam 4, score 1.0), a guard against repeated words | Names and terms errors down, other words flat, few terms put in wrongly |
 | 13 Correction | Word confidence, sound-alike matching, the confidence-gated LLM | Word errors down with no rise on the other words; LLM calls and time |
 | later | Learning from the user's edits after pasting | Real dictations as a growing test set |
 
@@ -62,6 +62,7 @@ is the only enhancement worth trying; mixing the original back in is what recove
 |---|---|---|---|
 | Phase 10 baseline | 9.2% (7.1-11.6%) | 40% | 7.5% |
 | Phase 11: peak to -1 dBFS, retry empty | **8.2%** (6.5-10.1%); test sets 6.7% → 6.0% | 40% | 6.4% |
+| Phase 12: Your words as hotwords (31 names and terms) | **7.1%** (5.6-8.6%); test sets 6.0% → **5.4%** | **24.5%** | 6.1% |
 | The same audio at phone quality (`--degrade narrowband`) | 12.6%, +3.4 points (+1.4 to +5.5) | 50% | 10.5% |
 
 - Set B, read while Bluetooth headphones were connected (the laptop microphone still recorded), lost 5 first words and
@@ -69,13 +70,17 @@ is the only enhancement worth trying; mixing the original back in is what recove
 - The laptop microphone's audio is processed by Windows or the driver: about a quarter of each recording is exact
   digital silence. A quiet room measured -91 dBFS processed and -60 dBFS in raw mode. Whether raw is better for
   Parakeet is the next reading test.
-- Names are the largest remaining problem (Parakeet → Parkit, Vercel → Versal, Groq → Grog, Qwen → Quinn): phase 12.
+- Names were the largest problem (Parakeet → Parkit, Vercel → Versal, Groq → Grog, Qwen → Quinn). Hotwords (phase 12)
+  halve those errors, but only for the words in Your words: with the owner's 2 words the gain was 8.2% → 8.1%.
+- Hotword strength, chosen on the tuning sets (errors there / on the test sets / names put in wrongly): 0.5: 9.8% / 5.7%
+  / 2; **1.0: 9.3% / 5.4% / 2**; 1.5: 10.0% / 5.2% / 13 (Claude ×8, Bluetooth ×4); 2.0: 14.0% / 6.9% / 58; 2.5 repeats
+  names ("Claude Claude Claude"). Beam search alone didn't help (8.5%).
 
 ## Open questions to settle on the owner's voice
 
 - How much of the 24% is names and terms, and how much everything else (the first `sst eval` answers it).
 - What narrowband costs Parakeet (`--degrade narrowband` on laptop-mic sets, and a set read with the earbuds).
-- Whether the PR #3077 hotwords work with the unified model's RNN-T decoder (the PR demo used TDT); if not, TDT v2 (6.05%).
+- ~~Whether the PR #3077 hotwords work with the unified model's decoder~~: they do (phase 12).
 - Whether the Python binding exposes token probabilities for word confidence.
 - If the other-word errors stay far above 6% after Phases 11-12, the voice or accent itself is the cause, and only another
   model or adaptation would help.
