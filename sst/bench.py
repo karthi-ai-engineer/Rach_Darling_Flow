@@ -199,6 +199,7 @@ _COMMON = set("""a an and are as at be but by can could did do does for from had
 its me my no not of on or our she so that the their them then there these they this to too was we were what when
 which while who will with would you your""".split())
 FILLERS = {"um", "umm", "uh", "uhm", "erm", "hmm", "mm"}
+SAME = {"ok": "okay", "ctrl": "control"}  # the same word written two ways ("Control" is often written "Ctrl")
 _ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen " \
         "eighteen nineteen".split()
 _TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
@@ -218,19 +219,52 @@ def _number_words(n: int) -> str:
 
 def words(text: str) -> list[str]:
     """Normalised words for a fair comparison: case, punctuation and hyphens don't count, "70" equals "seventy"."""
-    text = text.lower().replace("-", " ").replace("'", "").replace("’", "")
+    text = text.lower().replace("’", "'").replace("-", " ")
+    for pattern, full in _CONTRACTIONS:  # "I'll" and "I will" are the same answer; Parakeet often writes the long form
+        text = re.sub(pattern, full, text)
+    text = text.replace("'", "")
     out = []
     for token in re.findall(r"[a-z]+|\d+", text):
         if token.isdigit() and int(token) < 1_000_000:
             out.extend(_number_words(int(token)).split())
         else:
-            out.append({"ok": "okay"}.get(token, token))
+            out.append(SAME.get(token, token))
     return [w for w in out if w not in FILLERS]  # the sentences have no fillers; hearing one isn't a mistake
+
+
+# Only the unambiguous ones: "'s" and "'d" can mean two things (it's / its, I'd = I would or I had).
+_CONTRACTIONS = [(r"\bwon't\b", "will not"), (r"\bcan't\b", "can not"), (r"\bcannot\b", "can not"),
+                 (r"\blet's\b", "let us"), (r"n't\b", " not"), (r"'re\b", " are"), (r"'ve\b", " have"),
+                 (r"'ll\b", " will"), (r"\bi'm\b", "i am")]
+
+
+def compared(reference: str, heard: str) -> tuple[list[str], list[str]]:
+    """Both texts as normalised words, with a word written as one or as two joined up ("sandcastle" and "sand
+    castle"), so spelling a compound differently isn't counted as two mistakes. Names and terms are not joined: "code
+    ql" typed for "CodeQL" is a mistake the user has to fix."""
+    ref, hyp = words(reference), words(heard)
+    return _join(ref, set(hyp)), _join(hyp, set(ref))
+
+
+def _join(items: list[str], other: set[str]) -> list[str]:
+    out, k = [], 0
+    while k < len(items):
+        joined = items[k] + items[k + 1] if k + 1 < len(items) else ""
+        if joined in other and joined not in _TERM_WORDS and not {items[k], items[k + 1]} <= other:
+            out.append(items[k] + items[k + 1])
+            k += 2
+        else:
+            out.append(items[k])
+            k += 1
+    return out
 
 
 def term_words(terms=TERMS) -> set[str]:
     """The normalised words of the names and terms ("sherpa-onnx" -> sherpa, onnx), leaving out common words."""
     return {w for term in terms for w in words(term) if w not in _COMMON}
+
+
+_TERM_WORDS = term_words()
 
 
 def align(reference: list[str], heard: list[str]) -> list[tuple[str, str]]:
@@ -268,8 +302,8 @@ def align(reference: list[str], heard: list[str]) -> list[tuple[str, str]]:
 
 def errors(reference: str, heard: str) -> tuple[int, int, list[tuple[str, str]]]:
     """(wrong words, words in the reference, the wrong (ref, heard) pairs)."""
-    ref = words(reference)
-    wrong = [pair for pair in align(ref, words(heard)) if pair[0] != pair[1]]
+    ref, hyp = compared(reference, heard)
+    wrong = [pair for pair in align(ref, hyp) if pair[0] != pair[1]]
     return len(wrong), len(ref), wrong
 
 
@@ -341,14 +375,18 @@ def next_block(root: Path = BENCH_DIR) -> str:
 
 
 def suggest(misheard: dict[tuple[str, str], int], sentences: list[str]) -> list[str]:
-    """Words the user said that were misheard, as written in the sentences (e.g. "Tamil", "CodeQL"), most frequent
-    first; common words are left out, since adding them to the vocabulary wouldn't help."""
-    spelled = {}
+    """Names and terms the user said that were misheard, as written in the sentences (e.g. "Tamil", "CodeQL"), most
+    frequent first. Only TERMS and words written with a capital inside a sentence count: an ordinary word such as
+    "lunch" in Your words would make the recogniser hear it where it wasn't said."""
+    spelled, names = {}, term_words()
     for sentence in sentences:
-        for token in re.findall(r"[A-Za-z][A-Za-z']*(?:-[A-Za-z]+)*", sentence):
-            spelled.setdefault(token.lower().replace("'", "").replace("-", ""), token)
+        for k, token in enumerate(re.findall(r"[A-Za-z][A-Za-z']*(?:-[A-Za-z]+)*", sentence)):
+            key = token.lower().replace("'", "").replace("-", "")
+            spelled.setdefault(key, token)
+            if k > 0 and token[0].isupper() and token != "I":
+                names.add(key)
     counts: dict[str, int] = {}
     for (said, _heard), times in misheard.items():
-        if said and said not in _COMMON and len(said) > 2:
+        if said in names and said not in _COMMON and len(said) > 2:
             counts[said] = counts.get(said, 0) + times
     return [spelled.get(word, word) for word, _ in sorted(counts.items(), key=lambda item: -item[1])[:20]]

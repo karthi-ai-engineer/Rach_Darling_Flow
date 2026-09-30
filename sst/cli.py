@@ -110,6 +110,10 @@ def cmd_web(args) -> None:
 
 
 def main() -> None:
+    # A Windows console that isn't UTF-8 can't print every character of a report (e.g. "→"): show "?" rather than fail.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(prog="sst", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"sst {__version__}")
     parser.add_argument("--engine", default="parakeet", choices=ENGINES)

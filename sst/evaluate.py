@@ -89,7 +89,7 @@ class Score:
         return float(np.percentile(self.seconds, q)) if self.seconds else 0.0
 
     def add(self, sentence: str, text: str, seconds: float, terms: set[str]) -> None:
-        ref, hyp = bench.words(sentence), bench.words(text)
+        ref, hyp = bench.compared(sentence, text)
         pairs = bench.align(ref, hyp)
         self.texts.append(text)
         self.wrong.append(sum(r != h for r, h in pairs))
