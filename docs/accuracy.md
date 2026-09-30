@@ -39,7 +39,7 @@ is the only enhancement worth trying; mixing the original back in is what recove
 | Phase | Work | Judged by |
 |---|---|---|
 | 10 Accuracy lab | Five sets of sentences (A-B tuning, C-E test), session notes, audio measurements, `sst eval` with names-and-terms errors, 95% ranges, degradations | The ranges are narrow enough to see a 2-3 point change |
-| 11 Capture | WASAPI, warm stream with lead-in and tail, Bluetooth detection, capture mode and gain tests, VAD trimming | Fewer lost first and last words; no unflagged narrowband recordings |
+| 11 Capture | WASAPI, warm stream with lead-in and tail, Bluetooth detection, raw mode, peak to -1 dBFS, retry of empty results | Fewer lost first and last words; no empty results; raw vs Windows mode by reading test |
 | 12 Hotwords | A bpe.vocab for the model (not in the published download), hotwords from Your words, score sweep | Names and terms errors down, other words flat, few terms put in wrongly |
 | 13 Correction | Word confidence, sound-alike matching, the confidence-gated LLM | Word errors down with no rise on the other words; LLM calls and time |
 | later | Learning from the user's edits after pasting | Real dictations as a growing test set |
@@ -55,6 +55,21 @@ is the only enhancement worth trying; mixing the original back in is what recove
   `--degrade narrowband` and `--degrade gain:-20` show what a worse microphone would do without recording again.
 - A setup is "better" only when its whole 95% range against the first setup is below zero. The range comes from a
   paired bootstrap over the recordings, drawn within each session.
+
+## Results so far (the owner, laptop microphone, 150 sentences)
+
+| Setup | Word errors | Names and terms | Other words |
+|---|---|---|---|
+| Phase 10 baseline | 9.2% (7.1-11.6%) | 40% | 7.5% |
+| Phase 11: peak to -1 dBFS, retry empty | **8.2%** (6.5-10.1%); test sets 6.7% → 6.0% | 40% | 6.4% |
+| The same audio at phone quality (`--degrade narrowband`) | 12.6%, +3.4 points (+1.4 to +5.5) | 50% | 10.5% |
+
+- Set B, read while Bluetooth headphones were connected (the laptop microphone still recorded), lost 5 first words and
+  had 2 sentences decode to nothing; the other sets had neither.
+- The laptop microphone's audio is processed by Windows or the driver: about a quarter of each recording is exact
+  digital silence. A quiet room measured -91 dBFS processed and -60 dBFS in raw mode. Whether raw is better for
+  Parakeet is the next reading test.
+- Names are the largest remaining problem (Parakeet → Parkit, Vercel → Versal, Groq → Grog, Qwen → Quinn): phase 12.
 
 ## Open questions to settle on the owner's voice
 

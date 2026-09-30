@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from sst import RECORDINGS_DIR, __version__, bench
-from sst.audio import LevelMeter, save_wav
+from sst.audio import LevelMeter, Take, call_quality, save_wav
 from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
 from sst.settings import (
@@ -105,6 +105,7 @@ def stylesheet(theme: str) -> str:
     QLabel#stat {{ font-size: 17pt; font-weight: 600; }}
     QLabel#glyph {{ color: {t['accent']}; }}
     QLabel#sentence {{ font-size: 17pt; }}
+    QLabel#warning {{ color: {t['warn']}; }}
     QPushButton#nav {{ text-align: left; padding: 9px 12px; border: none; border-radius: 8px; color: {t['muted']};
                        background: transparent; }}
     QPushButton#nav:hover {{ background: {t['hover']}; color: {t['text']}; }}
@@ -661,17 +662,26 @@ class ReadingTest(QWidget):
         self.meter.stop()
         self.level.setValue(0)
         self.record_button.setText("Record")
-        audio = self.recorder.stop()
-        if len(audio) < self.recorder.rate * 0.5:
+        stop_later = getattr(self.recorder, "stop_later", None)
+        take = stop_later() if stop_later else Take.ready(self.recorder.stop(), self.recorder.rate)
+        if take.seconds < 0.5:
             self.status.setText("That was too short; press Record and read the sentence again.")
             self.go(self.index)
             return
+        if take.done.is_set():
+            self._save(take)
+        else:  # the moment after Stop is still being recorded, as in dictation; don't hold up the window for it
+            self.record_button.setEnabled(False)
+            QTimer.singleShot(int(self.recorder.tail * 1000) + 50, lambda: self._save(take))
+
+    def _save(self, take: Take) -> None:
+        audio = take.audio()
         if not (self.folder / bench.SESSION_FILE).exists():  # which set, microphone and rate: for the report
             describe = getattr(self.recorder, "describe", None)
             bench.write_session(self.folder, self.block, self.microphone,
                                 describe() if describe else {"rate": self.recorder.rate})
         stem = self.folder / f"{self.index + 1:02}"
-        save_wav(stem.with_suffix(".wav"), audio, self.recorder.rate)
+        save_wav(stem.with_suffix(".wav"), audio, take.rate)
         stem.with_suffix(".txt").write_text(self.sentences[self.index], encoding="utf-8")
         remaining = self._to_read()
         if remaining:
@@ -683,7 +693,7 @@ class ReadingTest(QWidget):
             self.go(self.index)
 
     def stop(self) -> None:
-        """Leaving the page: don't leave the microphone open."""
+        """Leaving the page: don't leave the microphone open (not even warm)."""
         if self.recording:
             self.recording = False
             self.meter.stop()
@@ -691,6 +701,9 @@ class ReadingTest(QWidget):
             self.record_button.setText("Record")
             self.status.setText("Recording stopped. Press Record to read the sentence again.")
             self.go(self.index)
+        close = getattr(self.recorder, "close", None)
+        if close:
+            close()
 
     def start_scoring(self, every: bool = False) -> None:
         """This test, or every test of the profile together (their folders sit next to this one)."""
@@ -991,9 +1004,24 @@ class SettingsPage(Page):
         layout.addWidget(text("Microphone", "h2"))
         self.microphone = MicrophoneBox(s.microphone, app.microphones())
         layout.addWidget(self.microphone)
-        layout.addWidget(text("Tip: Bluetooth headset microphones switch to a low-quality call mode; the laptop's own "
-                              "microphone is usually clearer.", muted=True))
+        self.call_warning = text("This is a Bluetooth headset's microphone. It records in call quality (like a phone), "
+                                 "so Rflow gets more words wrong, and your headset plays sound in call quality while it "
+                                 "is open. The laptop's own microphone is usually clearer.", "warning")
+        layout.addWidget(self.call_warning)
+        self.warm_mic = QCheckBox("Keep the microphone ready for 5 minutes after dictating")
+        self.warm_mic.setChecked(s.warm_mic)
+        self.warm_mic.setToolTip("Dictation then starts at once and keeps the moment before you pressed the key, so "
+                                 "first words aren't cut off. Windows shows the microphone icon meanwhile; nothing is "
+                                 "recorded or sent until you press the key. Never done for Bluetooth headsets.")
+        self.raw_audio = QCheckBox("Turn off Windows' voice effects for this microphone")
+        self.raw_audio.setChecked(s.raw_audio)
+        self.raw_audio.setToolTip("Records the microphone as it is, without Windows' or the driver's noise suppression "
+                                  "and gain. Try it with the Reading test: it may help or hurt, depending on the "
+                                  "microphone and the room.")
+        layout.addWidget(self.warm_mic)
+        layout.addWidget(self.raw_audio)
         self.add(microphone)
+        self._show_call_warning()
 
         behaviour, layout = card()
         layout.addWidget(text("While dictating", "h2"))
@@ -1026,6 +1054,9 @@ class SettingsPage(Page):
 
         self.hotkey.currentIndexChanged.connect(self._apply)
         self.microphone.changed.connect(self._apply)
+        self.microphone.changed.connect(self._show_call_warning)
+        self.warm_mic.toggled.connect(self._apply)
+        self.raw_audio.toggled.connect(self._apply)
         self.sounds.toggled.connect(self._apply)
         self.save_recordings.toggled.connect(self._apply)
         self.start_with_windows.toggled.connect(lambda on: set_start_with_windows(on) if can_start_with_windows() else None)
@@ -1033,7 +1064,11 @@ class SettingsPage(Page):
     def result(self, current: Settings) -> Settings:
         """The current settings with this page's choices (the other pages own the rest)."""
         return dataclasses.replace(current, hotkey=self.hotkey.currentData(), microphone=self.microphone.device(),
-                                   sounds=self.sounds.isChecked(), save_recordings=self.save_recordings.isChecked())
+                                   sounds=self.sounds.isChecked(), save_recordings=self.save_recordings.isChecked(),
+                                   warm_mic=self.warm_mic.isChecked(), raw_audio=self.raw_audio.isChecked())
+
+    def _show_call_warning(self, *_) -> None:
+        self.call_warning.setVisible(call_quality(self.microphone.device() or None))
 
     def _apply(self, *_) -> None:
         self.app.apply_settings(self.result(self.app.settings))  # changes apply at once, like a phone's settings
@@ -1370,7 +1405,7 @@ class PreviewApp:
 
     def new_recorder(self):
         from sst.audio import Recorder
-        return Recorder(self.settings.microphone or None)
+        return Recorder(self.settings.microphone or None, raw=self.settings.raw_audio)
 
     def bench_dir(self) -> Path:
         return self.profiles.current.folder(self._bench)

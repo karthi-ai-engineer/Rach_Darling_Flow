@@ -43,6 +43,11 @@ transcribed, and "Typed" when it's done. It never takes the keyboard focus. A re
 and is typed as usual. The text is pasted where your cursor is, and whatever you had copied is put back on the clipboard
 afterwards. Dictated text is kept out of Windows clipboard history (Win+V).
 
+After a dictation, the microphone stays ready for 5 minutes (Windows shows its microphone icon meanwhile). The next
+dictation then starts at once and keeps the moment before you pressed the key, so first words aren't cut off; nothing
+is recorded or sent until you press the key. It records a moment after you let go too, for the last word. Turn this off
+in Settings if you prefer; a Bluetooth headset's microphone is never kept open.
+
 **The window** has a sidebar:
 
 | Page | What it's for |
@@ -51,7 +56,7 @@ afterwards. Dictated text is kept out of Windows clipboard history (Win+V).
 | **Dictionary** | *Your words*: names, products and terms the AI cleanup should spell your way |
 | **Reading test** | how well Rflow understands your voice (below) |
 | **AI cleanup** | the model that cleans up the text (below) |
-| **Settings** | dictation key, microphone with a live level, beeps, keeping recordings, starting with Windows, updates |
+| **Settings** | dictation key, microphone with a live level (and a warning for a Bluetooth headset's microphone, which records in call quality), keeping it ready, Windows' voice effects on or off, beeps, keeping recordings, starting with Windows, updates |
 | **Profiles** | one setup per person (below) |
 
 It follows Windows' light or dark mode. Changes in Settings apply at once; AI cleanup has a Save button.

@@ -29,7 +29,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
 from sst import __version__, bench, evaluate, updates
-from sst.audio import Recorder, input_device_names
+from sst.audio import TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import load_engine
 from sst.gateway import GatewayConfig, Polisher
@@ -41,6 +41,7 @@ UPDATE_DIR = Path(os.environ.get("TEMP", Path.home())) / "Rflow-update"  # downl
 # Opening Rflow while it runs asks the running copy, through this local pipe, to show its window.
 SERVER_NAME = f"Rflow-window-{os.environ.get('USERNAME', 'user')}"
 ASFW_ANY = -1  # AllowSetForegroundWindow: any process
+WARM_SECONDS = 300  # the microphone stays open this long after a dictation (the owner chose 5 minutes)
 
 log = logging.getLogger("sst.app")
 
@@ -231,7 +232,7 @@ class TrayApp:
     def __init__(self, quiet_start: bool = False):
         self.profiles = Profiles.load()
         self._load_profile()
-        self.recorder = Recorder(self.settings.microphone or None)
+        self.recorder = self.new_recorder()
         self.dictation: Dictation | None = None
         self.listener: HotkeyListener | None = None
         self.quiet_start = quiet_start
@@ -425,13 +426,22 @@ class TrayApp:
         return input_device_names()
 
     def new_recorder(self) -> Recorder:
-        return Recorder(self.settings.microphone or None)
+        """A recorder set up as the settings say (dictation's, and the reading test's, so a test hears what dictation
+        hears)."""
+        recorder = Recorder()
+        self._configure(recorder)
+        return recorder
+
+    def _configure(self, recorder: Recorder) -> None:
+        s = self.settings
+        recorder.device, recorder.raw, recorder.tail = s.microphone or None, s.raw_audio, TAIL_SECONDS
+        recorder.warm_seconds = WARM_SECONDS if s.warm_mic else 0.0
 
     def apply_settings(self, new: Settings) -> None:
         """Save the settings and use them at once (the Settings page and the welcome change them one by one)."""
         old, self.settings = self.settings, new
         new.save(self.profile.settings_file)
-        self.recorder.device = new.microphone or None
+        self._configure(self.recorder)
         if self.dictation:
             self.dictation.sounds, self.dictation.save = new.sounds, new.save_recordings
             if (new.cleanup, new.cleanup_model, new.cleanup_fallback, new.vocabulary) != (
@@ -531,7 +541,7 @@ class TrayApp:
             self.dictation.close()  # a recording started for the other profile is dropped
         old_hotkey = self.settings.hotkey
         self._load_profile()
-        self.recorder.device = self.settings.microphone or None
+        self._configure(self.recorder)
         if self.dictation:
             self.dictation.sounds, self.dictation.save = self.settings.sounds, self.settings.save_recordings
             self._apply_cleanup()

@@ -185,3 +185,57 @@ def test_when_the_cleanup_cannot_help_the_heard_text_is_typed(make):
     d.cleanup = FakeCleanup(error="the gateway could not be reached")
     feed(d, (0, "press"), (0.7, "release"))
     assert typed == ["hello world "] and states[-1] == "typed_raw"
+
+
+class WarmRecorder:
+    """Like the real Recorder: stop_later() hands over a take whose tail arrives later, and tick() is passed on."""
+    rate = 16_000
+
+    def __init__(self, seconds=1.0, preroll=0.4):
+        from sst.audio import Take
+        self.Take, self.seconds, self.preroll = Take, seconds, preroll
+        self.ticks, self.pending, self.closed = [], [], False
+
+    def start(self):
+        pass
+
+    def stop_later(self):
+        take = self.Take([np.full(int(self.preroll * self.rate), 0.1, dtype=np.float32)], self.rate)
+        take.chunks.append(np.full(int(self.seconds * self.rate), 0.1, dtype=np.float32))
+        self.pending.append(take)
+        return take
+
+    def tick(self, now):
+        self.ticks.append(now)
+
+    def close(self):
+        self.closed = True
+
+
+def test_the_text_is_typed_once_the_tail_after_the_release_has_arrived():
+    typed = []
+    recorder = WarmRecorder()
+    d = Dictation(FakeEngine(), recorder, paste=typed.append, sounds=False, save=False)
+    d.handle("press", 0.0)
+    d.handle("release", 1.0)
+    assert typed == [] and len(recorder.pending) == 1  # the worker waits for the tail
+    recorder.pending[0].done.set()
+    d.wait()
+    assert typed == ["hello world "]
+
+
+def test_the_lead_in_does_not_make_an_accidental_tap_count():
+    states = []
+    d = Dictation(FakeEngine(), WarmRecorder(seconds=0.1), paste=lambda text: None, sounds=False, save=False)
+    d.on_state = lambda state, message: states.append(state)
+    d.handle("press", 0.0)
+    d.handle("press", 0.1)  # a quick tap on, tap off: 0.1 s said, plus 0.4 s from before the press
+    assert states[-1] == "ignored"
+
+
+def test_the_recorder_is_ticked_and_closed_with_the_dictation():
+    recorder = WarmRecorder()
+    d = Dictation(FakeEngine(), recorder, paste=lambda text: None, sounds=False, save=False)
+    d.tick(5.0)
+    d.close()
+    assert recorder.ticks == [5.0] and recorder.closed
