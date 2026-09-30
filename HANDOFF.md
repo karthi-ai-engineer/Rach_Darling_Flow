@@ -13,6 +13,7 @@ _Last updated: 2026-09-29_
 | setup | GitHub CI (lint, tests, CodeQL), Dependabot, templates, CLAUDE.md, this file | PR #4 (CI green), waiting for merge |
 | 2 | Windows installer (`Setup.exe`, no Python needed), CI app build, release pipeline | PR #6, waiting for a test on another laptop + merge |
 | 3 | Wispr-style hotkeys: hold Ctrl+Win, Ctrl+Win+Space hands-free, optional Menu key | PR #8, the owner confirmed it works (installed app, 2026-09-29), waiting for merge |
+| 4 | A real app: tray icon, recording pill, settings, history, logs (Qt) | PR #10, waiting for a hands-on test + merge |
 
 ## Continue on another device
 
@@ -87,24 +88,130 @@ Then read `CLAUDE.md` (workflow and rules) and pick up at **Next steps** below.
   run only uploads it as an artifact).
 - Inno Setup on the dev laptop is a portable copy in `.tools/innosetup` (git-ignored).
 
+## The tray app (phase 4)
+
+- `sst/app.py` (Qt / PySide6-Essentials, LGPL, bundled as separate DLLs). It has a tray icon and menu (status,
+  History, Settings, logs folder, Quit), and the icon turns red while recording.
+- The pill is a frameless, topmost, click-through window with `WS_EX_NOACTIVATE`. Checked: a focused window stays
+  focused through every pill state, so the paste still goes to the user's app.
+- The model loads on a background thread, and the tray icon appears at once. The keyboard hook starts after the model
+  has loaded. A 15 ms QTimer pumps the hook events into `Dictation`, and the worker thread reports back through a Qt
+  signal.
+- `sst/dictate.py` `Dictation` is the one dictation engine, driven by the tray app and by the console command
+  `sst dictate`. Its tests feed events with explicit times, so they are exact and fast (no sleeping).
+- Settings (`%APPDATA%\sst\settings.json`) are the hotkey, microphone by name, sounds and saving recordings. A damaged
+  file falls back to the defaults. History is `%APPDATA%\sst\history.jsonl` (last 200). Logs are
+  `%LOCALAPPDATA%\sst\logs\sst.log` (rotating).
+- The microphone list is re-read before every recording (~45 ms), so a headset plugged in later, or a new Windows
+  default, is picked up. The dev laptop's default mic was Bluetooth earbuds (OnePlus Nord Buds 3r). Bluetooth headset
+  mics use a low-quality call mode, so pick the laptop mic in Settings for better accuracy.
+- The installer has two programs: `SST Dictation.exe` (tray app, no console; the shortcuts point here) and `sst.exe`
+  (CLI).
+- "Start with Windows" is on by default. The installer task and the in-app setting share one HKCU Run value with
+  `--startup`, which starts quietly. Uninstall removes that value even if it was switched on from the app (verified
+  with a throwaway installer).
+- Build checks: `SST Dictation.exe --self-test` builds every window off-screen and transcribes once, and the build
+  script runs it. The dependency scan of all 92 bundled binaries finds nothing missing on a plain Windows (Qt brings
+  its own C++ runtime).
+- The installer is 520 MB (Qt added 20 MB), 762 MB installed.
+- The owner installed phase 4 on 2026-09-30 and dictated with it (the tray app, pill and History work).
+
+## Accuracy on the owner's voice (first check, 2026-09-30)
+
+- The owner read the "What I need from you" list aloud: 76.5 s, one hands-free dictation in the installed app.
+  Compared with that text (148 words):
+
+  | Decoding | Word errors |
+  |---|---|
+  | as dictated (greedy, cut into 30 s pieces) | 28% |
+  | one piece | 24% |
+  | beam search | no better |
+
+  Leaving out the owner's own reading changes (skipped or added words), about 13–17% of words are wrong. This model
+  scores about 6% on standard English benchmarks.
+- Typical errors are tech words and names: commit → clot, "the five PRs" → "a file PR", Claude → cloud, Tamil →
+  dropped / "Tamar", polishing → publishing, "tech words" → "that was". One whole sentence was dropped when cut at
+  30 s, and decoded correctly as one piece.
+- **Next fix:** raise `MAX_PIECE_SECONDS` in `sst/engines/parakeet.py`. 257 s in one piece works; it crashed at 514 s.
+- Microphone: none is chosen, so the Windows default is used, which is the Bluetooth earbuds when they are connected.
+  2 of that day's 6 recordings were phone quality (no sound above 4 kHz). The long reading was full band, so most
+  errors are the model on this voice, not the mic.
+- The analysis scripts were ad hoc. Phase 6 should add a proper reading test (`sst bench`) with reference texts.
+
+## Company AI gateway (the next task, from the owner)
+
+- `https://tw-gateway.twave.co.jp/v1` is OpenAI-compatible: models, chat/completions, responses, completions,
+  embeddings, images/generations, audio/transcriptions. It is internal (172.16.5.107) and reachable from the dev laptop
+  in about 50 ms.
+- Auth is the owner's gateway API key, sent as `Authorization: Bearer <key>` or `X-API-Key: <key>`. The key lives only
+  in `%APPDATA%\sst\gateway.json` (`{"base_url": ..., "api_key": ...}`), outside the repository. **Never commit it.**
+- Task:
+  - list the models
+  - test only the models hosted on the company's own GPU server, **one at a time** (a small server, with cold starts)
+  - measure transcription accuracy and speed on the owner's recordings, and text polish quality and speed
+  - pick the best and fastest, then use it in sst
+- **Results (2026-09-30).** 24 models: 17 cloud (OpenAI, skipped as asked) and 7 local (`is_cloud: false`), tested one
+  at a time:
+
+  | Local model | Speed | First word | Polish (word error 23.6% before) | Transcription |
+  |---|---|---|---|---|
+  | Qwen/Qwen3-30B-A3B-Instruct-2507-FP8 | **43 tok/s** | 0.14–0.24 s | 22.9% (fixes "commit"; rewords a bit) | not supported |
+  | unsloth/Qwen3.8-27B-NVFP4 | 28 tok/s | 0.24–0.35 s | 23.6%; short sentence 20% → **10%** (most faithful) | not listed |
+  | Qwen/Qwen3.6-35B-A3B-FP8 | 20 tok/s | 1.3 s | 24.3% | HTTP 500 |
+  | Qwen/Qwen-AgentWorld-35B-A3B | 26 tok/s | 0.26 s | 24.3%, identical output: same model as 3.6 | HTTP 500 |
+  | Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf | 17.6 tok/s | 0.29 s | 25.0% (kept "clot") | not listed |
+  | qwen3, sensenova-u1.5 | – | – | "Backend unavailable" (switched off; retried after 90 s) | – |
+
+- **No local model transcribes speech.** Only the cloud `whisper-1` does. Keep Parakeet on the laptop for
+  speech-to-text. vLLM can serve Whisper, so IT could add `whisper-large-v3-turbo` locally; worth asking.
+- **Polish:**
+  - With the owner's word list in the prompt, the LLMs fix names that sound like a vocabulary word ("STD" → "SST",
+    "hashtag 2" → "#2", "clot" → "commit").
+  - They can't bring back words the recognizer dropped, and they don't fix "cloud" → "Claude" when "cloud" also
+    makes sense.
+  - A typical one-sentence dictation polishes in 0.5–0.7 s; the 76 s reading takes 4–5 s.
+- **Connection quirk:** from Python (not curl) the first connection to the gateway sometimes stalls. Use a 4 s
+  connect timeout with retries, keep the connection alive, and warm it up at start. `trust_env=False`, since it's
+  internal.
+- The test scripts were ad hoc (httpx, one model per run). Phase 5 should turn them into `sst bench gateway`.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
-- The console window is the only UI: there is no tray icon or on-screen recording indicator yet. A hotkey other
-  than Ctrl+Win needs `sst.exe dictate --hotkey ...` in the shortcut; a settings file would be friendlier.
 - Ctrl+Win isn't sent through the real hook in automated tests (Wispr Flow on the dev laptop would react). The hook
   plumbing is tested with the Menu key, Esc and Ctrl+Alt+X, and Ctrl+Win by the Matcher unit tests. The owner
   confirmed that Ctrl+Win dictation works in the installed app.
-- English only. Punctuation and capitals come from the model as they are; there is no cleanup of filler words.
+- English only. Punctuation and capitals come from the model as they are; there is no cleanup of filler words yet.
+- The installer isn't code-signed, so SmartScreen warns on first run.
 
 ## Next steps
 
-1. Merge in order: #2, #4, #6, then #8 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the tag,
-   and the Release workflow publishes the first installer.
-2. Try `Setup.exe` on a second laptop. That is the one check not done yet (so far it was tested on the dev laptop only).
-3. Ideas for later phases, in rough order:
-   - an on-screen recording indicator
-   - a tray icon and start at login
-   - spacing and capitals that fit the text around the cursor
-   - cleanup of the transcript (filler words, punctuation)
-   - a custom vocabulary
+1. Merge in order: #2, #4, #6, #8, then #10 (use "Create a merge commit"). Then tag `v0.1.0` on `main` and push the
+   tag, and the Release workflow publishes the installer.
+2. Test the company gateway's own-server models (see above), then use the best: probably transcription
+   (Whisper-class, maybe also Japanese/Tamil) and text polish. Raise MAX_PIECE_SECONDS. Choose the laptop mic.
+   Also try `Setup.exe` on a second laptop.
+3. Roadmap to a Wispr Flow-class app:
+   - **Phase 5, clean text:**
+     - remove fillers (um, uh, you know)
+     - handle self-corrections ("at 2... no, at 3")
+     - spoken "new line" / "new paragraph"
+     - spacing and capitals that fit the text before the cursor (UI Automation)
+     - a personal dictionary (replacements), and snippets (a spoken shortcut expands into saved text)
+   - **Phase 6, accuracy on the owner's voice:**
+     - a reading test with known text to measure the word error rate (WER)
+     - trim silence (VAD)
+     - compare Parakeet with Whisper large-v3-turbo; add Whisper only if Japanese or Tamil is needed
+   - **Phase 7, AI polish and command mode:** an optional small local LLM (e.g. Qwen2.5 1.5B, llama.cpp) to tidy text;
+     select text, hold the key and say "make this formal". Expect about 2–4 s on this CPU, so it stays optional.
+   - **Phase 8, context:** per-app style (casual in Slack, formal in Outlook, plain in terminals and code editors).
+   - **Phase 9, distribution:** auto-update from GitHub Releases, code signing (needs a certificate), a "paste last
+     transcript" hotkey.
+4. Waiting on the owner:
+   - Japanese/Tamil needed?
+   - may text ever go to a cloud AI, or strictly local?
+   - a list of names and terms for the dictionary
+   - the apps used most
+   - code-signing budget
+   - the product name (SST Dictation?)
+   - whether the office has an internal AI gateway (ask IT)

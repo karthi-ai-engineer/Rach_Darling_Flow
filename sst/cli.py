@@ -1,6 +1,7 @@
 """sst: record from the microphone and transcribe it locally.
 
-  uv run sst dictate               hold Ctrl+Win in any app, speak, let go: the text is typed there
+  uv run sst app                   the tray app: hold Ctrl+Win in any app, speak, let go: the text is typed there
+  uv run sst dictate               the same in this console window
   uv run sst start                 record, press Enter to stop, print the text (repeats until you quit)
   uv run sst file <audio.wav>      transcribe an existing WAV file
   uv run sst devices               list microphones (* = default)
@@ -9,6 +10,7 @@
 Options: --engine parakeet   --device <number from `sst devices`>
 """
 import argparse
+import logging
 import sys
 import time
 from pathlib import Path
@@ -73,6 +75,12 @@ def cmd_dictate(args) -> None:
     run(lambda: _load(args.engine), hotkey=args.hotkey, device=args.device, save=not args.no_save)
 
 
+def cmd_app(args) -> None:
+    from sst.app import main as app_main
+
+    sys.exit(app_main())
+
+
 def cmd_web(args) -> None:
     from sst.web import serve
 
@@ -85,6 +93,7 @@ def main() -> None:
     parser.add_argument("--engine", default="parakeet", choices=ENGINES)
     parser.add_argument("--device", type=int, default=None, help="microphone number from `sst devices`")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("app", help="the tray app with the recording indicator, settings and history")
     p_dictate = sub.add_parser("dictate", help="type what you say into any app, using a hotkey")
     p_dictate.add_argument("--hotkey", default="ctrl+win",
                            help="ctrl+win (default, like Wispr Flow), menu (the Menu key), or e.g. ctrl+alt+d")
@@ -98,8 +107,11 @@ def main() -> None:
     p_web.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
 
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="  %(message)s")  # e.g. the per-dictation timing line
     try:
-        {"dictate": cmd_dictate, "start": cmd_start, "file": cmd_file, "devices": cmd_devices, "web": cmd_web}[args.command](args)
+        commands = {"app": cmd_app, "dictate": cmd_dictate, "start": cmd_start, "file": cmd_file,
+                    "devices": cmd_devices, "web": cmd_web}
+        commands[args.command](args)
     except KeyboardInterrupt:
         print("\nStopped.")
     except (FileNotFoundError, ValueError) as e:

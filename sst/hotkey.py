@@ -10,6 +10,7 @@ The hook runs on its own thread and reports "press", "release", "cancel" (Esc wh
 (any other key added, e.g. Ctrl+Win+D: a Windows shortcut, not dictation) on a queue.
 """
 import ctypes
+import logging
 import queue
 import threading
 import time
@@ -17,6 +18,7 @@ from collections.abc import Callable
 from ctypes import wintypes
 from dataclasses import dataclass
 
+log = logging.getLogger(__name__)
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -241,6 +243,6 @@ class HotkeyListener:
                         self.events.put((event, time.monotonic()))
                     if hide:
                         return 1
-        except Exception as e:  # never let an error here swallow or delay the user's typing
-            print(f"  Keyboard hook error: {e}")
+        except Exception:  # never let an error here swallow or delay the user's typing
+            log.exception("Keyboard hook error")
         return user32.CallNextHookEx(None, code, wparam, lparam)

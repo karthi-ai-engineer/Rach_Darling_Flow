@@ -12,13 +12,15 @@ and run it. It doesn't need administrator rights, Python or an internet connecti
 Windows 10/11, 64-bit.
 
 - Windows may say *"Windows protected your PC"*, because the installer isn't code-signed. Click **More info → Run anyway**.
-- Afterwards, open **SST Dictation** from the Start menu. The setup can also add a desktop shortcut and start it when you sign in.
-- Recordings of the installed app go to `%LOCALAPPDATA%\sst\recordings`. Uninstall from *Settings → Apps*.
-- Other commands work with the installed app too, e.g. `sst.exe devices` or `sst.exe --device 2 dictate` from its folder.
+- **SST Dictation** then runs quietly in the tray (the icon near the clock) and starts when you sign in; there is no window
+  to keep open. Right-click the icon for **History**, **Settings** (key, microphone, sounds, start with Windows) and **Quit**.
+- Settings and history live in `%APPDATA%\sst`, recordings in `%LOCALAPPDATA%\sst\recordings`, logs in
+  `%LOCALAPPDATA%\sst\logs`. Uninstall from *Settings → Apps*.
+- `sst.exe` next to it is the command-line tool, e.g. `sst.exe devices` or `sst.exe file x.wav`.
 
 ## Use
 
-**Dictate into any app:** double-click **`dictate.cmd`** (or `uv run sst dictate`) and wait for *Ready*.
+**Dictate into any app:** start **SST Dictation** (the installed app, or `uv run sst app` from the source).
 Then click in any text box (Notepad, Chrome, Slack, VS Code...) and:
 
 | Keys | What happens |
@@ -31,9 +33,13 @@ Then click in any text box (Notepad, Chrome, Slack, VS Code...) and:
 Windows' own Ctrl+Win shortcuts still work: Ctrl+Win+D (new desktop), Ctrl+Win+←/→ and so on simply drop the recording.
 Releasing Win doesn't open the Start menu.
 
-A high beep means recording started, a lower beep means it stopped. A recording stops by itself after 3 minutes and is typed as usual.
+While you speak, a small pill near the bottom of the screen shows a live level; then it shows dots while the text is
+transcribed, and "Typed" when it's done. It never takes the keyboard focus. There's also a beep at the start and end
+(switch it off in Settings). A recording stops by itself after 3 minutes and is typed as usual.
 The text is pasted where your cursor is, and whatever you had copied is put back on the clipboard afterwards.
-Dictated text is kept out of Windows clipboard history (Win+V). Keep the black window open; you can minimise it.
+Dictated text is kept out of Windows clipboard history (Win+V); SST's own History keeps the last 200.
+
+`dictate.cmd` / `uv run sst dictate` is the same without the tray app, in a console window.
 
 - **Quit Wispr Flow first** (tray icon → Quit). It listens to Ctrl+Win too, and both would type. sst warns you if it's running.
 - Other keys: `--hotkey menu` uses the Menu key (≣, next to right Alt; its right-click menu is blocked), or a combination
@@ -102,16 +108,18 @@ sst/
 ├─ tests/                     pytest suite
 ├─ scripts/download_model.py  fetches models into models/
 ├─ scripts/build_installer.py PyInstaller -> add model -> smoke test -> Inno Setup
-├─ packaging/                 installer recipe: sst_app.py (entry point), sst.spec, installer.iss, icon, notices
+├─ packaging/                 installer recipe: sst_gui.py / sst_app.py (entry points), sst.spec, installer.iss, notices
 ├─ models/                    downloaded models (git-ignored)
 ├─ recordings/                your recordings + transcripts (git-ignored)
 └─ sst/
+   ├─ app.py                  the tray app: tray icon, recording pill, settings and history windows (Qt)
+   ├─ settings.py             settings, history and "start with Windows" (%APPDATA%\sst)
    ├─ cli.py                  the `sst` command
-   ├─ dictate.py              hotkey -> record -> transcribe -> paste loop (Windows)
+   ├─ dictate.py              Dictation: hotkey events -> record -> transcribe -> type (shared by app and console)
    ├─ hotkey.py               global hotkeys (low-level keyboard hook) and sending keys
    ├─ paste.py                paste text into the focused app, then restore the clipboard
    ├─ web.py                  local server for the web page (127.0.0.1 only)
-   ├─ static/index.html       the Record / Stop page
+   ├─ static/                 the Record / Stop page (index.html) and the app icon (sst.ico)
    ├─ audio.py                microphone recording, WAV read/write, saving recordings, splitting long audio
    └─ engines/
       ├─ __init__.py          engine list + load_engine()

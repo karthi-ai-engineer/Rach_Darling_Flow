@@ -4,7 +4,9 @@
   #error Pass /DAppVersion=x.y.z (build_installer.cmd does this)
 #endif
 #define AppName "SST Dictation"
-#define AppExe "sst.exe"
+; The tray app; sst.exe next to it is the command-line tool.
+#define AppExe "SST Dictation.exe"
+#define RunKey "Software\Microsoft\Windows\CurrentVersion\Run"
 
 [Setup]
 AppId={{8F1C5A7E-3B2D-4E6A-9C1F-5D2E7A4B9C31}
@@ -21,11 +23,11 @@ DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-; sst_app.py holds this mutex while running, so setup and uninstall ask to close the app first.
+; Both programs hold this mutex while running, so setup and uninstall ask to close the app first.
 AppMutex=SST-Dictation-running
 OutputDir=..\dist
 OutputBaseFilename=SST-Dictation-Setup-{#AppVersion}
-SetupIconFile=sst.ico
+SetupIconFile=..\sst\static\sst.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 WizardStyle=modern
@@ -37,11 +39,13 @@ LZMANumBlockThreads=4
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
-Name: "startup"; Description: "Start dictation automatically when I sign in to Windows"; GroupDescription: "Startup:"; Flags: unchecked
+Name: "startup"; Description: "Start SST Dictation when I sign in to Windows"; GroupDescription: "Startup:"
 
 [InstallDelete]
 ; Updating: remove the previous version's program files first, so no stale DLLs are left behind.
 Type: filesandordirs; Name: "{app}\_internal"
+; Versions before the tray app started with Windows through a Startup-folder shortcut; the Run value below replaces it.
+Type: files; Name: "{userstartup}\{#AppName}.lnk"
 
 [Files]
 Source: "..\dist\sst\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -50,7 +54,12 @@ Source: "NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Hold Ctrl+Win in any app and speak"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "Hold Ctrl+Win in any app and speak"; Tasks: desktopicon
-Name: "{userstartup}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: startup; Flags: runminimized
+
+[Registry]
+; The same value the app's "Start when I sign in" setting turns on and off (sst/settings.py), so the two always agree.
+Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" --startup"; Tasks: startup
+; Remove it on uninstall even when it was switched on later from the app's settings.
+Root: HKCU; Subkey: "{#RunKey}"; ValueType: none; ValueName: "{#AppName}"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Start {#AppName} now"; Flags: nowait postinstall skipifsilent

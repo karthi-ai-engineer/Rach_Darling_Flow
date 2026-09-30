@@ -32,13 +32,14 @@ text is typed at the cursor.
 ```
 uv sync                                          # app + dev tools (pytest, ruff)
 uv run python scripts/download_model.py parakeet # ~630 MB model into models/
-uv run sst dictate                               # the app
+uv run sst app                                   # the tray app (uv run sst dictate: the same in a console)
 uv run pytest                                    # tests
 uv run ruff check .                              # lint
 ```
 
-The layout is in `README.md`. Engines live in `sst/engines/`. The Windows-only parts are `sst/dictate.py`,
-`sst/hotkey.py` and `sst/paste.py`.
+The layout is in `README.md`. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
+shared by the tray app (`sst/app.py`, Qt) and the console command. The Windows-only parts are `sst/app.py`,
+`sst/dictate.py`, `sst/hotkey.py`, `sst/paste.py` and `sst/settings.py`. UI tests run Qt off-screen (`tests/test_app.py`).
 
 ## Conventions
 
