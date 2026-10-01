@@ -55,6 +55,7 @@ in Settings if you prefer; a Bluetooth headset's microphone is never kept open.
 | **Home** | how to dictate, your words this week and in total, words per minute, day streak, and your recent dictations by day, each with a copy button |
 | **Dictionary** | *Your words*: names, products and terms that speech recognition listens for and the AI cleanup spells your way |
 | **Reading test** | how well Rflow understands your voice (below) |
+| **Speech recognition** | the model that turns your voice into text, chosen apart from the AI cleanup: on this computer (NVIDIA Parakeet now; Whisper large-v3 turbo, cloud and server models next) |
 | **AI cleanup** | the model that cleans up the text (below) |
 | **Settings** | dictation key, microphone with a live level (and a warning for a Bluetooth headset's microphone, which records in call quality), keeping it ready, Windows' voice effects on or off, beeps, keeping recordings, starting with Windows, updates |
 | **Profiles** | one setup per person (below) |
@@ -193,11 +194,14 @@ Rach_Darling_Flow/
    ├─ static/                 the Record / Stop page (index.html), the app icon (sst.ico), the window's images (ui/)
    ├─ audio.py                microphone recording, WAV read/write, measuring a recording, splitting long audio
    └─ engines/
-      ├─ __init__.py          engine list + load_engine()
+      ├─ __init__.py          the speech model catalog (SPEECH_MODELS: where it runs, languages, size) + load_engine()
       └─ parakeet.py          Parakeet via sherpa-onnx (CPU); audio over 3 minutes is split at pauses
 ```
 
 ## Adding another engine
 
-Create `sst/engines/<name>.py` with a class that has `name` and `transcribe(audio, sample_rate) -> str`,
-then add it to `ENGINES` and `load_engine()` in `sst/engines/__init__.py`. Use it with `uv run sst --engine <name> start`.
+Speech recognition is a building block: any engine works with any AI cleanup model. Create `sst/engines/<name>.py` with
+a class that has `name` (its catalog key), `title` (what reports call it), `signature` (what its text depends on;
+`sst eval` caches by it), an optional `words` list (Your words) and `transcribe(audio, sample_rate) -> str`. Then add it
+to `SPEECH_MODELS` and `load_engine()` in `sst/engines/__init__.py`. It shows up on the Speech recognition page, the app
+loads it in the background when chosen, and `uv run sst --engine <name> start` or `sst eval --engine <name>` use it.

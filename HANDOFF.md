@@ -13,9 +13,15 @@ _Last updated: 2026-10-01_
   - word errors 9.2% → 7.1%
   - held-out sets 6.7% → **5.4%**, better than Parakeet's own benchmark average of 5.9%
   - names and terms 40% → 24.5%, when Your words holds the names
-- **All code is merged into `main`.** No PRs are open.
-- The owner now **uses 1.4.0 for real dictation for a few days**: install it, fill Your words, then read two sets (raw
-  and Windows mode). What goes wrong decides phase 13; see **Next steps** at the end.
+- The owner **uses 1.4.0 for real dictation**, now on both laptops. A raw-mode set is still to be read.
+- **The owner's plan (2026-10-01):** Rflow becomes building blocks. Speech recognition is chosen like the AI cleanup,
+  in four steps (phases 13-16):
+  - 13: the building block itself
+  - 14: Whisper turbo on this computer
+  - 15: "Scan my computer"
+  - 16: cloud and server speech models
+
+  The correction work (sound-alike fixer, confidence-gated cleanup) moves to phase 17. See **Next steps**.
 
 **Read in this order:**
 1. This section and **Next steps** (the end of this file).
@@ -80,6 +86,7 @@ _Last updated: 2026-10-01_
 | fix | Fairer scoring (contractions, compounds, Ctrl), only names suggested, eval report printing | done, on `main` (PR #25) |
 | 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | done, on `main` (PR #27) |
 | 12 | **Hotwords**: Parakeet listens for Your words (bpe.vocab from NVIDIA's archive, beam search, score 1.0, guard) | done, on `main` (PR #29); phases 10-12 released as **v1.4.0** |
+| 13 | **Speech recognition as a building block**: a catalog of speech models, a per-profile choice, background switching, the Speech recognition page | PR #33, waiting for the owner's test + merge |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -572,7 +579,70 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
 - `sst eval --words "A,B"` tries other words, and `--no-words` uses none.
 - Tests: 243.
 
-## Phase 13 groundwork (experiments on 2026-10-01, nothing merged)
+## Speech recognition as a building block (phase 13)
+
+- **The owner's plan (2026-10-01):** Rflow should be building blocks. Parakeet is the base, but people want their own
+  speech model, just as they choose their own AI cleanup model. The four steps:
+
+  | Phase | Step | Notes |
+  |---|---|---|
+  | 13 | The building block itself | this phase |
+  | 14 | Whisper large-v3 turbo on this computer | downloaded when chosen; Rflow picks the best way to run it (sherpa-onnx or faster-whisper: measure both) |
+  | 15 | "Scan my computer" | disk, memory, processor, graphics card, and a short speed test per model; then a suggestion per model and one-click download |
+  | 16 | Cloud and server speech models | OpenAI, Gemini, Groq, vLLM, the company gateway (`whisper-1` is on it) |
+
+  The owner's decisions:
+  - Local Parakeet stays the default; cloud speech is opt-in, with a warning that the voice leaves the computer. The
+    company gateway counts as the owner's own AI: no warning needed there.
+  - Start with only Parakeet and Whisper turbo locally.
+  - Parakeet stays inside the installer for now (on demand later).
+- **The catalog** (`sst/engines/__init__.py`): `SPEECH_MODELS` lists each model's where (`WHERE`: on this computer,
+  cloud, own server), languages, size and what it's good at. `ready` marks what this version can load; the others
+  show as "Coming soon". `usable(key)` turns a setting into a loadable model (the default for unknown or not-ready
+  keys, e.g. a setting from a newer version).
+- **An engine has:**
+  - `name` (its catalog key) and `title` (what reports call it: "Parakeet alone")
+  - `signature`
+  - an optional `words` list, and `transcribe()`
+- **Per profile:** `Settings.speech_model` (default `parakeet`; old files get it).
+- **Switching** (`TrayApp._load_speech` / `_on_loaded` / `_on_failed`):
+  - The chosen model loads on a thread, and the status says "Loading <model>...".
+  - Dictation keeps the model it has until the new one is ready, then gets it with Your words.
+  - A model that's no longer wanted when it finishes loading is dropped.
+  - A failed load keeps the old model and says so.
+  - Switching profiles loads the other profile's model.
+- **The Speech recognition page** (`SpeechPage`) sits in the sidebar between Dictionary and AI cleanup. Its tabs are
+  On this computer / Cloud / Your own server. Each model has a card with an "In use" or "Use this model" button. The
+  "Scan my computer" card and the Cloud and server tabs say "Coming in the next update". The tray menu has
+  "Speech recognition" too.
+- `sst eval` (and the reading test) name the model in use ("Parakeet alone"). By default, `sst eval` uses the
+  profile's own speech model; `--engine` picks another.
+- Tests: 254. Among them, the real TrayApp switching to a second model in the background (Your words carried over),
+  a failed switch, a model this version can't load, and profiles with different models.
+
+## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
+
+- **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
+  - Speech level -37 dBFS, signal to noise 23 dB, full band.
+  - **No first words lost (0 of 30):** the warm microphone works. On the other laptop set B lost 5.
+  - No last word was cut off.
+- **Results** (30 sentences, so about ±4 points):
+
+  | Setup | Word errors | Names and terms |
+  |---|---|---|
+  | Parakeet, no words | 12.5% | 44% |
+  | Parakeet, this laptop's Your words | 12.0% | 44% |
+  | Parakeet, the 37 names and terms (`bench.TERMS`) | 11.8% | 36% |
+  | **Parakeet + the company's Qwen3.8-27B cleanup** | **8.7%** | 24% |
+
+  The cleanup is clearly better: -3.3 points, range -5.7 to -1.3.
+- **This laptop's Your words** held mostly everyday words, from the old reading test's suggestions (version,
+  installer, tray, app, move, stand, meeting, morning, after...). The owner was told to keep only names and terms.
+- **Names still wrong with the names list:** Parakeet → parquit, Ollama → olama, Qwen → current, Groq → grok,
+  PowerToys → power toys, Vercel → vessel, commit → comet, PyInstaller → py install. That is the phase-17 fixer's
+  ground.
+
+## Correction groundwork, for phase 17 (experiments on 2026-10-01, nothing merged)
 
 These were scratch scripts, not in git. The findings:
 
@@ -635,34 +705,34 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **The owner, on the new laptop:**
-   - Install Rflow 1.4.0 (`Rflow-Setup.exe` from the latest release; "More info → Run anyway" on the SmartScreen
-     warning).
-   - Copy the data zip (see **Start here**).
-   - Fill **Your words** with the names and terms they dictate: colleagues, company, clients, products, tools. Names
-     and terms only, no everyday words. Phase 12's gain depends on it.
-   - Dictate for a few days with Wispr Flow quit.
-2. **The owner reads two sets:** one as it is, and one with Settings → "Turn off Windows' voice effects" on. Then
-   `sst eval`: raw against Windows mode decides the default, and the lost first words should be gone in both. A set
-   with a Bluetooth headset *selected* in Settings is still missing.
-3. **Phase 13, chosen by what goes wrong in real dictation** (see **Phase 13 groundwork**):
+1. **Owner:** try PR #33 (the Speech recognition page, Parakeet in use). Then merge it.
+2. **Phases 14-16**, the owner's building-block plan (see **Speech recognition as a building block**):
+   - 14: Whisper large-v3 turbo on this computer, downloaded when chosen
+   - 15: "Scan my computer"
+   - 16: cloud and server speech models
+3. **The owner, meanwhile:**
+   - Keep only names and terms in Your words.
+   - Read a set with Settings → "Turn off Windows' voice effects" on (raw mode). Set B in Windows mode was read on the
+     second laptop on 2026-10-01.
+   - On the second laptop, the other laptop's 150 recordings are missing: copy the data zip (see **Start here**).
+4. **Phase 17, correction, chosen by what goes wrong in real dictation** (see **Correction groundwork**):
    - names still wrong → the sound-alike fixer with an ordinary-word guard
    - small words wrong → AI cleanup only when unsure (Ollama locally, or the owner's provider)
    - both mediocre → compare a stronger model (Qwen3-ASR or Canary via sherpa-onnx) on the same recordings
    - later: learn from the owner's edits after pasting
-4. **A small fix:** in the developer copy, the update banner should say "you run Rflow from its source: update with
+5. **A small fix:** in the developer copy, the update banner should say "you run Rflow from its source: update with
    git pull; download the installer for the app", not offer "Update now" (`TrayApp.start_update`, `sst/app.py`).
-5. **Then the features paused for accuracy:**
+6. **Then the features paused for accuracy:**
    - text without the AI endpoint: fillers, "new line", spacing and capitals from the text before the cursor,
      snippets
    - command mode ("make this formal" on selected text) and a style per app
-6. **Later:**
+7. **Later:**
    - code signing (removes the SmartScreen warning)
    - a "paste last transcript" hotkey
    - the bench: resampling whole sessions, and substitutions / deletions / insertions counted apart
-7. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
+8. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
    against the local fakes).
-8. Waiting on the owner:
+9. Waiting on the owner:
    - Japanese/Tamil needed?
    - the apps used most
    - code-signing budget

@@ -2,7 +2,7 @@
 
 Rules for AI coding assistants (Claude Code) in this repository. Read `HANDOFF.md` first (its "Start here" section):
 it says where the work stands, how the owner likes to work, and what isn't in git (the model, the owner's recordings).
-The accuracy research behind phases 10-13 is in `docs/research/` (summary: `docs/accuracy.md`).
+The accuracy research behind phases 10-12 and 17 is in `docs/research/` (summary: `docs/accuracy.md`).
 
 ## Authorship: karthi-ai-engineer only
 
@@ -45,7 +45,9 @@ uv run pytest                                    # tests
 uv run ruff check .                              # lint
 ```
 
-The layout is in `README.md`. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
+The layout is in `README.md`. Speech recognition is a building block like the AI cleanup: the models are listed in
+`SPEECH_MODELS` (`sst/engines/__init__.py`), each profile chooses one (`Settings.speech_model`), and the app switches
+in the background. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
 shared by the app (`sst/app.py`, Qt: tray, pill, `TrayApp`) and the console command. The window is `sst/window.py`: it
 keeps no state and calls `TrayApp`, or `PreviewApp` in tests and screenshots. In-app updates are `sst/updates.py`, and
 the text cleanup is `sst/gateway.py` (`PROVIDERS`: each provider's request format). Accuracy work follows
