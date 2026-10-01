@@ -175,3 +175,12 @@ def test_a_damaged_or_odd_profiles_file_still_gives_a_usable_list(tmp_path):
                     encoding="utf-8")
     loaded = Profiles.load(path)
     assert [p.id for p in loaded.items] == ["default", "rahul"] and loaded.active == "default"
+
+
+def test_cloud_speech_models_are_kept_and_bad_ones_ignored(tmp_path):
+    path = tmp_path / "settings.json"
+    Settings(speech_model="groq", speech_cloud_models={"groq": "whisper-large-v3"}).save(path)
+    loaded = Settings.load(path)
+    assert loaded.speech_model == "groq" and loaded.speech_cloud_models == {"groq": "whisper-large-v3"}
+    path.write_text('{"speech_cloud_models": {"groq": 3}}', encoding="utf-8")
+    assert Settings.load(path).speech_cloud_models == {}

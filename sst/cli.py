@@ -8,7 +8,8 @@
   uv run sst eval [<folder>...]    score reading tests (all of them by default); --degrade, --model, --no-cleanup
   uv run sst web                   open a Record / Stop page in the browser
 
-Options: --engine parakeet   --device <number from `sst devices`>
+Options: --engine parakeet (or whisper-turbo; openai, groq, gemini with the key saved in Rflow)
+         --device <number from `sst devices`>
 """
 import argparse
 import logging
@@ -19,14 +20,30 @@ from pathlib import Path
 from sst import __version__
 from sst.audio import list_input_devices, load_wav, record_until_enter, save_recording
 from sst.engines import DEFAULT_MODEL, ENGINES, load_engine, usable
+from sst.engines.cloud import CLOUD
 
 
 def _load(engine_name: str):
     print(f"Loading {engine_name} model...", end=" ", flush=True)
     t0 = time.perf_counter()
-    engine = load_engine(engine_name)
+    engine = load_engine(engine_name, **_cloud_options(engine_name))
     print(f"ready ({time.perf_counter() - t0:.1f}s)")
     return engine
+
+
+def _cloud_options(name: str) -> dict:
+    """A cloud model's key, model and language, from the profile in use in the app (the key is AI cleanup's too).
+    Without Parakeet to fall back on: a provider's failure is reported, not hidden."""
+    if name not in CLOUD:
+        return {}
+    from sst.gateway import GatewayConfig
+    from sst.settings import Profiles, Settings
+
+    profile = Profiles.load().current
+    settings, key = Settings.load(profile.settings_file), GatewayConfig.load(profile.gateway_file).key_for(name)
+    if not key:
+        raise SystemExit(f"No {CLOUD[name].name} key: enter it on Rflow's Speech recognition page first.")
+    return {"language": settings.speech_language, "api_key": key, "model": settings.speech_cloud_models.get(name, "")}
 
 
 def _transcribe_and_report(engine, audio, rate) -> str:
@@ -95,14 +112,15 @@ def cmd_eval(args) -> None:
     models = [] if args.no_cleanup else args.model or [m for m in (settings.cleanup_model, settings.cleanup_fallback) if m]
     polishers = {m.rsplit("/", 1)[-1]: Polisher(gateway, m, settings.vocabulary) for m in models} if gateway.address else {}
     evaluate.pipelines_for(polishers, args.degrade or [])  # a typo in --degrade is reported before the slow model load
-    engine = _load(args.engine or usable(settings.speech_model))  # by default the profile's speech model, as in the app
+    engine = _load(args.engine or usable(settings.speech_model, gateway))  # by default the profile's, as in the app
     pipelines = evaluate.pipelines_for(polishers, args.degrade or [], title=engine.title)
     if hasattr(engine, "language"):  # a model that knows many languages listens for the profile's choice
         engine.language = settings.speech_language
     if hasattr(engine, "words"):  # as in dictation: the recogniser listens for Your words
         chosen = [w.strip() for w in args.words.split(",")] if args.words else settings.vocabulary
         engine.words = [] if args.no_words else [w for w in chosen if w]
-        print(f"  Your words used while recognising: {len(engine.words)}" + ("" if engine.biased else " (no bpe.vocab)"))
+        biased = getattr(engine, "biased", True)  # Parakeet listens for them only with its bpe.vocab
+        print(f"  Your words used while recognising: {len(engine.words)}" + ("" if biased else " (no bpe.vocab)"))
     results = evaluate.run(folders, engine, pipelines, progress=lambda text: print(" ", text))
     out = Path(args.out) if args.out else evaluate.output_folder(folders)
     results.save(out)

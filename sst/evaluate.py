@@ -278,21 +278,23 @@ def run(folders: list[Path], engine, pipelines: list[Pipeline], progress: Callab
 def _transcribe(engine, spec: str, items, progress, cache: bool, name: str) -> list[tuple[str, float]]:
     signature, out = engine_signature(engine), []
     caches: dict[Path, dict] = {}
-    for k, (folder, wav, audio, rate) in enumerate(items, 1):
-        store = caches.setdefault(folder, _load_cache(folder) if cache else {})
-        key = f"{signature}|{spec}|{hashlib.sha1(wav.read_bytes()).hexdigest()[:16]}"
-        hit = store.get(key)
-        if isinstance(hit, dict) and isinstance(hit.get("text"), str):
-            out.append((hit["text"], float(hit.get("seconds", 0.0))))
-            continue
-        progress(f"{name}: transcribing {k} of {len(items)}...")
-        t0 = time.perf_counter()
-        text = engine.transcribe(degrade(audio, rate, spec), rate)
-        store[key] = {"text": text, "seconds": round(time.perf_counter() - t0, 3)}
-        out.append((text, store[key]["seconds"]))
-    if cache:
-        for folder, store in caches.items():
-            (folder / CACHE_FILE).write_text(json.dumps(store, indent=1, ensure_ascii=False), encoding="utf-8")
+    try:
+        for k, (folder, wav, audio, rate) in enumerate(items, 1):
+            store = caches.setdefault(folder, _load_cache(folder) if cache else {})
+            key = f"{signature}|{spec}|{hashlib.sha1(wav.read_bytes()).hexdigest()[:16]}"
+            hit = store.get(key)
+            if isinstance(hit, dict) and isinstance(hit.get("text"), str):
+                out.append((hit["text"], float(hit.get("seconds", 0.0))))
+                continue
+            progress(f"{name}: transcribing {k} of {len(items)}...")
+            t0 = time.perf_counter()
+            text = engine.transcribe(degrade(audio, rate, spec), rate)
+            store[key] = {"text": text, "seconds": round(time.perf_counter() - t0, 3)}
+            out.append((text, store[key]["seconds"]))
+    finally:  # also when a run stops halfway (e.g. a cloud provider's limit): what was transcribed isn't asked again
+        if cache:
+            for folder, store in caches.items():
+                (folder / CACHE_FILE).write_text(json.dumps(store, indent=1, ensure_ascii=False), encoding="utf-8")
     return out
 
 
