@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from sst import RECORDINGS_DIR, __version__, bench
 from sst.audio import LevelMeter, Take, call_quality, save_wav
+from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, WHERE, usable
 from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
 from sst.settings import (
@@ -73,7 +74,7 @@ ICON_FONTS = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
 GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanup": "\ue99a", "settings": "\ue713",
           "copy": "\ue8c8", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
           "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
-          "profile": "\ue77b"}
+          "profile": "\ue77b", "speech": "\ue720"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
@@ -110,6 +111,11 @@ def stylesheet(theme: str) -> str:
                        background: transparent; }}
     QPushButton#nav:hover {{ background: {t['hover']}; color: {t['text']}; }}
     QPushButton#nav:checked {{ background: {t['selected']}; color: {t['text']}; font-weight: 600; }}
+    QPushButton#segment {{ background: {t['surface']}; color: {t['text']}; border: 1px solid {t['line']};
+                           border-radius: 8px; padding: 7px 16px; }}
+    QPushButton#segment:hover {{ border-color: {t['accent']}; }}
+    QPushButton#segment:checked {{ background: {t['accent']}; border-color: {t['accent']}; color: white;
+                                   font-weight: 600; }}
     QPushButton#profile {{ text-align: left; padding: 8px 12px; border: 1px solid {t['line']}; border-radius: 8px;
                            background: {t['surface']}; color: {t['text']}; }}
     QPushButton#profile:hover {{ border-color: {t['accent']}; }}
@@ -832,6 +838,104 @@ class ReadingTestPage(Page):
         super().hideEvent(event)
 
 
+# ---------------------------------------------------------------- Speech recognition
+
+class SpeechPage(Page):
+    """Which model turns the voice into text: a building block of its own, chosen apart from the AI cleanup."""
+
+    def __init__(self, app):
+        super().__init__("Speech recognition", "The model that turns your voice into text. It's chosen separately from "
+                                               "the AI cleanup, so any speech model works with any cleanup model. Your "
+                                               "words help every model.")
+        self.app = app
+        self.where: dict[str, QPushButton] = {}
+        tabs = QHBoxLayout()
+        tabs.setSpacing(6)
+        for key, label in WHERE.items():
+            tab = QPushButton(label)
+            tab.setObjectName("segment")
+            tab.setCheckable(True)
+            tab.setAutoExclusive(True)
+            tab.setCursor(Qt.CursorShape.PointingHandCursor)
+            tab.clicked.connect(lambda _=False, k=key: self.show_where(k))
+            self.where[key] = tab
+            tabs.addWidget(tab)
+        tabs.addStretch()
+        self.add(tabs)
+        self.groups = QStackedWidget()
+        self.models: dict[str, tuple[QLabel, QPushButton]] = {}  # key -> (status, button)
+        for key in WHERE:
+            self.groups.addWidget(self._group(key))
+        self.add(self.groups)
+        self.body.addStretch()
+        chosen = SPEECH_MODELS.get(app.settings.speech_model, SPEECH_MODELS[DEFAULT_MODEL])
+        self.show_where(chosen.where)
+
+    def _group(self, where: str) -> QWidget:
+        group = QWidget()
+        layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        models = [m for m in SPEECH_MODELS.values() if m.where == where]
+        for model in models:
+            frame, card_layout = card(6)
+            status = text("", muted=True, wrap=False)
+            mixed = QFont()  # the check mark comes from the icon font, the words from Segoe UI
+            mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+            status.setFont(mixed)
+            choose = button("Use this model", lambda _=False, k=model.key: self.app.choose_speech_model(k), primary=True)
+            card_layout.addLayout(row(text(model.name, "h2", wrap=False), status, stretch_at=1))
+            card_layout.addWidget(text(model.summary))
+            card_layout.addWidget(text(f"Languages: {model.languages}  ·  Size: {model.size}", muted=True))
+            card_layout.addLayout(row(choose, stretch_at=1))
+            self.models[model.key] = (status, choose)
+            layout.addWidget(frame)
+        if where == "local":
+            frame, card_layout = card(6)
+            card_layout.addWidget(text("Not sure which model suits your computer?", "h2"))
+            card_layout.addWidget(text("Scan my computer checks the disk space, memory, processor and graphics card, "
+                                       "tries each model on a short recording, and suggests the one that fits. "
+                                       "Coming in the next update.", muted=True))
+            scan = button("Scan my computer")
+            scan.setEnabled(False)
+            card_layout.addLayout(row(scan, stretch_at=1))
+            layout.addWidget(frame)
+        elif not models:
+            frame, card_layout = card(6)
+            if where == "cloud":
+                card_layout.addWidget(text("Cloud speech models", "h2"))
+                card_layout.addWidget(text("OpenAI, Google Gemini, Groq and others recognise your speech on their "
+                                           "servers, with your key. Your voice is sent to the provider. Coming in a "
+                                           "next update.", muted=True))
+            else:
+                card_layout.addWidget(text("Your own server", "h2"))
+                card_layout.addWidget(text("A speech model on a vLLM server, or your company's AI gateway, with its "
+                                           "address and key. Coming in a next update.", muted=True))
+            layout.addWidget(frame)
+        layout.addStretch()  # cards keep their own height when another group is taller
+        return group
+
+    def show_where(self, where: str) -> None:
+        self.where[where].setChecked(True)
+        self.groups.setCurrentIndex(list(WHERE).index(where))
+        self.refresh()
+
+    def refresh(self) -> None:
+        chosen, in_use, loading = self.app.settings.speech_model, self.app.speech_in_use(), self.app.loading_speech
+        for key, (status, choose) in self.models.items():
+            ready = SPEECH_MODELS[key].ready
+            if not ready:
+                status.setText("Coming soon")
+            elif key == loading:
+                status.setText("Loading...")
+            elif key == in_use:
+                status.setText(f"{GLYPHS['check']}  In use")
+            else:
+                status.setText("")
+            choose.setVisible(ready and key != chosen)
+            choose.setEnabled(not loading)
+
+
 # ---------------------------------------------------------------- AI cleanup
 
 def _model_box(current: str, hint: str) -> QComboBox:
@@ -1198,8 +1302,8 @@ class ProfilesPage(Page):
 
 # ---------------------------------------------------------------- the window
 
-NAV = [("home", "Home"), ("dictionary", "Dictionary"), ("reading", "Reading test"), ("cleanup", "AI cleanup"),
-       ("settings", "Settings"), ("profiles", "Profiles")]
+NAV = [("home", "Home"), ("dictionary", "Dictionary"), ("speech", "Speech recognition"), ("cleanup", "AI cleanup"),
+       ("reading", "Reading test"), ("settings", "Settings"), ("profiles", "Profiles")]
 
 
 class MainWindow(QWidget):
@@ -1263,7 +1367,8 @@ class MainWindow(QWidget):
         self.banner.hide()
 
         self.pages = {"home": HomePage(app), "dictionary": DictionaryPage(app, self.show_page),
-                      "reading": ReadingTestPage(app), "cleanup": CleanupPage(app), "settings": SettingsPage(app),
+                      "speech": SpeechPage(app), "reading": ReadingTestPage(app), "cleanup": CleanupPage(app),
+                      "settings": SettingsPage(app),
                       "profiles": ProfilesPage(app), "welcome": WelcomePage(app, self.show_page)}
         self.stack = QStackedWidget()
         for page in self.pages.values():
@@ -1394,6 +1499,7 @@ class PreviewApp:
         self.history = history or []
         self.stats = stats or Stats()
         self._microphones = microphones if microphones is not None else ["Microphone (Realtek(R) Audio)"]
+        self.loading_speech = ""
         self.calls: list[tuple] = []  # what the window asked for
 
     def hotkey_label(self) -> str:
@@ -1411,6 +1517,13 @@ class PreviewApp:
 
     def bench_dir(self) -> Path:
         return self.profiles.current.folder(self._bench)
+
+    def speech_in_use(self) -> str:
+        return usable(self.settings.speech_model)
+
+    def choose_speech_model(self, key: str) -> None:
+        self.settings.speech_model = key
+        self.calls.append(("choose_speech_model", key))
 
     def apply_settings(self, new: Settings) -> None:
         self.settings = new

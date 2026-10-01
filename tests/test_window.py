@@ -435,3 +435,36 @@ def test_the_reading_test_saves_what_came_after_record_not_the_lead_in(tmp_path)
     assert "too short" in test.status.text() and test.recorded() == 0
     test.stop()
     assert recorder.closed  # leaving the page closes even a warm microphone
+
+
+# ---- speech recognition
+
+def test_the_speech_page_shows_the_model_in_use_and_what_comes_next():
+    window, _ = _window()
+    window.show_page("speech")
+    page = window.pages["speech"]
+    assert page.where["local"].isChecked()
+    status, choose = page.models["parakeet"]
+    assert "In use" in status.text() and choose.isHidden()
+    status, choose = page.models["whisper-turbo"]
+    assert status.text() == "Coming soon" and choose.isHidden()
+    page.where["cloud"].click()
+    assert page.groups.currentIndex() == list(w.WHERE).index("cloud") and "Cloud speech models" in _labels(page)
+
+
+def test_choosing_another_speech_model(monkeypatch):
+    import dataclasses
+
+    from sst import engines
+    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
+                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
+    window, app = _window()
+    page = window.pages["speech"]
+    page.refresh()
+    _, choose = page.models["whisper-turbo"]
+    assert not choose.isHidden()
+    choose.click()
+    assert ("choose_speech_model", "whisper-turbo") in app.calls
+    app.loading_speech = "whisper-turbo"
+    page.refresh()
+    assert page.models["whisper-turbo"][0].text() == "Loading..."

@@ -41,7 +41,8 @@ is the only enhancement worth trying; mixing the original back in is what recove
 | 10 Accuracy lab | Five sets of sentences (A-B tuning, C-E test), session notes, audio measurements, `sst eval` with names-and-terms errors, 95% ranges, degradations | The ranges are narrow enough to see a 2-3 point change |
 | 11 Capture | WASAPI, warm stream with lead-in and tail, Bluetooth detection, raw mode, peak to -1 dBFS, retry of empty results | Fewer lost first and last words; no empty results; raw vs Windows mode by reading test |
 | 12 Hotwords | bpe.vocab read out of NVIDIA's .nemo, Your words as hotwords (beam 4, score 1.0), a guard against repeated words | Names and terms errors down, other words flat, few terms put in wrongly |
-| 13 Correction | Word confidence, sound-alike matching, the confidence-gated LLM | Word errors down with no rise on the other words; LLM calls and time |
+| 13-16 Speech building blocks | The speech model chosen like the AI cleanup: Parakeet, Whisper turbo on this computer, "Scan my computer", cloud and server models (the owner's plan of 2026-10-01; see HANDOFF) | Each model compared on the owner's own recordings with `sst eval --engine` |
+| 17 Correction | Word confidence, sound-alike matching, the confidence-gated LLM | Word errors down with no rise on the other words; LLM calls and time |
 | later | Learning from the user's edits after pasting | Real dictations as a growing test set |
 
 ## Measuring (Phase 10)

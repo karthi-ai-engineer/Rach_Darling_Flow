@@ -31,7 +31,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon,
 from sst import __version__, bench, evaluate, updates
 from sst.audio import TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
-from sst.engines import load_engine
+from sst.engines import SPEECH_MODELS, load_engine, usable
 from sst.gateway import GatewayConfig, Polisher
 from sst.hotkey import HotkeyListener, parse_hotkey
 from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
@@ -218,7 +218,7 @@ class _Signals(QObject):
     state = Signal(str, str)  # from Dictation, possibly on its worker thread
     result = Signal(str, str, float)  # (heard, typed, seconds of audio), from Dictation's worker thread
     loaded = Signal(object)
-    failed = Signal(str)
+    failed = Signal(str, str)  # (speech model, why it couldn't load)
     update_found = Signal(object)  # the rest come from the update threads
     update_none = Signal()
     update_progress = Signal(str)
@@ -234,6 +234,7 @@ class TrayApp:
         self._load_profile()
         self.recorder = self.new_recorder()
         self.dictation: Dictation | None = None
+        self.loading_speech = ""  # the speech model being loaded in the background, if any
         self.listener: HotkeyListener | None = None
         self.quiet_start = quiet_start
         self._cleanup_notice = -1e9  # when the user was last told that the cleanup couldn't help
@@ -268,6 +269,7 @@ class TrayApp:
         menu.addSeparator()
         menu.addAction(f"Open {APP_NAME}", lambda: self.window.open("home"))
         menu.addAction("Dictionary", lambda: self.window.open("dictionary"))
+        menu.addAction("Speech recognition", lambda: self.window.open("speech"))
         menu.addAction("Reading test", lambda: self.window.open("reading"))
         menu.addAction("AI cleanup", lambda: self.window.open("cleanup"))
         menu.addAction("Settings", lambda: self.window.open("settings"))
@@ -291,7 +293,7 @@ class TrayApp:
         self.pump = QTimer()
         self.pump.setInterval(15)
         self.pump.timeout.connect(self._pump)
-        threading.Thread(target=self._load, name="model-loader", daemon=True).start()
+        self._load_speech()
         if getattr(sys, "frozen", False):  # the source checkout is updated with git, not by the app
             # The installer of an update that has finished (it started this version) isn't needed any more.
             QTimer.singleShot(60_000, lambda: shutil.rmtree(UPDATE_DIR, ignore_errors=True))
@@ -305,30 +307,68 @@ class TrayApp:
 
     # -- start-up
 
-    def _load(self) -> None:
-        try:
-            t0 = time.perf_counter()
-            engine = load_engine("parakeet")
-            log.info("Model loaded in %.1fs", time.perf_counter() - t0)
-            self.signals.loaded.emit(engine)
-        except Exception as e:
-            log.exception("Could not load the speech model")
-            self.signals.failed.emit(str(e))
+    def _load_speech(self) -> None:
+        """Load the profile's speech model on a thread. A dictation already running keeps its model until the new one
+        is ready, so switching never leaves the user without dictation."""
+        key = usable(self.settings.speech_model)
+        if key == self.loading_speech or (self.dictation and self.dictation.engine.name == key and not self.loading_speech):
+            return
+        self.loading_speech = key
+        if self.dictation:
+            self._set_status(f"Loading {SPEECH_MODELS[key].name}...", True)
+        self.window.refresh()
+
+        def work() -> None:
+            try:
+                t0 = time.perf_counter()
+                engine = load_engine(key)
+                log.info("Speech model %s loaded in %.1fs", key, time.perf_counter() - t0)
+                self.signals.loaded.emit(engine)
+            except Exception as e:
+                log.exception("Could not load the speech model %s", key)
+                self.signals.failed.emit(key, str(e))
+        threading.Thread(target=work, name="model-loader", daemon=True).start()
 
     def _on_loaded(self, engine) -> None:
-        self.dictation = Dictation(engine, self.recorder, sounds=self.settings.sounds, save=self.settings.save_recordings)
-        self.dictation.on_state = self.signals.state.emit
-        self.dictation.on_result = self.signals.result.emit
-        self._apply_cleanup()
-        self._start_listener()
-        self.pump.start()
+        if self.loading_speech == engine.name:
+            self.loading_speech = ""
+        first = self.dictation is None
+        if not first and engine.name != usable(self.settings.speech_model):
+            self._load_speech()  # another model was chosen while this one loaded: drop it, load (or await) that one
+            return
+        if first:
+            self.dictation = Dictation(engine, self.recorder, sounds=self.settings.sounds,
+                                       save=self.settings.save_recordings)
+            self.dictation.on_state = self.signals.state.emit
+            self.dictation.on_result = self.signals.result.emit
+        else:
+            self.dictation.engine = engine  # the next dictation uses it; one being transcribed finishes with the old
+        self._apply_cleanup()  # also gives the new model Your words
+        if first:
+            self._start_listener()
+            self.pump.start()
+        self.window.refresh()
+        if not first:
+            return
+        if engine.name != usable(self.settings.speech_model):
+            self._load_speech()  # dictation works now; the chosen model follows
+            return
         if self.listener and wispr_flow_running() and self.listener.hotkey.modifiers == {"ctrl", "win"}:
             self._notify("Wispr Flow is running", "It also listens to Ctrl+Win, so both would type. Quit Wispr Flow.",
                          QSystemTrayIcon.MessageIcon.Warning)
         elif self.listener and not self.quiet_start and not self.window.isVisible():
             self._notify(f"{APP_NAME} is ready", f"Hold {self.listener.hotkey.label} in any app and speak.")
 
-    def _on_failed(self, message: str) -> None:
+    def _on_failed(self, key: str, message: str) -> None:
+        if self.loading_speech == key:
+            self.loading_speech = ""
+        if self.dictation:  # a switch failed: dictation goes on with the model it had
+            self._update_status()
+            self.window.refresh()
+            self._notify(APP_NAME, f"Could not load {SPEECH_MODELS[key].name}; still using "
+                         f"{SPEECH_MODELS[self.dictation.engine.name].name}. {message}",
+                         QSystemTrayIcon.MessageIcon.Warning)
+            return
         self._set_status("Could not load the speech model")
         QMessageBox.critical(None, APP_NAME, f"Could not load the speech model:\n\n{message}\n\n"
                              f"Details are in the log: {LOG_DIR}")
@@ -366,7 +406,7 @@ class TrayApp:
                  self.gateway, len(s.vocabulary))
 
     def _update_status(self) -> None:
-        if not self.listener:
+        if not self.listener or self.loading_speech:
             return
         model = self.dictation.cleanup.model.rsplit("/", 1)[-1] if self.dictation and self.dictation.cleanup else None
         self._set_status(f"Ready: hold {self.listener.hotkey.label}" + (f" · cleanup: {model}" if model else ""), True)
@@ -451,6 +491,8 @@ class TrayApp:
                 self._apply_cleanup()  # the chosen model is active from the next dictation
             if new.hotkey != old.hotkey:
                 self._start_listener()
+        if new.speech_model != old.speech_model:
+            self._load_speech()
         self.window.refresh()
         log.info("Settings saved: %s", new)
 
@@ -474,16 +516,27 @@ class TrayApp:
         self.apply_settings(dataclasses.replace(self.settings, vocabulary=[w for w in self.settings.vocabulary if w != word]))
 
     def score_reading(self, folders: list[Path], progress) -> evaluate.Results:
-        """Parakeet alone, then with the cleanup model and the backup model, one at a time (the endpoint may be small).
+        """The speech model alone, then with the cleanup model and the backup model, one at a time (the endpoint may be
+        small).
         The report goes into the test's folder, or into 'summary' when several tests are scored together."""
         if not self.dictation:
             raise RuntimeError("The speech model is still loading; try again in a moment.")
         s = self.settings
         models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.address else []
         polishers = {m.rsplit("/", 1)[-1]: Polisher(self.gateway, m, s.vocabulary) for m in models}
-        results = evaluate.run(folders, self.dictation.engine, evaluate.pipelines_for(polishers), progress)
+        engine = self.dictation.engine
+        results = evaluate.run(folders, engine, evaluate.pipelines_for(polishers, title=engine.title), progress)
         results.save(evaluate.output_folder(folders))
         return results
+
+    def choose_speech_model(self, key: str) -> None:
+        """The Speech recognition page: use this model from now on (it loads in the background)."""
+        if key in SPEECH_MODELS and SPEECH_MODELS[key].ready and key != self.settings.speech_model:
+            self.apply_settings(dataclasses.replace(self.settings, speech_model=key))
+
+    def speech_in_use(self) -> str:
+        """The speech model dictation uses right now ("" while the first one loads)."""
+        return self.dictation.engine.name if self.dictation else ""
 
     def finish_welcome(self, name: str = "") -> None:
         if name.strip():
@@ -549,6 +602,7 @@ class TrayApp:
             self._apply_cleanup()
             if self.settings.hotkey != old_hotkey:
                 self._start_listener()
+            self._load_speech()  # the other profile may use another speech model
         # Every page shows the profile's own data: build the window again rather than update each field.
         old, self.window = self.window, MainWindow(self)
         self.window.set_status(*self._status)
