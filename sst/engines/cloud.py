@@ -1,8 +1,9 @@
-"""Speech recognition by a cloud provider (OpenAI, Groq, Google Gemini), with the user's own key.
+"""Speech recognition by a cloud provider (OpenAI, Groq, Google Gemini) with the user's own key, or by the user's own
+server (vLLM, a company AI gateway, any server with OpenAI's transcription API).
 
-The voice is sent to the provider: the window asks before a cloud model is used. OpenAI and Groq share OpenAI's
-transcription API (a multipart upload of the recording); Gemini gets the recording inline in a generateContent request,
-with an instruction to write down exactly what was said. Your words and the chosen language go along as hints.
+The voice is sent to the provider: the window asks before a cloud model is used. OpenAI, Groq and own servers share
+OpenAI's transcription API (a multipart upload of the recording); Gemini gets the recording inline in a generateContent
+request, with an instruction to write down exactly what was said. Your words and the chosen language go along as hints.
 
 Built never to lose a dictation: the connection is opened while the user speaks (prepare), the first-connection stall
 seen on the dev laptop is retried with a short connect timeout, and when the provider can't be reached or fails, the
@@ -15,6 +16,7 @@ import http.client
 import io
 import json
 import logging
+import re
 import ssl
 import threading
 import time
@@ -60,6 +62,12 @@ CLOUD = {p.key: p for p in [
                   "https://aistudio.google.com/apikey"),
 ]}
 
+# Your own server: its address (and a key, if it needs one) is the user's; the model is whatever the server offers.
+SERVER = CloudProvider("server", "Your server", "", "openai", (), "")
+REMOTE = {**CLOUD, SERVER.key: SERVER}  # every speech model that runs somewhere else
+
+SPEECH = re.compile(r"whisper|transcri|speech|asr|parakeet|canary|voxtral|stt|audio", re.IGNORECASE)  # "Load models"
+
 INSTRUCTION = ("Write down exactly what is said in this recording, word for word, with punctuation and capital letters. "
                "Output only the transcript: no introduction, no notes, no translation.")
 
@@ -89,13 +97,16 @@ def wav_bytes(audio: np.ndarray, rate: int) -> bytes:
 class CloudEngine:
     def __init__(self, provider: str, api_key: str, model: str = "", language: str = "",
                  fallback: Callable[[], object] | None = None, url: str | None = None):
-        if provider not in CLOUD:
+        if provider not in REMOTE:
             raise ValueError(f"Unknown cloud speech provider '{provider}'")
-        if not api_key:
+        if not api_key and provider in CLOUD:  # an own server may need none
             raise ValueError(f"{CLOUD[provider].name} needs an API key: enter it on the Speech recognition page.")
-        self.provider = CLOUD[provider]
+        if not (url or REMOTE[provider].url):
+            raise ValueError("Your own server needs its address: enter it on the Speech recognition page.")
+        self.provider = REMOTE[provider]
         self.name = provider
-        self.model = model or self.provider.models[0]  # the app keeps the model and the key up to date
+        # The app keeps the model, the key and a server's address up to date.
+        self.model = model or (self.provider.models[0] if self.provider.models else "")
         self.api_key = api_key
         self.language = language  # "" = the provider detects it; the app keeps it up to date
         self.words: list[str] = []  # Your words, sent as a hint; the app keeps it up to date
@@ -103,11 +114,21 @@ class CloudEngine:
         self.last_error = ""  # set when the provider failed and the recording was transcribed on this computer
         self._fallback_loader, self._fallback = fallback, None
         self._down_until = 0.0
-        parts = urlsplit((url or self.provider.url).rstrip("/"))
-        self._https, self._host, self._port, self._path = parts.scheme == "https", parts.hostname, parts.port, parts.path
         self._conn: http.client.HTTPConnection | None = None
+        self._conn_target: tuple | None = None  # where the open connection goes
         self._used = 0.0
         self._lock = threading.Lock()
+        self.url = ""
+        self.set_url(url or self.provider.url)
+
+    def set_url(self, url: str) -> None:
+        """Where requests go: an own server's address can change while it is in use. Taken from the next request on,
+        so the window never waits for a dictation being transcribed."""
+        url = url.strip().rstrip("/")
+        if url != self.url:
+            parts = urlsplit(url)
+            self._target = (parts.scheme == "https", parts.hostname, parts.port, parts.path)
+            self.url, self._down_until = url, 0.0
 
     def __repr__(self) -> str:  # never let the key reach a log
         return f"CloudEngine({self.name!r}, {self.model!r})"
@@ -119,7 +140,8 @@ class CloudEngine:
     @property
     def signature(self) -> str:
         words = hashlib.sha1("/".join(self.words).encode("utf-8")).hexdigest()[:10] if self.words else "none"
-        return f"cloud|{self.name}|{self.model}|lang:{self.language or 'auto'}|words:{words}|peak-1"
+        where = self.name if self.name in CLOUD else f"{self.name}@{hashlib.sha1(self.url.encode()).hexdigest()[:8]}"
+        return f"cloud|{where}|{self.model}|lang:{self.language or 'auto'}|words:{words}|peak-1"
 
     def prepare(self) -> None:
         """Open or refresh the connection in the background, while the user is still speaking."""
@@ -199,28 +221,45 @@ class CloudEngine:
             parts = ((answer.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
             text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
         else:
-            fields = {"model": self.model, "response_format": "json"}
+            fields = {"model": self.model, "response_format": "json"} if self.model else {"response_format": "json"}
             if self.language:
                 fields["language"] = self.language
             if words:
                 fields["prompt"] = f"Names and terms: {words}."
             body, content_type = _multipart(fields, "recording.wav", wav)
-            status, data = self._request("/audio/transcriptions", body,
-                                         {"Content-Type": content_type, "Authorization": f"Bearer {self.api_key}"},
+            status, data = self._request("/audio/transcriptions", body, {"Content-Type": content_type, **self._auth()},
                                          timeout)
             text = str(_json(status, data).get("text") or "")
         return " ".join(text.split())
 
+    def models(self) -> list[str]:
+        """For "Load models": the server's models, the speech ones first (a gateway lists its chat models too).
+        Raises CloudError with a readable reason."""
+        try:
+            status, data = self._request("/models", None, self._auth(), 10.0, method="GET")
+        except TimeoutError:
+            raise CloudError("no answer in time") from None
+        except (OSError, http.client.HTTPException) as e:
+            raise CloudError(f"could not reach the server: {e}") from None
+        answer = _json(status, data)
+        ids = [m["id"].removeprefix("models/") for m in answer.get("data") or []
+               if isinstance(m, dict) and isinstance(m.get("id"), str)]
+        return sorted(ids, key=lambda name: (not SPEECH.search(name), name.lower()))
+
+    def _auth(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}  # an own server may need no key
+
     # ---- HTTP: one kept-alive connection, like sst.gateway's
 
-    def _request(self, path: str, body: bytes, headers: dict, timeout: float) -> tuple[int, str]:
+    def _request(self, path: str, body: bytes | None, headers: dict, timeout: float,
+                 method: str = "POST") -> tuple[int, str]:
         with self._lock:
             for attempt in (1, 2):
-                if self._conn is None or time.monotonic() - self._used > IDLE_RECONNECT:
+                if self._stale():
                     self._connect()
                 self._conn.sock.settimeout(timeout)
                 try:
-                    self._conn.request("POST", self._path + path, body=body, headers=headers)
+                    self._conn.request(method, self._conn_target[3] + path, body=body, headers=headers)
                     response = self._conn.getresponse()
                     data = response.read().decode("utf-8", "replace")
                 except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError):
@@ -237,30 +276,34 @@ class CloudEngine:
 
     def _prepare(self) -> None:
         with self._lock:
-            if time.monotonic() >= self._down_until and (self._conn is None
-                                                         or time.monotonic() - self._used > IDLE_RECONNECT):
+            if time.monotonic() >= self._down_until and self._stale():
                 try:
                     self._connect()
                 except Unreachable as e:  # the dictation finds out too, and uses Parakeet at once
                     self._down_until = time.monotonic() + DOWN_FOR
                     log.info("Could not connect to %s ahead of time: %s", self.provider.name, e)
 
+    def _stale(self) -> bool:
+        """No connection, an idle one the server may have dropped, or one to an address no longer chosen."""
+        return self._conn is None or self._conn_target != self._target or time.monotonic() - self._used > IDLE_RECONNECT
+
     def _connect(self) -> None:
         self._close()
+        target = self._target
+        https, host, port, _ = target
         error: OSError | None = None
         for _ in range(CONNECT_ATTEMPTS):
-            conn = (http.client.HTTPSConnection(self._host, self._port, timeout=CONNECT_TIMEOUT,
-                                                context=ssl.create_default_context())
-                    if self._https else http.client.HTTPConnection(self._host, self._port, timeout=CONNECT_TIMEOUT))
+            conn = (http.client.HTTPSConnection(host, port, timeout=CONNECT_TIMEOUT, context=ssl.create_default_context())
+                    if https else http.client.HTTPConnection(host, port, timeout=CONNECT_TIMEOUT))
             try:
                 conn.connect()
             except OSError as e:
                 error = e
                 conn.close()
                 continue
-            self._conn, self._used = conn, time.monotonic()
+            self._conn, self._conn_target, self._used = conn, target, time.monotonic()
             return
-        raise Unreachable(f"cannot reach {self._host}: {error}")
+        raise Unreachable(f"cannot reach {host}: {error}")
 
     def _close(self) -> None:
         if self._conn is not None:

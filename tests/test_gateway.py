@@ -326,3 +326,18 @@ def test_a_key_saved_for_speech_survives_saving_and_loading(tmp_path):
     GatewayConfig().with_key("gemini", "g-key").save(path)
     assert "g-key" not in path.read_text(encoding="utf-8")  # encrypted
     assert GatewayConfig.load(path).key_for("gemini") == "g-key"
+
+
+def test_the_speech_server_keeps_its_own_address_and_key(tmp_path):
+    from sst.gateway import SPEECH_SERVER
+    path = tmp_path / "gateway.json"
+    config = GatewayConfig("http://gateway.example/v1", "cleanup-key", "vllm")
+    speech = config.with_entry(SPEECH_SERVER, "http://localhost:8000/v1", "speech-key")
+    assert speech.speech_server() == ("http://localhost:8000/v1", "speech-key")
+    assert (speech.base_url, speech.api_key) == ("http://gateway.example/v1", "cleanup-key")  # AI cleanup's untouched
+    speech.save(path)
+    assert "speech-key" not in path.read_text(encoding="utf-8")  # encrypted
+    loaded = GatewayConfig.load(path)
+    assert loaded.speech_server() == ("http://localhost:8000/v1", "speech-key") and loaded.service.key == "vllm"
+    assert loaded.with_entry(SPEECH_SERVER, "", "").speech_server() == ("", "")
+    assert GatewayConfig().speech_server() == ("", "")
