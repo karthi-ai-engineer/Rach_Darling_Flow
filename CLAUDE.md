@@ -47,7 +47,8 @@ uv run ruff check .                              # lint
 
 The layout is in `README.md`. Speech recognition is a building block like the AI cleanup: the models are listed in
 `SPEECH_MODELS` (`sst/engines/__init__.py`), each profile chooses one (`Settings.speech_model`), and the app switches
-in the background. Engines live in `sst/engines/`. The dictation logic is `Dictation` in `sst/dictate.py`,
+in the background. Engines live in `sst/engines/`; the cloud ones (`cloud.py`) use the provider keys the AI cleanup
+keeps (`GatewayConfig.key_for`). The dictation logic is `Dictation` in `sst/dictate.py`,
 shared by the app (`sst/app.py`, Qt: tray, pill, `TrayApp`) and the console command. The window is `sst/window.py`: it
 keeps no state and calls `TrayApp`, or `PreviewApp` in tests and screenshots. In-app updates are `sst/updates.py`, and
 the text cleanup is `sst/gateway.py` (`PROVIDERS`: each provider's request format). Accuracy work follows
