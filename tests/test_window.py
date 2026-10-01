@@ -450,7 +450,83 @@ def test_the_speech_page_shows_the_model_in_use_and_what_comes_next():
     assert not whisper.download.isHidden() and "1.6 GB" in whisper.download.text()  # not downloaded yet
     assert whisper.choose.isHidden() and whisper.language_row.isHidden()
     page.where["cloud"].click()
-    assert page.groups.currentIndex() == list(w.WHERE).index("cloud") and "Cloud speech models" in _labels(page)
+    assert page.groups.currentIndex() == list(w.WHERE).index("cloud")
+    assert {"openai", "groq", "gemini"} <= set(page.models) and "Your voice is sent to OpenAI" in _labels(page)
+    page.where["server"].click()
+    assert "Your own server" in _labels(page)
+
+
+def test_a_cloud_model_asks_first_then_keeps_its_key_and_model():
+    window, app = _window()
+    page = window.pages["speech"]
+    page.show_where("cloud")
+    groq = page.models["groq"]
+    assert groq.choose.text() == "Use this model" and not groq.choose.isHidden() and groq.status.text() == ""
+    groq.choose.click()
+    assert "Enter your Groq API key" in groq.result.text() and not app.calls  # no key: nothing happens
+    groq.key.setText("gsk-test")
+    groq.model_box.setCurrentText("whisper-large-v3")
+    questions = []
+    page.confirm = lambda question: questions.append(question) or False
+    groq.choose.click()
+    assert "sent to Groq" in questions[0] and not app.calls  # the user said no
+    page.confirm = lambda question: True
+    groq.choose.click()
+    assert ("use_cloud_speech", "groq", "whisper-large-v3") in app.calls
+    assert app.gateway.key_for("groq") == "gsk-test" and app.settings.speech_model == "groq"
+    page.refresh()
+    assert "In use" in groq.status.text() and groq.choose.isHidden()  # nothing to save
+    groq.model_box.setCurrentText("whisper-large-v3-turbo")
+    assert groq.choose.text() == "Save" and not groq.choose.isHidden()
+    questions.clear()
+    page.confirm = lambda question: questions.append(question) or True
+    groq.choose.click()
+    assert not questions and app.settings.speech_cloud_models["groq"] == "whisper-large-v3-turbo"  # asked once only
+
+
+def test_testing_a_cloud_model_shows_its_answer():
+    window, app = _window()
+    page = window.pages["speech"]
+    openai = page.models["openai"]
+    openai._test()
+    assert "Enter your OpenAI API key" in openai.result.text()
+    openai.key.setText("sk-test")
+    openai._test()
+    for _ in range(200):
+        QApplication.processEvents()
+        if openai.result.text().startswith("OK"):
+            break
+        time.sleep(0.01)
+    assert openai.result.text().startswith("OK: gpt-4o-mini-transcribe answered")
+    assert ("test_cloud_speech", "openai", "gpt-4o-mini-transcribe") in app.calls
+
+
+def test_a_key_saved_on_one_page_shows_on_the_other():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk-old"))
+    speech, cleanup = window.pages["speech"], window.pages["cleanup"]
+    openai = speech.models["openai"]
+    assert openai.key.text() == "sk-old" and cleanup.api_key.text() == "sk-old"
+    speech.confirm = lambda question: True
+    openai.key.setText("sk-new")
+    openai.choose.click()
+    window.show_page("cleanup")
+    assert cleanup.api_key.text() == "sk-new"
+    _, _, _, gateway = cleanup.result()
+    assert gateway.key_for("openai") == "sk-new"
+    cleanup.api_key.setText("sk-typed")  # being typed: a refresh leaves it alone
+    app.gateway = app.gateway.with_key("openai", "sk-other")
+    cleanup.refresh()
+    assert cleanup.api_key.text() == "sk-typed"
+
+
+def test_saving_the_cleanup_keeps_a_key_saved_for_speech():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk-cleanup"))
+    cleanup = window.pages["cleanup"]
+    app.gateway = app.gateway.with_key("groq", "gsk-speech")  # saved on the speech page after this page was built
+    _, _, _, gateway = cleanup.result()
+    assert gateway.key_for("groq") == "gsk-speech" and gateway.key_for("openai") == "sk-cleanup"
+    cleanup.provider.setCurrentIndex(cleanup.provider.findData("groq"))
+    assert cleanup.api_key.text() == "gsk-speech"  # the same key, ready for cleanup with Groq
 
 
 def test_choosing_a_downloaded_speech_model_and_its_language(whisper_downloaded):

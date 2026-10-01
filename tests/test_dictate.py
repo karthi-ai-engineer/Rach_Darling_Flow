@@ -187,6 +187,40 @@ def test_when_the_cleanup_cannot_help_the_heard_text_is_typed(make):
     assert typed == ["hello world "] and states[-1] == "typed_raw"
 
 
+class CloudLikeEngine(FakeEngine):
+    """Like sst.engines.cloud.CloudEngine: connects while the user speaks, and says when Parakeet stood in for it."""
+
+    def __init__(self, error=""):
+        super().__init__()
+        self.error, self.prepared, self.last_error = error, 0, ""
+
+    def prepare(self):
+        self.prepared += 1
+
+    def transcribe(self, audio, rate):
+        self.last_error = self.error
+        return self.text
+
+
+def test_a_cloud_speech_model_connects_while_the_user_speaks(make):
+    d, typed, states = make()
+    d.engine = CloudLikeEngine()
+    feed(d, (0, "press"))
+    assert d.engine.prepared == 1
+    feed(d, (0.7, "release"))
+    assert typed == ["hello world "] and states[-1] == "typed"
+
+
+def test_when_the_cloud_cannot_help_parakeets_text_is_typed_and_said_so(make):
+    d, typed, _ = make()
+    d.engine = CloudLikeEngine(error="OpenAI: cannot reach api.openai.com")
+    d.cleanup = FakeCleanup(error="the gateway could not be reached")
+    seen = []
+    d.on_state = lambda state, message: seen.append((state, message))
+    feed(d, (0, "press"), (0.7, "release"))
+    assert typed == ["hello world "] and seen[-1] == ("typed_local", "OpenAI: cannot reach api.openai.com")
+
+
 class WarmRecorder:
     """Like the real Recorder: stop_later() hands over a take whose tail arrives later, and tick() is passed on."""
     rate = 16_000

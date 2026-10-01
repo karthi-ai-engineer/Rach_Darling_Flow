@@ -39,10 +39,12 @@ class Dictation:
     Feed it `handle(event, at)` for every hotkey event and `tick(now)` a few times a second.
     It reports progress through `on_state(state, message)`, where state is one of
     recording, transcribing, typed (message = the text), typed_raw (typed as heard because the cleanup
-    couldn't help; message = the reason), idle, cancelled, ignored, warning, error; and each typed text
+    couldn't help; message = the reason), typed_local (a cloud speech model couldn't help, so Parakeet transcribed on
+    this computer; message = the reason), idle, cancelled, ignored, warning, error; and each typed text
     through `on_result(heard, typed, seconds of audio)`. Both are called from the caller's thread and from the worker
     thread.
-    `cleanup` is an optional sst.gateway.Polisher (or anything with prepare(), polish(text) and last_error).
+    `cleanup` is an optional sst.gateway.Polisher (or anything with prepare(), polish(text) and last_error). An engine
+    may have prepare() too (connect while the user speaks) and last_error (why it fell back on another engine).
     """
 
     def __init__(self, engine, recorder, *, paste: Callable[[str], None] = paste_text, sounds: bool = True,
@@ -111,6 +113,9 @@ class Dictation:
             self.on_state("error", f"Could not open the microphone: {e}")
             return
         self._beep(880)
+        prepare = getattr(self.engine, "prepare", None)
+        if prepare:
+            prepare()  # a cloud speech model: connect while the user speaks, not after
         if self.cleanup:
             self.cleanup.prepare()  # connect to the gateway while the user speaks, not after
         if self.listener:
@@ -143,7 +148,9 @@ class Dictation:
             try:
                 audio, rate = take.audio(), take.rate
                 t0 = time.perf_counter()
-                text = self.engine.transcribe(audio, rate)
+                engine = self.engine  # read once: the app may swap it meanwhile
+                text = engine.transcribe(audio, rate)
+                fell_back = getattr(engine, "last_error", "")
                 took = time.perf_counter() - t0
                 log.info("%.1fs -> %.2fs  %s", len(audio) / rate, took, text or "(nothing recognised)")
                 cleanup = self.cleanup  # read once: the app may swap it meanwhile
@@ -156,7 +163,9 @@ class Dictation:
                     save_recording(audio, rate, typed)
                 if typed:
                     self.on_result(text, typed, len(audio) / rate)
-                if typed and cleanup and cleanup.last_error:
+                if typed and fell_back:
+                    self.on_state("typed_local", fell_back)
+                elif typed and cleanup and cleanup.last_error:
                     self.on_state("typed_raw", cleanup.last_error)
                 else:
                     self.on_state("typed" if typed else "idle", typed)
