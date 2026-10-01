@@ -31,6 +31,7 @@ class Settings:
     warm_mic: bool = True  # keep the microphone open a few minutes after dictating: instant start, no lost first word
     raw_audio: bool = False  # ask Windows for the microphone without its voice effects (noise suppression, gating)
     speech_model: str = "parakeet"  # the speech recognition model, a key of sst.engines.SPEECH_MODELS
+    speech_language: str = ""  # for models that know many languages (Whisper): "" = detected, or a code such as "ta"
     cleanup: bool = False  # clean up the text with an AI model before typing it
     cleanup_model: str = ""  # a model id on the user's endpoint (sst.gateway)
     cleanup_fallback: str = ""  # optional backup model, tried when the first one fails

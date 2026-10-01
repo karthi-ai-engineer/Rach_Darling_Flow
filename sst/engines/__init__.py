@@ -12,6 +12,9 @@ from typing import Protocol
 
 import numpy as np
 
+from sst.downloads import Download
+from sst.engines import whisper
+
 
 class Engine(Protocol):
     name: str
@@ -29,6 +32,11 @@ class SpeechModel:
     languages: str
     size: str
     ready: bool = True  # usable in this version; the others are shown as coming next
+    download: Download | None = None  # fetched when chosen (sst.downloads); None = comes with Rflow
+    language_choice: bool = False  # the user can choose the language it listens for
+
+    def installed(self) -> bool:
+        return self.download is None or self.download.installed()
 
 
 # Where a speech model runs, in the order the window shows them.
@@ -43,22 +51,26 @@ SPEECH_MODELS = {m.key: m for m in [
                 "Fast and accurate English on any laptop's processor; listens for Your words.",
                 "English", "640 MB, included"),
     SpeechModel("whisper-turbo", "OpenAI Whisper large-v3 turbo", "local",
-                "Many languages, Tamil and Japanese included; slower than Parakeet without a graphics card.",
-                "99 languages", "about 1.6 GB, downloaded when chosen", ready=False),
+                "Many languages, Tamil and Japanese included, and good with names. Without an NVIDIA graphics card "
+                "it takes several seconds per sentence (Parakeet about one).",
+                "99 languages", "1.6 GB, downloaded when chosen", download=whisper.MODEL, language_choice=True),
 ]}
 DEFAULT_MODEL = "parakeet"
 ENGINES = [key for key, model in SPEECH_MODELS.items() if model.ready]
 
 
 def usable(key: str) -> str:
-    """The model to load for a setting: the chosen one if this version can use it, else the default."""
+    """The model to load for a setting: the chosen one if this version can use it and it is downloaded, else the
+    default (so a removed download never stops Rflow from starting)."""
     model = SPEECH_MODELS.get(key)
-    return key if model and model.ready else DEFAULT_MODEL
+    return key if model and model.ready and model.installed() else DEFAULT_MODEL
 
 
-def load_engine(name: str) -> Engine:
+def load_engine(name: str, language: str = "") -> Engine:
     if name == "parakeet":
         from .parakeet import ParakeetEngine
 
         return ParakeetEngine()
+    if name == "whisper-turbo":
+        return whisper.WhisperEngine(language=language)
     raise ValueError(f"Unknown engine '{name}'. Available: {', '.join(ENGINES)}")

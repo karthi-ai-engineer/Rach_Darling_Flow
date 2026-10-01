@@ -444,27 +444,41 @@ def test_the_speech_page_shows_the_model_in_use_and_what_comes_next():
     window.show_page("speech")
     page = window.pages["speech"]
     assert page.where["local"].isChecked()
-    status, choose = page.models["parakeet"]
-    assert "In use" in status.text() and choose.isHidden()
-    status, choose = page.models["whisper-turbo"]
-    assert status.text() == "Coming soon" and choose.isHidden()
+    parakeet, whisper = page.models["parakeet"], page.models["whisper-turbo"]
+    assert "In use" in parakeet.status.text() and parakeet.choose.isHidden() and parakeet.download.isHidden()
+    assert parakeet.remove.isHidden()  # it comes with Rflow
+    assert not whisper.download.isHidden() and "1.6 GB" in whisper.download.text()  # not downloaded yet
+    assert whisper.choose.isHidden() and whisper.language_row.isHidden()
     page.where["cloud"].click()
     assert page.groups.currentIndex() == list(w.WHERE).index("cloud") and "Cloud speech models" in _labels(page)
 
 
-def test_choosing_another_speech_model(monkeypatch):
-    import dataclasses
-
-    from sst import engines
-    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
-                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
+def test_choosing_a_downloaded_speech_model_and_its_language(whisper_downloaded):
     window, app = _window()
     page = window.pages["speech"]
     page.refresh()
-    _, choose = page.models["whisper-turbo"]
-    assert not choose.isHidden()
-    choose.click()
+    whisper = page.models["whisper-turbo"]
+    assert whisper.download.isHidden() and not whisper.choose.isHidden() and whisper.status.text() == "Downloaded"
+    assert not whisper.remove.isHidden() and not whisper.language_row.isHidden()
+    whisper.choose.click()
     assert ("choose_speech_model", "whisper-turbo") in app.calls
     app.loading_speech = "whisper-turbo"
     page.refresh()
-    assert page.models["whisper-turbo"][0].text() == "Loading..."
+    assert whisper.status.text() == "Loading..." and whisper.remove.isHidden()  # the chosen model can't be removed
+    whisper.language.setCurrentIndex(whisper.language.findData("ta"))
+    assert ("set_speech_language", "ta") in app.calls and app.settings.speech_language == "ta"
+
+
+def test_downloading_a_speech_model_shows_its_progress():
+    window, app = _window()
+    page = window.pages["speech"]
+    whisper, parakeet = page.models["whisper-turbo"], page.models["parakeet"]
+    whisper.download.click()
+    assert ("download_speech_model", "whisper-turbo") in app.calls
+    app.downloading = ("whisper-turbo", 400_000_000, 1_600_000_000)
+    page.refresh()
+    assert whisper.status.text().startswith("Downloading 25%") and whisper.progress.value() == 250
+    assert whisper.download.isHidden() and not whisper.cancel.isHidden()
+    assert "In use" in parakeet.status.text()  # dictation goes on with Parakeet meanwhile
+    whisper.cancel.click()
+    assert ("cancel_download",) in app.calls

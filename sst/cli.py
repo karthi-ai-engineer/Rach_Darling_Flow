@@ -97,6 +97,8 @@ def cmd_eval(args) -> None:
     evaluate.pipelines_for(polishers, args.degrade or [])  # a typo in --degrade is reported before the slow model load
     engine = _load(args.engine or usable(settings.speech_model))  # by default the profile's speech model, as in the app
     pipelines = evaluate.pipelines_for(polishers, args.degrade or [], title=engine.title)
+    if hasattr(engine, "language"):  # a model that knows many languages listens for the profile's choice
+        engine.language = settings.speech_language
     if hasattr(engine, "words"):  # as in dictation: the recogniser listens for Your words
         chosen = [w.strip() for w in args.words.split(",")] if args.words else settings.vocabulary
         engine.words = [] if args.no_words else [w for w in chosen if w]

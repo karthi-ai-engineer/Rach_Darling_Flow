@@ -86,7 +86,8 @@ _Last updated: 2026-10-01_
 | fix | Fairer scoring (contractions, compounds, Ctrl), only names suggested, eval report printing | done, on `main` (PR #25) |
 | 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | done, on `main` (PR #27) |
 | 12 | **Hotwords**: Parakeet listens for Your words (bpe.vocab from NVIDIA's archive, beam search, score 1.0, guard) | done, on `main` (PR #29); phases 10-12 released as **v1.4.0** |
-| 13 | **Speech recognition as a building block**: a catalog of speech models, a per-profile choice, background switching, the Speech recognition page | PR #33, waiting for the owner's test + merge |
+| 13 | **Speech recognition as a building block**: a catalog of speech models, a per-profile choice, background switching, the Speech recognition page | done, on `main` (PR #33) |
+| 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | PR #35, waiting for the owner's test + merge |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -620,6 +621,68 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
 - Tests: 254. Among them, the real TrayApp switching to a second model in the background (Your words carried over),
   a failed switch, a model this version can't load, and profiles with different models.
 
+## Whisper on this computer (phase 14)
+
+- **Measured first** on the owner's 60 recordings on the second laptop:
+  - the laptop: i5-1334U, 32 GB, Intel Iris Xe, no NVIDIA card
+  - the sets: set A from the old capture (4 narrowband recordings) and set B from 1.4.0
+  - the method: `sst.evaluate`, every model bare (no Your words)
+
+  | Speech model | All 60 | Set B | Set A | Names | Per sentence |
+  |---|---|---|---|---|---|
+  | Parakeet | 20.2% | 12.5% | 27.3% | 46% | 1.2 s |
+  | Whisper turbo, sherpa-onnx (greedy) | 22.5% | 13.3% | 31.1% | 29% | 5.9 s (p95 18 s) |
+  | Whisper turbo, faster-whisper, beam 5, 4 threads | 18.1% | 10.7% | 24.9% | 24% | 16.3 s |
+  | Whisper turbo, faster-whisper, greedy, 8 threads | **17.5%** | **10.0%** | 24.5% | 29% | 10.7 s |
+
+  The ranges overlap, with only 60 sentences. Other programs kept the processor about 50% busy, so the times vary
+  (one 7 s clip later took 26 s).
+- **The owner's decision:** faster-whisper. It's the most accurate, can use an NVIDIA card, and adds about 100 MB of
+  program files. Parakeet stays the default for English: Whisper always processes 30 s windows, which makes short
+  dictations slow on a processor.
+- **`sst/engines/whisper.py`, `WhisperEngine`:**
+  - CTranslate2 int8 on the processor (`cpu_threads` up to 8); float16 on an NVIDIA card when
+    `ctranslate2.get_cuda_device_count()` finds one and NVIDIA's cuBLAS/cuDNN load, else the processor
+  - greedy decoding, no VAD, no timestamps; Your words as `hotwords`
+  - `language`: "" = detected, or a code from `LANGUAGES`, from `Settings.speech_language`, changed without reloading
+  - audio goes through `audio.condition()`, then `audio.resample()` to 16 kHz (FFT method, numpy only)
+  - `signature` includes the model revision, device, language and words
+- **`sst/downloads.py`:**
+  - pinned files (`whisper.MODEL`: `dropbox-dash/faster-whisper-large-v3-turbo` at `0a363e9`, 5 files, 1.62 GB,
+    each with its SHA-256) into `%LOCALAPPDATA%\sst\models` (`DOWNLOADS_DIR`, shared by the installed app and the
+    source checkout)
+  - a `.part` file resumed with HTTP Range after a broken connection; 4 attempts against the first-connection stall
+  - only Hugging Face hosts after redirects (`huggingface.co`, `*.hf.co`)
+  - cancel keeps the part; `complete.json` is written last
+  - checked for real: a download broken off at 1.4 GB was resumed from Hugging Face and verified
+  - The repo was renamed from `mobiuslabsgmbh/...`; Hugging Face redirects the old name.
+- **The app:** `TrayApp.download_speech_model` / `cancel_download` / `remove_speech_model` / `set_speech_language`,
+  on a thread with progress signals, one download at a time.
+  - When the download finishes, the model is chosen and loads in the background (phase 13's switch).
+  - A model in use or chosen can't be removed.
+  - `usable()` falls back to Parakeet when the chosen model isn't downloaded (removed, or another laptop).
+- **The page:** each model is a `_ModelCard`:
+  - Download and use (1.6 GB), then the progress (percent and GB), Cancel, Use this model, Remove download
+  - the language row ("Language it listens for") once Whisper is downloaded
+  - the summary says it takes several seconds per sentence without an NVIDIA card
+- **Packaging:**
+  - faster-whisper, CTranslate2 (its DLLs collected), tokenizers, huggingface_hub and PyAV are bundled
+  - faster-whisper's `onnxruntime` dependency (only for its VAD) is excluded, so sherpa-onnx's stays the only
+    `onnxruntime.dll`
+  - the self-test imports `ctranslate2` and `faster_whisper`
+  - NOTICES.txt lists the new licences (FFmpeg in PyAV is LGPL, as separate DLLs)
+- **Notes:**
+  - faster-whisper's own `decode_audio` breaks with PyAV 15+ (`metadata_errors`); Rflow doesn't use it.
+  - `huggingface_hub` stalled for 23 minutes on the first-connection stall during the experiments, which is why
+    Rflow downloads with its own code.
+- **Tests:** 271, and `tests/conftest.py` gives every test an empty download folder (`whisper_downloaded` fakes an
+  installed model). They cover:
+  - the downloader against a local fake server: download and check, resume, a damaged file, cancel and resume,
+    HTTP errors not retried, allowed hosts, remove
+  - the engine with a fake faster-whisper: 16 kHz, language, words, no NVIDIA libraries, signature
+  - the app's download flow: done and used, cancelled, failed, remove rules
+  - the card's states
+
 ## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
 
 - **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
@@ -705,7 +768,12 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **Owner:** try PR #33 (the Speech recognition page, Parakeet in use). Then merge it.
+1. **Owner:** try PR #35:
+   - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"
+   - dictate in English, and in Tamil with the language set
+   - switch back to Parakeet
+
+   Then merge it.
 2. **Phases 14-16**, the owner's building-block plan (see **Speech recognition as a building block**):
    - 14: Whisper large-v3 turbo on this computer, downloaded when chosen
    - 15: "Scan my computer"

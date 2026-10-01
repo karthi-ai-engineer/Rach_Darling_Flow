@@ -390,6 +390,24 @@ def condition(audio: np.ndarray) -> np.ndarray:
     return audio * np.float32(PEAK / peak) if peak > 1e-4 else audio  # near-silence stays silence, not amplified hiss
 
 
+def resample(audio: np.ndarray, rate: int, target: int = TARGET_RATE) -> np.ndarray:
+    """Audio at another sample rate, for engines that want 16 kHz and don't resample themselves (sherpa-onnx does).
+    The FFT method: an ideal low-pass at the lower rate's Nyquist, any ratio (48 or 44.1 kHz to 16 kHz). A little
+    silence on both ends keeps the transform's wrap-around from ringing into the speech."""
+    audio = np.asarray(audio, dtype=np.float32)
+    if rate == target or len(audio) == 0:
+        return audio
+    pad = rate // 10
+    padded = np.concatenate([np.zeros(pad, np.float32), audio, np.zeros(pad, np.float32)])
+    n = round(len(padded) * target / rate)
+    spectrum = np.fft.rfft(padded.astype(np.float64))
+    keep = n // 2 + 1
+    spectrum = spectrum[:keep] if len(spectrum) >= keep else np.pad(spectrum, (0, keep - len(spectrum)))
+    out = np.fft.irfft(spectrum, n) * (n / len(padded))
+    cut = round(pad * target / rate)
+    return out[cut:cut + round(len(audio) * target / rate)].astype(np.float32)
+
+
 def save_wav(path: Path, audio: np.ndarray, rate: int) -> None:
     pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
     with wave.open(str(path), "wb") as w:
