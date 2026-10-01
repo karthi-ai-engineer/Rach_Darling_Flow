@@ -102,7 +102,9 @@ _Last updated: 2026-10-01_
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
-Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0 and v1.6.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
+Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0 and v1.6.0 (GitHub Releases; there is no 1.2.0). Website: https://rachflow.vercel.app (Vercel project `rach_darling_flow-site`, team karthi-labs; the address was
+added on 2026-10-01, and the old https://rachdarlingflow-site.vercel.app stays assigned: installed apps up to 1.6.0
+link there, so never remove it;
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
 itself to 1.0.1.
 
