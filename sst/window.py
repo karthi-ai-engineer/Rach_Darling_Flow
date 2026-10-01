@@ -842,6 +842,17 @@ class ReadingTestPage(Page):
 
 # ---------------------------------------------------------------- Speech recognition
 
+def _size(n: int) -> str:
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+def _parakeet_takes_over(provider: str) -> str:
+    """What happens when a cloud model or own server can't be reached: Parakeet types it, if it is downloaded."""
+    if SPEECH_MODELS[DEFAULT_MODEL].installed():
+        return f"If {provider} can't be reached, Parakeet types it on this computer."
+    return f"Download Parakeet too (On this computer) to have it type when {provider} can't be reached."
+
+
 class _ModelCard:
     """One speech model on the Speech recognition page: what it is, its state, and the buttons that change it."""
 
@@ -869,7 +880,7 @@ class _ModelCard:
         language.setContentsMargins(0, 0, 0, 0)
         self.language_row.setLayout(language)
         layout.addWidget(self.language_row)
-        size = f"{model.download.size / 1e9:.1f} GB" if model.download else ""
+        size = _size(model.download.size) if model.download else ""
         self.download = button(f"Download and use ({size})", lambda _=False: app.download_speech_model(model.key),
                                primary=True)
         self.cancel = button("Cancel", lambda _=False: app.cancel_download())
@@ -887,7 +898,7 @@ class _ModelCard:
             status = "Coming soon"
         elif here:
             done, total = downloading[1], downloading[2] or 1
-            status = f"Downloading {done * 100 // total}%  ({done / 1e9:.1f} of {total / 1e9:.1f} GB)"
+            status = f"Downloading {done * 100 // total}%  ({_size(done)} of {_size(total)})"
             self.progress.setValue(done * 1000 // total)
         elif key == loading:
             status = "Loading..."
@@ -902,7 +913,8 @@ class _ModelCard:
         self.cancel.setVisible(here)
         self.choose.setVisible(model.ready and installed and key != chosen)
         self.choose.setEnabled(not loading)
-        self.remove.setVisible(bool(model.download) and installed and key not in (chosen, in_use))
+        # Only a download can be removed (not Parakeet next to an older Rflow's program).
+        self.remove.setVisible(bool(model.download) and model.download.installed() and key not in (chosen, in_use))
         self.language_row.setVisible(model.language_choice and installed)
         self.language.blockSignals(True)  # showing the setting isn't changing it
         self.language.setCurrentIndex(max(0, self.language.findData(app.settings.speech_language)))
@@ -924,10 +936,9 @@ class _CloudCard:
         layout.addLayout(row(text(model.name, "h2", wrap=False), self.status, stretch_at=1))
         layout.addWidget(text(model.summary))
         layout.addWidget(text(f"Languages: {model.languages}  ·  {model.size}", muted=True))
-        privacy = text(f"{GLYPHS['warning']}   Your voice is sent to {provider.name} each time you dictate. If "
-                       f"{provider.name} can't be reached, Parakeet types it on this computer.", muted=True)
-        privacy.setFont(mixed)
-        layout.addWidget(privacy)
+        self.privacy = text("", muted=True)
+        self.privacy.setFont(mixed)
+        layout.addWidget(self.privacy)
         form = QFormLayout()
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(8)
@@ -970,6 +981,9 @@ class _CloudCard:
 
     def refresh(self) -> None:
         app, key = self.app, self.model.key
+        name = CLOUD[key].name
+        self.privacy.setText(f"{GLYPHS['warning']}   Your voice is sent to {name} each time you dictate. "
+                             + _parakeet_takes_over(name))
         saved = app.gateway.key_for(key)
         if self.key.text().strip() == self._saved_key and saved != self._saved_key:
             self.key.setText(saved)  # changed in AI cleanup; a key being typed here is left alone
@@ -1003,7 +1017,7 @@ class _CloudCard:
             return
         if self.model.key != self.app.settings.speech_model and not self.page.confirm(
                 f"Use {name} for speech recognition?\n\nEach time you dictate, the recording of your voice is sent to "
-                f"{name}, which turns it into text. If {name} can't be reached, Parakeet types it on this computer."):
+                f"{name}, which turns it into text. " + _parakeet_takes_over(name)):
             return
         self._saved_key = api_key
         self.app.use_cloud_speech(self.model.key, api_key, model)
@@ -1038,8 +1052,8 @@ class _ServerCard:
         layout.addLayout(row(text(model.name, "h2", wrap=False), self.status, stretch_at=1))
         layout.addWidget(text(model.summary))
         layout.addWidget(text(f"Languages: {model.languages}  ·  {model.size}", muted=True))
-        layout.addWidget(text("Your voice goes to this server each time you dictate. If it can't be reached, Parakeet "
-                              "types it on this computer.", muted=True))
+        self.note = text("", muted=True)
+        layout.addWidget(self.note)
         self._saved = app.gateway.speech_server()  # (address, key) as last saved
         address, key = self._saved if self._saved[0] else app.gateway.entries().get("vllm", ("", ""))
         form = QFormLayout()
@@ -1091,6 +1105,7 @@ class _ServerCard:
 
     def refresh(self) -> None:
         app, key = self.app, self.model.key
+        self.note.setText("Your voice goes to this server each time you dictate. " + _parakeet_takes_over("the server"))
         saved = app.gateway.speech_server()
         if saved != self._saved and self._fields()[:2] == self._saved:
             self.address.setText(saved[0])  # changed elsewhere; what is being typed here is left alone
@@ -1551,8 +1566,7 @@ class SettingsPage(Page):
 
 class WelcomePage(Page):
     def __init__(self, app, go_to):
-        super().__init__("Welcome to Rflow", "Speak anywhere, Rflow types it. Your voice is recognised on this computer "
-                                             "and never uploaded. A few quick steps:")
+        super().__init__("Welcome to Rflow", "Speak anywhere, Rflow types it. A few quick steps:")
         self.app = app
         self.go_to = go_to
         step0, layout = card()
@@ -1562,15 +1576,38 @@ class WelcomePage(Page):
         layout.addWidget(self.name)
         self.add(step0)
 
+        speech, layout = card()
+        layout.addWidget(text("2   How Rflow recognises your speech", "h2"))
+        layout.addWidget(text("Parakeet recognises English on this computer: your voice never leaves it, and once it is "
+                              "downloaded it works offline. You can also use a cloud model or your own server.",
+                              muted=True))
+        self.speech_status = text("", muted=True)
+        mixed = QFont()  # the check mark comes from the icon font, the words from Segoe UI
+        mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+        self.speech_status.setFont(mixed)
+        layout.addWidget(self.speech_status)
+        self.speech_progress = QProgressBar()
+        self.speech_progress.setRange(0, 1000)
+        self.speech_progress.setTextVisible(False)
+        self.speech_progress.setFixedHeight(6)
+        layout.addWidget(self.speech_progress)
+        parakeet = SPEECH_MODELS[DEFAULT_MODEL]
+        self.get_parakeet = button(f"Download Parakeet ({_size(parakeet.download.size)})",
+                                   lambda _=False: app.download_speech_model(DEFAULT_MODEL), primary=True)
+        self.stop_download = button("Cancel", lambda _=False: app.cancel_download())
+        self.other_speech = button("", self._to_speech, link=True)
+        layout.addLayout(row(self.get_parakeet, self.stop_download, self.other_speech, stretch_at=3))
+        self.add(speech)
+
         step1, layout = card()
-        layout.addWidget(text("2   Choose your microphone", "h2"))
+        layout.addWidget(text("3   Choose your microphone", "h2"))
         self.microphone = MicrophoneBox(app.settings.microphone, app.microphones())
         self.microphone.changed.connect(self._microphone_chosen)
         layout.addWidget(self.microphone)
         self.add(step1)
 
         step2, layout = card()
-        layout.addWidget(text("3   Try it", "h2"))
+        layout.addWidget(text("4   Try it", "h2"))
         self.try_text = text("", muted=True)
         layout.addWidget(self.try_text)
         self.try_box = QPlainTextEdit()
@@ -1582,7 +1619,7 @@ class WelcomePage(Page):
         self.add(step2)
 
         step3, layout = card()
-        layout.addWidget(text("4   Optional: AI cleanup", "h2"))
+        layout.addWidget(text("5   Optional: AI cleanup", "h2"))
         layout.addWidget(text("Connect an AI model to add punctuation, remove filler words and spell your names "
                               "right. You can do this later too.", muted=True))
         layout.addLayout(row(button("Set up AI cleanup", self._to_cleanup), stretch_at=1))
@@ -1591,10 +1628,40 @@ class WelcomePage(Page):
         self.body.addStretch()
 
     def refresh(self, ready: bool) -> None:
-        label = self.app.hotkey_label()
+        app = self.app
+        label = app.hotkey_label()
         self.try_text.setText(f"Click in the box below, hold {label}, say \"Hello Rflow, this is my first dictation\", "
                               "then let go.")
-        self.status.setText("Ready: go ahead." if ready else "Loading the speech model (a few seconds)...")
+        in_use, loading, downloading = app.speech_in_use(), app.loading_speech, app.downloading
+        fetching = bool(downloading) and downloading[0] == DEFAULT_MODEL
+        chosen = in_use or loading
+        if fetching:
+            done, total = downloading[1], downloading[2] or 1
+            self.speech_status.setText(f"Downloading Parakeet: {done * 100 // total}%  ({_size(done)} of "
+                                       f"{_size(total)}). Meanwhile, choose your microphone.")
+            self.speech_progress.setValue(done * 1000 // total)
+        else:
+            self.speech_status.setText(f"{GLYPHS['check']}  {SPEECH_MODELS[chosen].name}" if chosen else "")
+        self.speech_status.setVisible(bool(self.speech_status.text()))
+        self.speech_progress.setVisible(fetching)
+        self.get_parakeet.setVisible(not chosen and not fetching)
+        self.get_parakeet.setEnabled(not downloading)
+        self.stop_download.setVisible(fetching)
+        self.other_speech.setVisible(not fetching)
+        self.other_speech.setText("Change it on the Speech recognition page" if chosen
+                                  else "Use a cloud model or your own server instead")
+        if ready:
+            self.status.setText("Ready: go ahead.")
+        elif fetching:
+            self.status.setText("Waiting for Parakeet's download...")
+        elif chosen:
+            self.status.setText("Loading the speech model (a few seconds)...")
+        else:
+            self.status.setText("Choose how Rflow recognises your speech first (step 2).")
+
+    def _to_speech(self) -> None:
+        self.finish()
+        self.go_to("speech")
 
     def _microphone_chosen(self, device: str) -> None:
         self.app.apply_settings(dataclasses.replace(self.app.settings, microphone=device))

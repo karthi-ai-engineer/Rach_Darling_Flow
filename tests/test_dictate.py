@@ -273,3 +273,17 @@ def test_the_recorder_is_ticked_and_closed_with_the_dictation():
     d.tick(5.0)
     d.close()
     assert recorder.ticks == [5.0] and recorder.closed
+
+
+class FailingEngine(FakeEngine):
+    def transcribe(self, audio, rate):
+        raise RuntimeError("OpenAI: cannot reach api.openai.com (Parakeet isn't downloaded to take over)")
+
+
+def test_a_failed_transcription_keeps_the_recording(monkeypatch):
+    kept, seen = [], []
+    monkeypatch.setattr(dictate, "save_recording", lambda audio, rate, text: kept.append((len(audio), text)) or "x")
+    d = Dictation(FailingEngine(), FakeRecorder(), paste=lambda text: None, sounds=False, save=True)
+    d.on_state = lambda state, message: seen.append((state, message))
+    feed(d, (0, "press"), (0.7, "release"))
+    assert kept == [(16_000, "")] and seen[-1][0] == "error" and "recording is kept" in seen[-1][1]

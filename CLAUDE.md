@@ -32,9 +32,12 @@ The accuracy research behind phases 10-12 and the correction work to come is in 
 ## Project
 
 **Rflow**: dictation for Windows, like a small, private Wispr Flow. NVIDIA Parakeet recognises speech on the CPU
-through sherpa-onnx, so the voice never leaves the laptop. The text can optionally be cleaned up by a model from the
-provider the user chooses (OpenAI, Anthropic, Google Gemini, Groq, Ollama, vLLM or another OpenAI-compatible server).
-Each person can have a profile with their own setup. Hold Ctrl+Win in any app and speak; the text is typed at the cursor.
+through sherpa-onnx, so the voice never leaves the laptop; Whisper, cloud models and the user's own server are the
+other choices. The installer has no model: the app downloads Parakeet when the user chooses it (pinned and checked,
+`sst/engines/parakeet.py`), and finds the copy an older Rflow installed next to the program. The text can optionally
+be cleaned up by a model from the provider the user chooses (OpenAI, Anthropic, Google Gemini, Groq, Ollama, vLLM or
+another OpenAI-compatible server). Each person can have a profile with their own setup. Hold Ctrl+Win in any app and
+speak; the text is typed at the cursor.
 The public download site is `site/` (Vercel). The Python package keeps its internal name `sst`.
 
 ```

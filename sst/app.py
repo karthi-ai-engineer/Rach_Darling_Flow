@@ -39,6 +39,9 @@ from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
 from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
 
 UPDATE_DIR = Path(os.environ.get("TEMP", Path.home())) / "Rflow-update"  # downloaded installers
+# The sentence models are tried on (the scan, a cloud or server card's Test): 7.4 s of a LibriVox reading, as in
+# sherpa-onnx's model packages. It comes with Rflow, since Parakeet may not be downloaded.
+SAMPLE_FILE = Path(__file__).resolve().parent / "static" / "sample.wav"
 # Opening Rflow while it runs asks the running copy, through this local pipe, to show its window.
 SERVER_NAME = f"Rflow-window-{os.environ.get('USERNAME', 'user')}"
 ASFW_ANY = -1  # AllowSetForegroundWindow: any process
@@ -252,6 +255,7 @@ class TrayApp:
         self._cleanup_notice = -1e9  # when the user was last told that the cleanup couldn't help
         self._speech_notice = -1e9  # when the user was last told that a cloud speech model couldn't help
         self._local = None  # Parakeet, once loaded: a cloud speech model falls back on it
+        self._told_no_model = False  # "Rflow needs a speech model", said once
         self._local_lock = threading.Lock()
         self.update: updates.Update | None = None
         self._update_told = ""  # the version the user was last notified about
@@ -330,6 +334,16 @@ class TrayApp:
         """Load the profile's speech model on a thread. A dictation already running keeps its model until the new one
         is ready, so switching never leaves the user without dictation."""
         key = usable(self.settings.speech_model, self.gateway)
+        if not key:  # no speech model yet (Parakeet not downloaded, nothing else set up): the window asks for one
+            self.loading_speech = ""
+            if not self.dictation:
+                self._set_status("Choose a speech model to start dictating")
+                if self.settings.welcomed and not self._told_no_model:
+                    self._told_no_model = True
+                    self._notify(APP_NAME, "Rflow needs a speech model: choose one on the Speech recognition page.",
+                                 QSystemTrayIcon.MessageIcon.Warning)
+            self.window.refresh()
+            return
         if key == self.loading_speech or (self.dictation and self.dictation.engine.name == key and not self.loading_speech):
             return
         self.loading_speech = key
@@ -367,6 +381,8 @@ class TrayApp:
         a cloud model keeps Rflow light until then."""
         with self._local_lock:
             if self._local is None:
+                if not SPEECH_MODELS[DEFAULT_MODEL].installed():
+                    raise RuntimeError("Parakeet isn't downloaded to take over")
                 self._local = load_engine(DEFAULT_MODEL)
             return self._local
 
@@ -594,7 +610,8 @@ class TrayApp:
         small).
         The report goes into the test's folder, or into 'summary' when several tests are scored together."""
         if not self.dictation:
-            raise RuntimeError("The speech model is still loading; try again in a moment.")
+            raise RuntimeError("The speech model is still loading; try again in a moment." if self.loading_speech
+                               else "Choose a speech model first, on the Speech recognition page.")
         s = self.settings
         models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.address else []
         polishers = {m.rsplit("/", 1)[-1]: Polisher(self.gateway, m, s.vocabulary) for m in models}
@@ -690,7 +707,8 @@ class TrayApp:
     def remove_speech_model(self, key: str) -> None:
         """Free the disk space of a downloaded model that isn't in use."""
         model = SPEECH_MODELS.get(key)
-        if model and model.download and key not in (self.settings.speech_model, self.speech_in_use()) and \
+        if model and model.download and model.download.installed() and \
+                key not in (self.settings.speech_model, self.speech_in_use()) and \
                 not (self.downloading and self.downloading[0] == key):
             downloads.remove(model.download)
             log.info("Removed the download of %s", key)
@@ -755,6 +773,7 @@ class TrayApp:
         if not error:
             log.info("%s downloaded", name)
             self.choose_speech_model(key)  # what the user asked for: download it and use it
+            self._load_speech()  # also when it was chosen already (Parakeet, the first time)
         elif error != "cancelled":
             self._notify(APP_NAME, f"Could not download {name}: {error}", QSystemTrayIcon.MessageIcon.Warning)
         self.window.refresh()
@@ -948,11 +967,10 @@ class TrayApp:
 
 
 def _sample_sentence():
-    """The sentence the scan times every model on: the Parakeet model's own test recording (7.4 s of speech)."""
+    """The sentence models are tried on (SAMPLE_FILE): (audio, rate), or None if it is missing."""
     from sst.audio import load_wav
-    from sst.engines.parakeet import MODEL_DIR
     try:
-        return load_wav(MODEL_DIR / "test_wavs" / "0.wav")
+        return load_wav(SAMPLE_FILE)
     except OSError:
         return None
 
@@ -981,7 +999,7 @@ def self_test() -> int:
     preview = PreviewApp(history=[{"time": "2026-09-30 10:15:00", "text": "Self-test."}])
     window = MainWindow(preview)
     window.show_update("Rflow 9.9.9 is available (you have 1.0.0).", version="9.9.9")
-    for page in ("home", "dictionary", "reading", "cleanup", "settings", "welcome"):
+    for page in ("home", "dictionary", "speech", "reading", "cleanup", "settings", "welcome"):
         window.show_page(page)
         window.grab()
     window.pages["reading"].ensure_test().grab()
@@ -989,12 +1007,12 @@ def self_test() -> int:
     import ctranslate2  # noqa: F401 (Whisper's runtime: bundled and its DLLs load, without needing the downloaded model)
     import faster_whisper  # noqa: F401
 
-    from sst.engines.parakeet import MODEL_DIR
-    wav = MODEL_DIR / "test_wavs" / "0.wav"
-    engine = load_engine("parakeet")
-    if wav.exists():
-        from sst.audio import load_wav
-        if not engine.transcribe(*load_wav(wav)):
+    from sst.engines.parakeet import find_model
+    sample = _sample_sentence()
+    if sample is None:
+        return 1
+    if find_model():  # the build's smoke test puts Parakeet next to the program; the installer comes without it
+        if not load_engine("parakeet").transcribe(*sample):
             return 1
     app.quit()
     return 0

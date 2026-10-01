@@ -623,3 +623,47 @@ def _wait_until(condition) -> bool:
             return True
         time.sleep(0.01)
     return condition()
+
+
+def test_a_new_install_chooses_its_speech_model_in_the_welcome(no_parakeet):
+    window, app = _window(settings=Settings())
+    welcome = window.pages["welcome"]
+    window.set_status("Choose a speech model to start dictating", False)
+    assert welcome.get_parakeet.text() == "Download Parakeet (663 MB)" and not welcome.get_parakeet.isHidden()
+    assert "Choose how Rflow recognises your speech first" in welcome.status.text()
+    welcome.get_parakeet.click()
+    assert ("download_speech_model", "parakeet") in app.calls
+    app.downloading = ("parakeet", 331_000_000, 663_043_117)
+    welcome.refresh(False)
+    assert "Downloading Parakeet: 49%" in welcome.speech_status.text() and not welcome.stop_download.isHidden()
+    assert welcome.get_parakeet.isHidden() and "Waiting for Parakeet" in welcome.status.text()
+    welcome.stop_download.click()
+    assert ("cancel_download",) in app.calls
+
+
+def test_the_welcome_can_lead_to_a_cloud_model_instead(no_parakeet):
+    window, app = _window(settings=Settings())
+    welcome = window.pages["welcome"]
+    welcome.refresh(False)
+    assert welcome.other_speech.text() == "Use a cloud model or your own server instead"
+    welcome.other_speech.click()
+    assert app.settings.welcomed and window.current_page() == "speech"
+
+
+def test_the_welcome_shows_the_speech_model_already_there():
+    window, _ = _window(settings=Settings())
+    welcome = window.pages["welcome"]
+    welcome.refresh(True)
+    assert "NVIDIA Parakeet" in welcome.speech_status.text() and welcome.get_parakeet.isHidden()
+    assert welcome.other_speech.text() == "Change it on the Speech recognition page"
+
+
+def test_without_parakeet_the_pages_offer_it_and_promise_no_fallback(no_parakeet):
+    window, _ = _window()
+    page = window.pages["speech"]
+    page.refresh()
+    parakeet = page.models["parakeet"]
+    assert parakeet.download.text() == "Download and use (663 MB)" and not parakeet.download.isHidden()
+    assert parakeet.choose.isHidden() and parakeet.remove.isHidden() and "In use" not in parakeet.status.text()
+    assert "Download Parakeet too" in page.models["openai"].privacy.text()
+    assert "Download Parakeet too" in page.models["server"].note.text()
