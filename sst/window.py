@@ -51,6 +51,7 @@ from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, WHERE, usable
 from sst.engines.whisper import LANGUAGES
 from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
+from sst.scan import Computer
 from sst.settings import (
     Profiles,
     Settings,
@@ -75,7 +76,7 @@ ICON_FONTS = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
 GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanup": "\ue99a", "settings": "\ue713",
           "copy": "\ue8c8", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
           "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
-          "profile": "\ue77b", "speech": "\ue720"}
+          "profile": "\ue77b", "speech": "\ue720", "warning": "\ue7ba", "cancel": "\ue711", "dot": "\ue915"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
@@ -908,6 +909,61 @@ class _ModelCard:
         self.language.blockSignals(False)
 
 
+# What a scan verdict looks like: (icon, words).
+SCAN_LEVELS = {"recommended": ("check", "Recommended"), "fast": ("check", "Fast here"),
+               "usable": ("dot", "Works, with a short wait"), "slow": ("warning", "Slow on this computer"),
+               "no": ("cancel", "Won't run well here")}
+SCAN_HINTS = {"whisper-turbo": "Choose it for other languages, or on a computer with an NVIDIA card."}
+
+
+class _ScanCard:
+    """Scan my computer: the button, its progress, then this computer and a verdict for each model."""
+
+    def __init__(self, app):
+        self.app = app
+        self.frame, layout = card(6)
+        layout.addWidget(text("Not sure which model suits your computer?", "h2"))
+        layout.addWidget(text("Scan my computer checks the memory, disk space, processor and graphics card, and tries "
+                              "each downloaded model on a short sentence (about half a minute with Whisper). Models not "
+                              "downloaded yet are estimated.", muted=True))
+        self.button = button("Scan my computer", lambda _=False: app.scan_computer())
+        self.status = text("", muted=True, wrap=False)
+        layout.addLayout(row(self.button, self.status, stretch_at=2))
+        self.result = QWidget()
+        result = QVBoxLayout(self.result)
+        result.setContentsMargins(0, 6, 0, 0)
+        result.setSpacing(6)
+        self.computer = text("", muted=True)
+        result.addWidget(self.computer)
+        self.lines = QVBoxLayout()
+        self.lines.setSpacing(4)
+        result.addLayout(self.lines)
+        layout.addWidget(self.result)
+
+    def refresh(self) -> None:
+        scanning, data = self.app.scanning, self.app.last_scan
+        self.button.setEnabled(not scanning)
+        self.button.setText("Scan again" if data else "Scan my computer")
+        self.status.setText(scanning or (f"Last scan: {data['time']}" if data else ""))
+        self.result.setVisible(bool(data))
+        if not data:
+            return
+        self.computer.setText("This computer: " + Computer(**data["computer"]).summary())
+        clear(self.lines)
+        mixed = QFont()  # the icons come from the icon font, the words from Segoe UI
+        mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+        for verdict in data["verdicts"]:
+            model = SPEECH_MODELS.get(verdict["key"])
+            if not model:
+                continue
+            icon, words = SCAN_LEVELS.get(verdict["level"], ("dot", verdict["level"]))
+            reason = verdict["reason"][:1].upper() + verdict["reason"][1:]
+            hint = SCAN_HINTS.get(model.key, "") if verdict["level"] in ("usable", "slow") else ""
+            line = text(f"{GLYPHS[icon]}   {model.name}: {words}. {reason}." + (f" {hint}" if hint else ""))
+            line.setFont(mixed)
+            self.lines.addWidget(line)
+
+
 class SpeechPage(Page):
     """Which model turns the voice into text: a building block of its own, chosen apart from the AI cleanup."""
 
@@ -949,15 +1005,8 @@ class SpeechPage(Page):
             self.models[model.key] = _ModelCard(self.app, model)
             layout.addWidget(self.models[model.key].frame)
         if where == "local":
-            frame, card_layout = card(6)
-            card_layout.addWidget(text("Not sure which model suits your computer?", "h2"))
-            card_layout.addWidget(text("Scan my computer checks the disk space, memory, processor and graphics card, "
-                                       "tries each model on a short recording, and suggests the one that fits. "
-                                       "Coming in the next update.", muted=True))
-            scan = button("Scan my computer")
-            scan.setEnabled(False)
-            card_layout.addLayout(row(scan, stretch_at=1))
-            layout.addWidget(frame)
+            self.scan = _ScanCard(self.app)
+            layout.addWidget(self.scan.frame)
         elif not models:
             frame, card_layout = card(6)
             if where == "cloud":
@@ -981,6 +1030,7 @@ class SpeechPage(Page):
     def refresh(self) -> None:
         for model_card in self.models.values():
             model_card.refresh()
+        self.scan.refresh()
 
 
 # ---------------------------------------------------------------- AI cleanup
@@ -1548,6 +1598,8 @@ class PreviewApp:
         self._microphones = microphones if microphones is not None else ["Microphone (Realtek(R) Audio)"]
         self.loading_speech = ""
         self.downloading: tuple[str, int, int] | None = None
+        self.scanning = ""
+        self.last_scan: dict | None = None
         self.calls: list[tuple] = []  # what the window asked for
 
     def hotkey_label(self) -> str:
@@ -1582,6 +1634,9 @@ class PreviewApp:
 
     def cancel_download(self) -> None:
         self.calls.append(("cancel_download",))
+
+    def scan_computer(self) -> None:
+        self.calls.append(("scan_computer",))
 
     def remove_speech_model(self, key: str) -> None:
         self.calls.append(("remove_speech_model", key))

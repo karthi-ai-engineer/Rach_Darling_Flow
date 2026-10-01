@@ -482,3 +482,27 @@ def test_downloading_a_speech_model_shows_its_progress():
     assert "In use" in parakeet.status.text()  # dictation goes on with Parakeet meanwhile
     whisper.cancel.click()
     assert ("cancel_download",) in app.calls
+
+
+def test_the_scan_card_runs_shows_progress_and_the_verdicts(tmp_path):
+    from sst import scan
+    window, app = _window()
+    card = window.pages["speech"].scan
+    card.refresh()
+    assert card.button.isEnabled() and card.button.text() == "Scan my computer" and card.result.isHidden()
+    card.button.click()
+    assert ("scan_computer",) in app.calls
+    app.scanning = "Trying NVIDIA Parakeet on a short sentence..."
+    card.refresh()
+    assert not card.button.isEnabled() and "Trying" in card.status.text()
+    pc = scan.Computer(processor="Test CPU", cores=10, threads=12, memory_gb=32, free_memory_gb=16, free_disk_gb=200,
+                       graphics=["Intel(R) Iris(R) Xe Graphics"], score=scan.REFERENCE_SCORE)
+    local = [m for m in w.SPEECH_MODELS.values() if m.where == "local"]
+    app.scanning, app.last_scan = "", scan.save(pc, scan.judge(pc, local, {"parakeet": 0.9}),
+                                                 tmp_path / "scan.json")
+    card.refresh()
+    lines = [label.text() for label in card.result.findChildren(w.QLabel)]
+    assert any("Test CPU" in line and "no NVIDIA card" in line for line in lines)
+    assert any("NVIDIA Parakeet: Recommended. About 0.9 s" in line for line in lines)
+    assert any("Slow on this computer" in line and "other languages" in line for line in lines)
+    assert card.button.text() == "Scan again" and "Last scan" in card.status.text()

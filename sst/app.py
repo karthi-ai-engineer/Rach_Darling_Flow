@@ -28,7 +28,7 @@ from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QFo
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
-from sst import __version__, bench, downloads, evaluate, updates
+from sst import __version__, bench, downloads, evaluate, scan, updates
 from sst.audio import TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import SPEECH_MODELS, load_engine, usable
@@ -226,6 +226,8 @@ class _Signals(QObject):
     update_failed = Signal(str, bool)  # (message, tell the user)
     download_progress = Signal(str, int, int)  # (speech model, bytes done, bytes in all)
     download_done = Signal(str, str)  # (speech model, "" or "cancelled" or why it failed)
+    scan_progress = Signal(str)
+    scan_done = Signal(object)  # the scan's result (sst.scan.save), or {"error": why}
 
 
 class TrayApp:
@@ -238,6 +240,8 @@ class TrayApp:
         self.dictation: Dictation | None = None
         self.loading_speech = ""  # the speech model being loaded in the background, if any
         self.downloading: tuple[str, int, int] | None = None  # (speech model, bytes done, bytes in all)
+        self.scanning = ""  # what the scan is doing now, while it runs
+        self.last_scan = scan.load()
         self._cancel_download = threading.Event()
         self.listener: HotkeyListener | None = None
         self.quiet_start = quiet_start
@@ -257,6 +261,8 @@ class TrayApp:
         self.signals.update_failed.connect(self._on_update_failed)
         self.signals.download_progress.connect(self._on_download_progress)
         self.signals.download_done.connect(self._on_download_done)
+        self.signals.scan_progress.connect(self._on_scan_progress)
+        self.signals.scan_done.connect(self._on_scan_done)
 
         self.icon = QIcon(str(ICON_FILE))
         self.recording_icon = _with_red_dot(self.icon)
@@ -588,6 +594,55 @@ class TrayApp:
             log.info("Removed the download of %s", key)
             self.window.refresh()
 
+    def scan_computer(self) -> None:
+        """Scan my computer, in the background: the hardware, a benchmark, and each downloaded model timed on the
+        speech model's sample sentence (the model in use is timed as it is; others are loaded for it if memory allows)."""
+        if self.scanning:
+            return
+        self.scanning = "Reading this computer..."
+        self.window.refresh()
+        in_use = self.dictation.engine if self.dictation else None
+        local = [m for m in SPEECH_MODELS.values() if m.where == "local" and m.ready]
+
+        def work() -> None:
+            try:
+                pc = scan.computer()
+                measured = {}
+                sample = _sample_sentence()
+                for model in local if sample is not None else []:
+                    if not model.installed():
+                        continue
+                    if in_use is not None and in_use.name == model.key:
+                        engine = in_use
+                    elif pc.free_memory_gb >= scan.MEMORY_GB.get(model.key, 1.0) + 1:
+                        self.signals.scan_progress.emit(f"Loading {model.name} to try it...")
+                        engine = load_engine(model.key)
+                    else:
+                        continue  # not enough free memory to load it next to the one in use: estimated instead
+                    self.signals.scan_progress.emit(f"Trying {model.name} on a short sentence...")
+                    t0 = time.perf_counter()
+                    engine.transcribe(*sample)
+                    measured[model.key] = time.perf_counter() - t0
+                    del engine
+                self.signals.scan_done.emit(scan.save(pc, scan.judge(pc, local, measured)))
+            except Exception as e:
+                log.exception("Scanning the computer failed")
+                self.signals.scan_done.emit({"error": str(e) or type(e).__name__})
+        threading.Thread(target=work, name="scan", daemon=True).start()
+
+    def _on_scan_progress(self, message: str) -> None:
+        self.scanning = message
+        self.window.refresh()
+
+    def _on_scan_done(self, data: dict) -> None:
+        self.scanning = ""
+        if "error" in data:
+            self._notify(APP_NAME, f"The scan didn't finish: {data['error']}", QSystemTrayIcon.MessageIcon.Warning)
+        else:
+            self.last_scan = data
+            log.info("Scan: %s", data["computer"])
+        self.window.refresh()
+
     def _on_download_progress(self, key: str, done: int, total: int) -> None:
         self.downloading = (key, done, total)
         self.window.refresh()
@@ -788,6 +843,16 @@ class TrayApp:
 
     def _notify(self, title: str, message: str, icon=QSystemTrayIcon.MessageIcon.Information) -> None:
         self.tray.showMessage(title, message, icon, 5000)
+
+
+def _sample_sentence():
+    """The sentence the scan times every model on: the Parakeet model's own test recording (7.4 s of speech)."""
+    from sst.audio import load_wav
+    from sst.engines.parakeet import MODEL_DIR
+    try:
+        return load_wav(MODEL_DIR / "test_wavs" / "0.wav")
+    except OSError:
+        return None
 
 
 def _with_red_dot(icon: QIcon) -> QIcon:
