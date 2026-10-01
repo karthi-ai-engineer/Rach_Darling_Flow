@@ -57,7 +57,11 @@ keeps no state and calls `TrayApp`, or `PreviewApp` in tests and screenshots. In
 the text cleanup is `sst/gateway.py` (`PROVIDERS`: each provider's request format). Accuracy work follows
 `docs/accuracy.md`: a change is kept only if `sst eval` (`sst/evaluate.py`) shows it better on the reading test's held-out
 sets (C-E), and an engine's `signature` must change whenever its output can (model, decoding, hotwords), since
-transcriptions are cached by it. Settings, keys, history, stats and
+transcriptions are cached by it. Dictation runs through the voice pipeline (`sst/pipeline/`, the owner's plan of
+2026-10-01): stages with contracts (`contracts.py`; every tunable value in `VoiceConfig`), each tested on its own
+(`tests/test_pipeline_*.py`). Keep the stages' jobs apart: ASR = what was said, dictionary = known corrections,
+formatting = written forms, LLM = language cleanup, guard = protection; when unsure, keep the user's words, and
+never type a text with a hole in it (fail closed, keep the recording). Settings, keys, history, stats and
 reading tests belong to a profile (`Profiles` in `sst/settings.py`): read and write them through the profile's paths
 (`TrayApp.profile.settings_file`...), never the module's default paths. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`,
 `sst/paste.py`, `sst/settings.py` and `sst/gateway.py` (DPAPI). UI tests run Qt off-screen (`tests/test_app.py`,
