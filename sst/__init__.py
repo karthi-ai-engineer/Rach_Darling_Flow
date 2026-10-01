@@ -12,3 +12,6 @@ else:
     PROJECT_DIR = Path(__file__).resolve().parent.parent
     MODELS_DIR = PROJECT_DIR / "models"
     RECORDINGS_DIR = PROJECT_DIR / "recordings"
+# Speech models downloaded when the user chooses them (sst.downloads): one folder for the installed app and the source
+# checkout, so a model is downloaded once.
+DOWNLOADS_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "sst" / "models"
