@@ -91,7 +91,7 @@ _Last updated: 2026-10-01_
 | 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | PR #35, waiting for the owner's test + merge |
 | 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR #39 (stacked on #37), waiting for the owner's test + merge |
-| 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | PR (stacked on #39), waiting for the owner's test + merge |
+| 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | PR #41 (stacked on #39), waiting for the owner's test + merge |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -891,7 +891,7 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **Owner:** try PRs #35, #37, #39 and the phase-17 PR together (an installer built from the newest branch has
+1. **Owner:** try PRs #35, #37, #39 and #41 together (an installer built from the newest branch has
    them all):
    - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"
    - dictate in English, and in Tamil with the language set
@@ -902,10 +902,10 @@ These were scratch scripts, not in git. The findings:
    - Your own server → it is filled in from AI cleanup's server, or enter the company gateway → Load models →
      whisper-1 → Test → Use this model → dictate
 
-   Then merge them in order (#35, #37, #39, phase 17), retargeting each next one to `main` before deleting its base.
+   Then merge them in order (#35, #37, #39, #41), retargeting each next one to `main` before deleting its base.
 2. **The owner's building-block plan, in this order** (2026-10-01; see **Speech recognition as a building block**):
    - 16: cloud speech models (PR #39)
-   - 17: your own server (the phase-17 PR)
+   - 17: your own server (PR #41)
    - 18: Parakeet downloaded on demand, with a first-start choice of speech model. The installer drops from ~570 MB to
      ~90-100 MB (~270 MB installed). The website's "works offline, model included" changes.
    - then release. Whisper's runtime on demand too (installer ~50 MB) is possible later.
