@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 from sst import RECORDINGS_DIR, __version__, bench
 from sst.audio import LevelMeter, Take, call_quality, save_wav
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, WHERE, usable
+from sst.engines.cloud import CLOUD
 from sst.engines.whisper import LANGUAGES
 from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
@@ -909,6 +910,120 @@ class _ModelCard:
         self.language.blockSignals(False)
 
 
+class _CloudCard:
+    """A cloud speech model on the Speech recognition page: the provider's key (the same one AI cleanup uses), its
+    model, a Test, and "Use this model" after a question, since the voice goes to the provider."""
+
+    def __init__(self, page, app, model):
+        self.page, self.app, self.model = page, app, model
+        provider = CLOUD[model.key]
+        self.frame, layout = card(8)
+        mixed = QFont()  # the icons come from the icon font, the words from Segoe UI
+        mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+        self.status = text("", muted=True, wrap=False)
+        self.status.setFont(mixed)
+        layout.addLayout(row(text(model.name, "h2", wrap=False), self.status, stretch_at=1))
+        layout.addWidget(text(model.summary))
+        layout.addWidget(text(f"Languages: {model.languages}  ·  {model.size}", muted=True))
+        privacy = text(f"{GLYPHS['warning']}   Your voice is sent to {provider.name} each time you dictate. If "
+                       f"{provider.name} can't be reached, Parakeet types it on this computer.", muted=True)
+        privacy.setFont(mixed)
+        layout.addWidget(privacy)
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        self._saved_key = app.gateway.key_for(model.key)  # what the key box showed when it was last in step
+        self.key = QLineEdit(self._saved_key)
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.setPlaceholderText("Encrypted on this computer; AI cleanup uses the same key")
+        key_link = button("Get a key", lambda _=False: QDesktopServices.openUrl(QUrl(provider.key_page)), link=True)
+        key_row = row(self.key, key_link)
+        key_row.setStretch(0, 1)
+        form.addRow("API key", key_row)
+        self.model_box = QComboBox()
+        self.model_box.setEditable(True)  # one of the usual models, or any other name the provider knows
+        self.model_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model_box.addItems(provider.models)
+        self.model_box.setCurrentText(self._saved_model())
+        self.test = button("Test", self._test)
+        model_row = row(self.model_box, self.test)
+        model_row.setStretch(0, 1)
+        form.addRow("Model", model_row)
+        self.language = QComboBox()
+        for code, name in LANGUAGES.items():
+            self.language.addItem(name, code)
+        self.language.currentIndexChanged.connect(lambda _=0: self.app.set_speech_language(self.language.currentData()))
+        form.addRow("Language", self.language)
+        layout.addLayout(form)
+        self.result = text("", muted=True)
+        self.result.hide()  # until there is something to say: an empty line would leave a gap
+        layout.addWidget(self.result)
+        self.choose = button("Use this model", self._use, primary=True)
+        layout.addLayout(row(self.choose, stretch_at=1))
+        self.key.textChanged.connect(lambda _="": self._show_buttons())
+        self.model_box.currentTextChanged.connect(lambda _="": self._show_buttons())
+
+    def _saved_model(self) -> str:
+        return self.app.settings.speech_cloud_models.get(self.model.key) or CLOUD[self.model.key].models[0]
+
+    def _edited(self) -> bool:
+        return (self.key.text().strip(), self.model_box.currentText().strip()) != (self._saved_key, self._saved_model())
+
+    def refresh(self) -> None:
+        app, key = self.app, self.model.key
+        saved = app.gateway.key_for(key)
+        if self.key.text().strip() == self._saved_key and saved != self._saved_key:
+            self.key.setText(saved)  # changed in AI cleanup; a key being typed here is left alone
+        self._saved_key = saved
+        if key == app.loading_speech:
+            status = "Loading..."
+        elif key == app.speech_in_use():
+            status = f"{GLYPHS['check']}  In use"
+        else:
+            status = ""
+        self.status.setText(status)
+        self.language.blockSignals(True)  # showing the setting isn't changing it
+        self.language.setCurrentIndex(max(0, self.language.findData(app.settings.speech_language)))
+        self.language.blockSignals(False)
+        self._show_buttons()
+
+    def _show_buttons(self) -> None:
+        chosen = self.model.key == self.app.settings.speech_model
+        self.choose.setText("Save" if chosen else "Use this model")
+        self.choose.setVisible(not chosen or self._edited())
+        self.choose.setEnabled(not self.app.loading_speech)
+
+    def _say(self, message: str) -> None:
+        self.result.setText(message)
+        self.result.setVisible(bool(message))
+
+    def _use(self) -> None:
+        name, api_key, model = CLOUD[self.model.key].name, self.key.text().strip(), self.model_box.currentText().strip()
+        if not api_key:
+            self._say(f"Enter your {name} API key first (Get a key).")
+            return
+        if self.model.key != self.app.settings.speech_model and not self.page.confirm(
+                f"Use {name} for speech recognition?\n\nEach time you dictate, the recording of your voice is sent to "
+                f"{name}, which turns it into text. If {name} can't be reached, Parakeet types it on this computer."):
+            return
+        self._saved_key = api_key
+        self.app.use_cloud_speech(self.model.key, api_key, model)
+        self._say("Saved. Active from the next dictation.")
+
+    def _test(self) -> None:
+        name, api_key, model = CLOUD[self.model.key].name, self.key.text().strip(), self.model_box.currentText().strip()
+        if not api_key:
+            self._say(f"Enter your {name} API key first (Get a key).")
+            return
+        self.test.setEnabled(False)
+        self._say(f"Sending a sample sentence to {name}...")
+
+        def done(answer, error) -> None:
+            self.test.setEnabled(True)
+            self._say(f"Failed: {error}" if error else f"OK: {answer}")
+        run_in_background(self.frame, lambda: self.app.test_cloud_speech(self.model.key, api_key, model), done)
+
+
 # What a scan verdict looks like: (icon, words).
 SCAN_LEVELS = {"recommended": ("check", "Recommended"), "fast": ("check", "Fast here"),
                "usable": ("dot", "Works, with a short wait"), "slow": ("warning", "Slow on this computer"),
@@ -987,7 +1102,7 @@ class SpeechPage(Page):
         tabs.addStretch()
         self.add(tabs)
         self.groups = QStackedWidget()
-        self.models: dict[str, _ModelCard] = {}
+        self.models: dict[str, _ModelCard | _CloudCard] = {}
         for key in WHERE:
             self.groups.addWidget(self._group(key))
         self.add(self.groups)
@@ -1001,23 +1116,22 @@ class SpeechPage(Page):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         models = [m for m in SPEECH_MODELS.values() if m.where == where]
+        if where == "cloud":
+            layout.addWidget(text("The provider recognises your speech on its servers, with your API key: nothing to "
+                                  "download, little memory, quick on any computer. Keys are shared with AI cleanup.",
+                                  muted=True))
         for model in models:
-            self.models[model.key] = _ModelCard(self.app, model)
+            self.models[model.key] = (_CloudCard(self, self.app, model) if where == "cloud"
+                                      else _ModelCard(self.app, model))
             layout.addWidget(self.models[model.key].frame)
         if where == "local":
             self.scan = _ScanCard(self.app)
             layout.addWidget(self.scan.frame)
         elif not models:
             frame, card_layout = card(6)
-            if where == "cloud":
-                card_layout.addWidget(text("Cloud speech models", "h2"))
-                card_layout.addWidget(text("OpenAI, Google Gemini, Groq and others recognise your speech on their "
-                                           "servers, with your key. Your voice is sent to the provider. Coming in a "
-                                           "next update.", muted=True))
-            else:
-                card_layout.addWidget(text("Your own server", "h2"))
-                card_layout.addWidget(text("A speech model on a vLLM server, or your company's AI gateway, with its "
-                                           "address and key. Coming in a next update.", muted=True))
+            card_layout.addWidget(text("Your own server", "h2"))
+            card_layout.addWidget(text("A speech model on a vLLM server, or your company's AI gateway, with its "
+                                       "address and key. Coming in a next update.", muted=True))
             layout.addWidget(frame)
         layout.addStretch()  # cards keep their own height when another group is taller
         return group
@@ -1031,6 +1145,9 @@ class SpeechPage(Page):
         for model_card in self.models.values():
             model_card.refresh()
         self.scan.refresh()
+
+    def confirm(self, question: str) -> bool:
+        return QMessageBox.question(self, APP_NAME, question) == QMessageBox.StandardButton.Yes
 
 
 # ---------------------------------------------------------------- AI cleanup
@@ -1052,8 +1169,9 @@ class CleanupPage(Page):
                                        "Your voice stays on this computer; only the finished text goes to the provider.")
         self.app = app
         settings, gateway = app.settings, app.gateway
-        # Each provider's (address, key, model, backup model) while the page is open, so switching back loses nothing.
-        self._memory = {key: (url, secret, "", "") for key, (url, secret) in gateway.others.items()}
+        # The (address, key, model, backup model) of each provider left on this page, so switching back loses nothing.
+        # The others come from app.gateway, where the Speech recognition page may also have saved a key.
+        self._memory: dict[str, tuple[str, str, str, str]] = {}
         # Nothing chosen yet: start with the first provider in the list rather than an empty custom server.
         self._provider = gateway.service.key if gateway.provider or gateway.base_url else next(iter(PROVIDERS))
         frame, layout = card(12)
@@ -1072,7 +1190,8 @@ class CleanupPage(Page):
         self.form.addRow("Provider", self.provider)
         self.gateway_url = QLineEdit(gateway.base_url)
         self.form.addRow("Address", self.gateway_url)
-        self.api_key = QLineEdit(gateway.api_key)
+        self._saved_key = gateway.key_for(self._provider)  # what the key box showed when it was last in step
+        self.api_key = QLineEdit(self._saved_key)
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.load_button = button("Load models", self._load_models)
         self.form.addRow("API key", row(self.api_key, self.load_button))
@@ -1114,8 +1233,10 @@ class CleanupPage(Page):
         self._memory[self._provider] = (self.gateway_url.text().strip(), self.api_key.text().strip(),
                                         self.model.currentText().strip(), self.fallback.currentText().strip())
         p = PROVIDERS[new]
-        url, key, model, fallback = self._memory.get(new, (p.url if p.own_server else "", "", "", ""))
+        saved_url, saved_key = self.app.gateway.entries().get(new, ("", ""))
+        url, key, model, fallback = self._memory.get(new, (saved_url or (p.url if p.own_server else ""), saved_key, "", ""))
         self._provider = new
+        self._saved_key = saved_key
         self.gateway_url.setText(url)
         self.api_key.setText(key)
         for box, value in ((self.model, model), (self.fallback, fallback)):
@@ -1127,9 +1248,17 @@ class CleanupPage(Page):
     def _open_key_page(self) -> None:
         QDesktopServices.openUrl(QUrl(PROVIDERS[self._provider].key_page))
 
+    def refresh(self) -> None:
+        saved = self.app.gateway.key_for(self._provider)
+        if self.api_key.text().strip() == self._saved_key and saved != self._saved_key:
+            self.api_key.setText(saved)  # changed on the Speech recognition page; a key being typed is left alone
+        self._saved_key = saved
+
     def result(self) -> tuple[bool, str, str, GatewayConfig]:
         p = PROVIDERS[self._provider]
-        others = {key: (url, secret) for key, (url, secret, _, _) in self._memory.items() if key != p.key and (url or secret)}
+        entries = self.app.gateway.entries()
+        entries.update({key: (url, secret) for key, (url, secret, _, _) in self._memory.items()})
+        others = {key: (url, secret) for key, (url, secret) in entries.items() if key != p.key and (url or secret)}
         gateway = GatewayConfig(self.gateway_url.text().strip() if p.own_server else "", self.api_key.text().strip(),
                                 p.key, others)
         return self.cleanup_on.isChecked(), self.model.currentText().strip(), self.fallback.currentText().strip(), gateway
@@ -1503,7 +1632,7 @@ class MainWindow(QWidget):
     def show_page(self, key: str) -> None:
         page = self.pages[key]
         self._show_profile()
-        if key in ("home", "dictionary", "profiles", "speech"):
+        if key in ("home", "dictionary", "profiles", "speech", "cleanup"):
             page.refresh()
         elif key == "welcome":
             page.refresh(self.ready)
@@ -1552,7 +1681,7 @@ class MainWindow(QWidget):
         """New dictation, words, settings or profile name: update what is on screen."""
         self._show_profile()
         current = self.current_page()
-        if current in ("home", "dictionary", "profiles", "speech"):
+        if current in ("home", "dictionary", "profiles", "speech", "cleanup"):
             self.pages[current].refresh()
         elif current == "welcome":
             self.pages[current].refresh(self.ready)
@@ -1619,7 +1748,7 @@ class PreviewApp:
         return self.profiles.current.folder(self._bench)
 
     def speech_in_use(self) -> str:
-        return usable(self.settings.speech_model)
+        return usable(self.settings.speech_model, self.gateway)
 
     def choose_speech_model(self, key: str) -> None:
         self.settings.speech_model = key
@@ -1631,6 +1760,16 @@ class PreviewApp:
 
     def download_speech_model(self, key: str) -> None:
         self.calls.append(("download_speech_model", key))
+
+    def use_cloud_speech(self, provider: str, api_key: str, model: str) -> None:
+        self.gateway = self.gateway.with_key(provider, api_key)
+        self.settings.speech_cloud_models = {**self.settings.speech_cloud_models, provider: model}
+        self.settings.speech_model = provider
+        self.calls.append(("use_cloud_speech", provider, model))
+
+    def test_cloud_speech(self, provider: str, api_key: str, model: str) -> str:
+        self.calls.append(("test_cloud_speech", provider, model))
+        return f"{model} answered in 0.6 s: After early nightfall the yellow lamps would light up."
 
     def cancel_download(self) -> None:
         self.calls.append(("cancel_download",))

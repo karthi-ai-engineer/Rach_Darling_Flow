@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from sst import app as sst_app  # noqa: E402
 from sst import settings as settings_module  # noqa: E402
+from sst.engines.cloud import CLOUD  # noqa: E402
 from sst.gateway import GatewayConfig  # noqa: E402
 from sst.settings import Profile, Profiles, Settings  # noqa: E402
 
@@ -23,7 +24,7 @@ def qt():
 
 
 @pytest.mark.parametrize("state, message", [("recording", ""), ("transcribing", ""), ("typed", ""), ("typed_raw", ""),
-                                            ("cancelled", ""),
+                                            ("typed_local", ""), ("cancelled", ""),
                                             ("ignored", ""), ("warning", "Almost silent: check the microphone."),
                                             ("error", "Could not open the microphone")])
 def test_pill_draws_every_state(state, message):
@@ -44,7 +45,7 @@ def test_pill_grows_to_fit_long_messages():
 
 def _fake_tray_app(settings: Settings):
     """TrayApp's methods on a stand-in: apply_settings only records, so nothing touches the real settings file."""
-    fake = SimpleNamespace(settings=settings, gateway=GatewayConfig(), dictation=None, applied=[], cleanups=0,
+    fake = SimpleNamespace(settings=settings, gateway=GatewayConfig(), dictation=None, applied=[], cleanups=0, loads=0,
                            profile=Profile("default"))
 
     def apply(new):
@@ -52,6 +53,7 @@ def _fake_tray_app(settings: Settings):
         fake.applied.append(new)
     fake.apply_settings = apply
     fake._apply_cleanup = lambda: setattr(fake, "cleanups", fake.cleanups + 1)
+    fake._load_speech = lambda: setattr(fake, "loads", fake.loads + 1)
     return fake
 
 
@@ -105,10 +107,12 @@ class FakeListener:
 class FakeEngine:
     """Named after the model it was loaded as, like the real engines."""
 
-    def __init__(self, name="parakeet"):
+    def __init__(self, name="parakeet", language="", api_key="", model="", fallback=None):
         self.name, self.title, self.words = name, name.title(), []
-        if name.startswith("whisper"):
-            self.language = ""  # like the real one: a model that knows many languages
+        if name.startswith("whisper") or name in CLOUD:
+            self.language = language  # like the real one: a model that knows many languages
+        if name in CLOUD:  # like sst.engines.cloud.CloudEngine
+            self.api_key, self.model, self.fallback = api_key, model or CLOUD[name].models[0], fallback
 
     def transcribe(self, audio, rate):
         return "hello"
@@ -140,7 +144,7 @@ def tray_app(monkeypatch, tmp_path):
         "time": "2026-09-30 10:15:00", "text": text}))
     monkeypatch.setattr(sst_app, "read_history", lambda path=None: history)
     loads = []
-    monkeypatch.setattr(sst_app, "load_engine", lambda name, language="": loads.append(name) or FakeEngine(name))
+    monkeypatch.setattr(sst_app, "load_engine", lambda name, *options: loads.append(name) or FakeEngine(name, *options))
     monkeypatch.setattr(sst_app, "HotkeyListener", FakeListener)
     monkeypatch.setattr(sst_app, "wispr_flow_running", lambda: False)
     monkeypatch.setattr(sst_app, "input_device_names", lambda refresh=True: ["Mic A"])
@@ -247,7 +251,7 @@ def test_a_failed_switch_keeps_the_model_in_use(tray_app, monkeypatch, whisper_d
 
     app, _, _ = tray_app
 
-    def broken(name, language=""):
+    def broken(name, *options):
         raise OSError("not downloaded")
     monkeypatch.setattr(sst_app, "load_engine", broken)
     told = []
@@ -326,3 +330,52 @@ def test_scanning_the_computer_times_the_model_in_use(tray_app, monkeypatch, tmp
     assert verdicts["parakeet"]["measured"] and verdicts["parakeet"]["level"] == "recommended"
     assert not verdicts["whisper-turbo"]["measured"]  # not downloaded: estimated
     assert (tmp_path / "scan.json").exists()
+
+
+def test_a_cloud_model_needs_its_key_then_takes_over_with_parakeet_behind_it(tray_app):
+    from PySide6.QtTest import QTest
+
+    app, saved, _ = tray_app
+    parakeet = app.dictation.engine
+    app.choose_speech_model("openai")  # no key yet: the page asks for one instead
+    assert app.settings.speech_model == "parakeet"
+    app.add_words(["Karthi"])
+    app.use_cloud_speech("openai", "sk-test", "gpt-4o-transcribe")
+    assert saved["gateway"].key_for("openai") == "sk-test"  # encrypted with the others, shared with AI cleanup
+    assert saved["settings"].speech_cloud_models == {"openai": "gpt-4o-transcribe"}
+    assert _wait_for(lambda: app.speech_in_use() == "openai", QTest.qWait)
+    engine = app.dictation.engine
+    assert (engine.api_key, engine.model, engine.words) == ("sk-test", "gpt-4o-transcribe", ["Karthi"])
+    assert engine.fallback() is parakeet  # already in memory: nothing to load when the provider fails
+    assert "speech: Openai" in app.window.status_label.text()
+    app.use_cloud_speech("openai", "sk-new", "whisper-1")  # the card's Save: no reload
+    assert app.dictation.engine is engine and (engine.api_key, engine.model) == ("sk-new", "whisper-1")
+    app.set_speech_language("ta")
+    assert engine.language == "ta"
+    app.save_cleanup(False, "", "", GatewayConfig())  # the key is gone: back to Parakeet, the one in memory
+    assert _wait_for(lambda: app.speech_in_use() == "parakeet", QTest.qWait)
+    assert app.dictation.engine is parakeet
+
+
+def test_starting_with_a_cloud_model_loads_parakeet_only_when_needed(tray_app):
+    from PySide6.QtTest import QTest
+
+    app, _, _ = tray_app
+    app.use_cloud_speech("groq", "gsk-test", "")
+    assert _wait_for(lambda: app.speech_in_use() == "groq", QTest.qWait)
+    app._local = None  # as after a start with Groq chosen: Parakeet isn't in memory
+    engine = app.dictation.engine
+    assert engine.model == "whisper-large-v3-turbo"  # Groq's first model
+    first = engine.fallback()
+    assert first.name == "parakeet" and engine.fallback() is first  # loaded once
+
+
+def test_parakeet_typing_for_the_cloud_is_said_once_in_a_while(tray_app, monkeypatch):
+    app, _, _ = tray_app
+    told = []
+    monkeypatch.setattr(app, "_notify", lambda title, message, *_: told.append((title, message)))
+    app._on_state("typed_local", "OpenAI: cannot reach api.openai.com")
+    app._on_state("typed_local", "OpenAI: cannot reach api.openai.com")
+    assert told == [("Cloud speech unavailable", "Parakeet typed it on this computer (OpenAI: cannot reach "
+                                                 "api.openai.com).")]
+    assert app.pill.state == "typed_local"

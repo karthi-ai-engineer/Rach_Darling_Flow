@@ -9,6 +9,7 @@ Standard library only; connections go direct (no proxy).
 """
 import base64
 import ctypes
+import dataclasses
 import http.client
 import json
 import logging
@@ -119,6 +120,27 @@ class GatewayConfig:
     def __repr__(self) -> str:  # never let a key reach a log
         return (f"GatewayConfig(provider={self.service.key!r}, base_url={self.base_url!r}, "
                 f"api_key={'set' if self.api_key else 'missing'})")
+
+    def entries(self) -> dict[str, tuple[str, str]]:
+        """Every provider's (address, key): the chosen one's and the others'."""
+        entries = dict(self.others)
+        if self.base_url or self.api_key:
+            entries[self.service.key] = (self.base_url, self.api_key)
+        return entries
+
+    def key_for(self, provider: str) -> str:
+        """The user's key for a provider. Cloud speech models use the same keys as AI cleanup: one per provider."""
+        return self.api_key if provider == self.service.key else self.others.get(provider, ("", ""))[1]
+
+    def with_key(self, provider: str, key: str) -> "GatewayConfig":
+        """A copy with this provider's key changed (the Speech recognition page); AI cleanup's choice stays as it is."""
+        if provider == self.service.key:
+            return dataclasses.replace(self, api_key=key)
+        others = dict(self.others)
+        url = others.pop(provider, ("", ""))[0]
+        if url or key:
+            others[provider] = (url, key)
+        return dataclasses.replace(self, others=others)
 
     @classmethod
     def load(cls, path: Path = GATEWAY_FILE) -> "GatewayConfig":

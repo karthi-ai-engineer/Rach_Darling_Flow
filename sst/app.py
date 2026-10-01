@@ -31,7 +31,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon,
 from sst import __version__, bench, downloads, evaluate, scan, updates
 from sst.audio import TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
-from sst.engines import SPEECH_MODELS, load_engine, usable
+from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, load_engine, usable
+from sst.engines.cloud import CLOUD
 from sst.gateway import GatewayConfig, Polisher
 from sst.hotkey import HotkeyListener, parse_hotkey
 from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
@@ -77,7 +78,8 @@ class Pill(QWidget):
         self._font = QFont("Segoe UI", 10)
 
     def show_state(self, state: str, message: str = "") -> None:
-        """recording, transcribing, typed, typed_raw, cancelled, ignored, warning, error, or idle/hidden to hide."""
+        """recording, transcribing, typed, typed_raw, typed_local, cancelled, ignored, warning, error, or idle/hidden to
+        hide."""
         self._hide_timer.stop()
         if state in ("idle", "hidden"):
             self.state = "hidden"
@@ -94,7 +96,7 @@ class Pill(QWidget):
         self._animation.start()
         if state in ("typed", "cancelled", "ignored"):
             self._hide_timer.start(900)
-        elif state == "typed_raw":
+        elif state in ("typed_raw", "typed_local"):
             self._hide_timer.start(1800)
         elif state in ("warning", "error"):
             self._hide_timer.start(4000)
@@ -113,7 +115,8 @@ class Pill(QWidget):
         return 44 + QFontMetrics(self._font).horizontalAdvance(text) + 18
 
     def _text(self) -> str:
-        return {"typed": "Typed", "typed_raw": "Typed as heard (cleanup unavailable)", "cancelled": "Cancelled",
+        return {"typed": "Typed", "typed_raw": "Typed as heard (cleanup unavailable)",
+                "typed_local": "Typed with Parakeet (cloud unavailable)", "cancelled": "Cancelled",
                 "ignored": "Too short"}.get(self.state, self.message)
 
     def _place(self) -> None:
@@ -153,7 +156,8 @@ class Pill(QWidget):
                 lift = max(0.0, math.sin(self._phase * 7 - i * 0.9)) * 5
                 p.drawEllipse(QPointF(rect.center().x() - 14 + i * 14, cy - lift), 3.5, 3.5)
         else:
-            colour = {"typed": QColor(34, 197, 94), "typed_raw": QColor(245, 158, 11), "warning": QColor(245, 158, 11),
+            colour = {"typed": QColor(34, 197, 94), "typed_raw": QColor(245, 158, 11),
+                      "typed_local": QColor(245, 158, 11), "warning": QColor(245, 158, 11),
                       "error": QColor(239, 68, 68)}.get(
                 self.state, QColor(160, 160, 170))
             p.setPen(Qt.PenStyle.NoPen)
@@ -246,6 +250,9 @@ class TrayApp:
         self.listener: HotkeyListener | None = None
         self.quiet_start = quiet_start
         self._cleanup_notice = -1e9  # when the user was last told that the cleanup couldn't help
+        self._speech_notice = -1e9  # when the user was last told that a cloud speech model couldn't help
+        self._local = None  # Parakeet, once loaded: a cloud speech model falls back on it
+        self._local_lock = threading.Lock()
         self.update: updates.Update | None = None
         self._update_told = ""  # the version the user was last notified about
 
@@ -322,7 +329,7 @@ class TrayApp:
     def _load_speech(self) -> None:
         """Load the profile's speech model on a thread. A dictation already running keeps its model until the new one
         is ready, so switching never leaves the user without dictation."""
-        key = usable(self.settings.speech_model)
+        key = usable(self.settings.speech_model, self.gateway)
         if key == self.loading_speech or (self.dictation and self.dictation.engine.name == key and not self.loading_speech):
             return
         self.loading_speech = key
@@ -333,7 +340,8 @@ class TrayApp:
         def work() -> None:
             try:
                 t0 = time.perf_counter()
-                engine = load_engine(key, self.settings.speech_language)
+                local = self._local
+                engine = local if key == DEFAULT_MODEL and local else self._new_engine(key)
                 log.info("Speech model %s loaded in %.1fs", key, time.perf_counter() - t0)
                 self.signals.loaded.emit(engine)
             except Exception as e:
@@ -341,13 +349,33 @@ class TrayApp:
                 self.signals.failed.emit(key, str(e))
         threading.Thread(target=work, name="model-loader", daemon=True).start()
 
+    def _new_engine(self, key: str, fallback: bool = True):
+        """A speech model as the settings say. A cloud model gets its key and model, and Parakeet to fall back on."""
+        s = self.settings
+        if key not in CLOUD:
+            return load_engine(key, s.speech_language)
+        return load_engine(key, s.speech_language, self.gateway.key_for(key), s.speech_cloud_models.get(key, ""),
+                           self._fallback_engine if fallback else None)
+
+    def _fallback_engine(self):
+        """Parakeet, for a cloud model that couldn't help: the one loaded already, or loaded now (once). Using only
+        a cloud model keeps Rflow light until then."""
+        with self._local_lock:
+            if self._local is None:
+                self._local = load_engine(DEFAULT_MODEL)
+            return self._local
+
     def _on_loaded(self, engine) -> None:
         if self.loading_speech == engine.name:
             self.loading_speech = ""
         first = self.dictation is None
-        if not first and engine.name != usable(self.settings.speech_model):
+        if not first and engine.name != usable(self.settings.speech_model, self.gateway):
             self._load_speech()  # another model was chosen while this one loaded: drop it, load (or await) that one
             return
+        if engine.name == DEFAULT_MODEL:
+            self._local = engine  # a cloud model chosen later falls back on it without loading it again
+        elif engine.name not in CLOUD:
+            self._local = None  # another model runs on this computer: Parakeet's memory can go
         if first:
             self.dictation = Dictation(engine, self.recorder, sounds=self.settings.sounds,
                                        save=self.settings.save_recordings)
@@ -362,7 +390,7 @@ class TrayApp:
         self.window.refresh()
         if not first:
             return
-        if engine.name != usable(self.settings.speech_model):
+        if engine.name != usable(self.settings.speech_model, self.gateway):
             self._load_speech()  # dictation works now; the chosen model follows
             return
         if self.listener and wispr_flow_running() and self.listener.hotkey.modifiers == {"ctrl", "win"}:
@@ -399,13 +427,22 @@ class TrayApp:
         self._update_status()
         log.info("Listening for %s", key.text)
 
+    def _apply_speech(self) -> None:
+        """The speech model's options that need no reload, from the next dictation on: the language, Your words, and a
+        cloud model's model and key."""
+        s, engine = self.settings, self.dictation.engine
+        if hasattr(engine, "language"):
+            engine.language = s.speech_language
+        if hasattr(engine, "words"):
+            engine.words = list(s.vocabulary)  # the recogniser listens for them (hotwords)
+        if engine.name in CLOUD:
+            engine.model = s.speech_cloud_models.get(engine.name) or CLOUD[engine.name].models[0]
+            engine.api_key = self.gateway.key_for(engine.name) or engine.api_key  # no key: Parakeet is on its way
+
     def _apply_cleanup(self) -> None:
         """Use Your words and the model chosen in AI cleanup from the next dictation on."""
         s = self.settings
-        if hasattr(self.dictation.engine, "language"):
-            self.dictation.engine.language = s.speech_language
-        if hasattr(self.dictation.engine, "words"):
-            self.dictation.engine.words = list(s.vocabulary)  # the recogniser listens for them (hotwords)
+        self._apply_speech()
         model = s.cleanup_model if s.cleanup else ""
         polisher = None
         if model and self.gateway.address:
@@ -423,7 +460,10 @@ class TrayApp:
         if not self.listener or self.loading_speech:
             return
         model = self.dictation.cleanup.model.rsplit("/", 1)[-1] if self.dictation and self.dictation.cleanup else None
-        self._set_status(f"Ready: hold {self.listener.hotkey.label}" + (f" · cleanup: {model}" if model else ""), True)
+        engine = self.dictation.engine if self.dictation else None
+        speech = f" · speech: {engine.title}" if engine and engine.name != DEFAULT_MODEL else ""
+        self._set_status(f"Ready: hold {self.listener.hotkey.label}" + speech + (f" · cleanup: {model}" if model else ""),
+                         True)
 
     # -- running
 
@@ -448,6 +488,12 @@ class TrayApp:
         if state in ("warning", "error"):
             log.warning(message)
             self._notify(APP_NAME, message, QSystemTrayIcon.MessageIcon.Warning)
+        if state == "typed_local":
+            log.warning("Typed with Parakeet: %s", message)
+            if time.monotonic() - self._speech_notice > 600:  # at most one notification per 10 minutes
+                self._speech_notice = time.monotonic()
+                self._notify("Cloud speech unavailable", f"Parakeet typed it on this computer ({message}).",
+                             QSystemTrayIcon.MessageIcon.Warning)
         if state == "typed_raw":
             log.warning("Typed as heard: %s", message)
             if time.monotonic() - self._cleanup_notice > 600:  # at most one notification per 10 minutes
@@ -503,8 +549,8 @@ class TrayApp:
             if (new.cleanup, new.cleanup_model, new.cleanup_fallback, new.vocabulary) != (
                     old.cleanup, old.cleanup_model, old.cleanup_fallback, old.vocabulary):
                 self._apply_cleanup()  # the chosen model is active from the next dictation
-            if new.speech_language != old.speech_language and hasattr(self.dictation.engine, "language"):
-                self.dictation.engine.language = new.speech_language  # from the next dictation; no reload needed
+            elif (new.speech_language, new.speech_cloud_models) != (old.speech_language, old.speech_cloud_models):
+                self._apply_speech()  # from the next dictation; no reload needed
             if new.hotkey != old.hotkey:
                 self._start_listener()
         if new.speech_model != old.speech_model:
@@ -518,7 +564,8 @@ class TrayApp:
             self.gateway = gateway
         self.apply_settings(dataclasses.replace(self.settings, cleanup=on, cleanup_model=model, cleanup_fallback=fallback))
         if self.dictation:
-            self._apply_cleanup()  # also when only the endpoint or key changed
+            self._apply_cleanup()  # also when only the endpoint or key changed (a cloud speech model's key too)
+        self._load_speech()  # a key added or removed can change which speech model is usable
 
     def add_words(self, new_words: list[str]) -> int:
         known = {w.lower() for w in self.settings.vocabulary}
@@ -541,15 +588,40 @@ class TrayApp:
         models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.address else []
         polishers = {m.rsplit("/", 1)[-1]: Polisher(self.gateway, m, s.vocabulary) for m in models}
         engine = self.dictation.engine
+        if engine.name in CLOUD:  # scored without Parakeet to fall back on, so that a provider's failure shows
+            engine = self._new_engine(engine.name, fallback=False)
+            engine.words = list(s.vocabulary)
         results = evaluate.run(folders, engine, evaluate.pipelines_for(polishers, title=engine.title), progress)
         results.save(evaluate.output_folder(folders))
         return results
 
     def choose_speech_model(self, key: str) -> None:
         """The Speech recognition page: use this model from now on (it loads in the background)."""
-        model = SPEECH_MODELS.get(key)
-        if model and model.ready and model.installed() and key != self.settings.speech_model:
+        if key in SPEECH_MODELS and usable(key, self.gateway) == key and key != self.settings.speech_model:
             self.apply_settings(dataclasses.replace(self.settings, speech_model=key))
+
+    def use_cloud_speech(self, provider: str, api_key: str, model: str) -> None:
+        """A cloud card's "Use this model", or "Save" while it is in use: keep its key (shared with AI cleanup) and its
+        model, and use it from the next dictation. The window has asked first: the voice goes to the provider."""
+        if provider not in CLOUD or not api_key:
+            return
+        if api_key != self.gateway.key_for(provider):
+            self.gateway = self.gateway.with_key(provider, api_key)
+            self.gateway.save(self.profile.gateway_file)
+            if self.dictation:
+                self._apply_cleanup()  # AI cleanup may use the same provider, and so the same key
+        models = {**self.settings.speech_cloud_models, provider: model or CLOUD[provider].models[0]}
+        self.apply_settings(dataclasses.replace(self.settings, speech_model=provider, speech_cloud_models=models))
+
+    def test_cloud_speech(self, provider: str, api_key: str, model: str) -> str:
+        """A cloud card's Test button (the window runs it on a thread): the sample sentence through the provider.
+        Raises with a readable reason."""
+        sample = _sample_sentence()
+        if sample is None:
+            raise RuntimeError("the sample sentence is missing (it comes with Parakeet)")
+        engine = load_engine(provider, "", api_key, model)  # the sample is English, whatever language is chosen
+        engine.words = list(self.settings.vocabulary)
+        return engine.check(*sample)
 
     def set_speech_language(self, code: str) -> None:
         if code != self.settings.speech_language:

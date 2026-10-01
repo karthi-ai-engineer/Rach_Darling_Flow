@@ -90,6 +90,7 @@ _Last updated: 2026-10-01_
 | 13 | **Speech recognition as a building block**: a catalog of speech models, a per-profile choice, background switching, the Speech recognition page | done, on `main` (PR #33) |
 | 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | PR #35, waiting for the owner's test + merge |
 | 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
+| 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR #39 (stacked on #37), waiting for the owner's test + merge |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -726,6 +727,53 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
   disk, free memory), reading this computer, the benchmark, save and load, the card's states, and the real TrayApp
   scanning with the model in use timed.
 
+## Cloud speech models (phase 16)
+
+- **`sst/engines/cloud.py`:** `CLOUD` lists the providers and their models (the first is the default; the box takes
+  any other name):
+
+  | Provider | Request | Models |
+  |---|---|---|
+  | OpenAI | multipart `POST /v1/audio/transcriptions`, `Authorization: Bearer` | gpt-4o-mini-transcribe, gpt-4o-transcribe, whisper-1 |
+  | Groq | the same, at `api.groq.com/openai/v1` | whisper-large-v3-turbo, whisper-large-v3 |
+  | Google Gemini | `POST /v1beta/models/<model>:generateContent`, `x-goog-api-key`, the WAV inline (base64) with an instruction to write down exactly what is said | gemini-flash-lite-latest, gemini-flash-latest, gemini-3.5-flash-lite, gemini-3.6-flash |
+
+  - The recording goes as a 16 kHz 16-bit WAV (32 KB a second; 3 minutes is 5.8 MB, under every provider's limit).
+  - Hints: the chosen language (OpenAI's `language`, or named in Gemini's instruction) and Your words (OpenAI's
+    `prompt`, or in Gemini's instruction). Gemini's thinking parts are left out of the text.
+  - The connection opens while the user speaks (`prepare()`), with a 1.5 s connect timeout and 3 tries (the
+    first-connection stall), kept alive.
+- **Never losing a dictation:** when the provider fails (HTTP error, no answer in time, unreachable), Parakeet
+  transcribes the same recording on this computer, and `last_error` says why. The dictation then reports
+  `typed_local`: the pill says "Typed with Parakeet (cloud unavailable)", and a notification comes at most every 10
+  minutes. An unreachable provider is skipped for a minute, so being offline costs one wait. Parakeet is the one
+  already in memory when the user switched from it; otherwise it loads at the first failure (a cloud-only user stays
+  light).
+- **Keys:** one per provider, shared with AI cleanup and encrypted with DPAPI in the profile's `gateway.json`
+  (`GatewayConfig.key_for`, `with_key`, `entries`). The AI cleanup page now builds its result from the saved keys, so
+  saving it never drops a key saved on the speech page, and each page shows a key changed on the other (unless one is
+  being typed).
+- **Settings:** `speech_model` is `openai`, `groq` or `gemini`; `speech_cloud_models` keeps each provider's model.
+  `usable()` falls back to Parakeet when a cloud model has no key, so a lost key never stops Rflow.
+- **The page:** the Cloud tab has a card per provider:
+  - what it is, "Nothing to download", and the warning "Your voice is sent to <provider> each time you dictate"
+  - the API key with "Get a key", the model, the language
+  - Test: Parakeet's sample sentence through the provider, with the time and the text
+  - "Use this model" asks first (the voice leaves the computer); while in use, "Save" appears when the key or model
+    changes, and applies without a reload
+
+  The status line says "speech: <provider> <model>" when the model isn't Parakeet.
+- **Scoring:** `sst eval --engine openai` (or groq, gemini) and the Reading test score through the provider, without
+  the Parakeet fallback, so a failure shows. A rate limit (HTTP 429) is waited out (10, 20, 30, 60 s), and the cache
+  is now saved even when a run stops halfway. `sst eval --engine whisper-turbo` no longer fails on `engine.biased`.
+- **Not yet tried against the real providers:** only against a local fake speaking both formats. The owner presses
+  Test with their own key. (Google's OpenAI-compatible address, `.../v1beta/openai`, has no `/audio/transcriptions`:
+  it answers 404, which is why Gemini gets its native `generateContent` request.)
+- **Tests: 309.** They cover each provider's request (fields, headers, the WAV, the hints), errors, the fallback
+  (loaded once, Your words passed on), the one-minute skip, a slow answer, the rate-limit wait, the kept connection,
+  Test, keys never in `repr`, the signature, the catalog, key sharing and saving, the dictation's `typed_local`, the
+  cards (the question, Save, Test), and the real TrayApp switching to a cloud model and back.
+
 ## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
 
 - **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
@@ -806,21 +854,25 @@ These were scratch scripts, not in git. The findings:
 - The console command (`sst dictate`) has no cleanup; the tray app does.
 - The installer isn't code-signed, so SmartScreen warns on the first install. In-app updates don't trigger it, because
   a file downloaded by the app isn't marked as coming from the internet.
-- The Python client's first connection to the company gateway, and sometimes to GitHub, stalls on the dev laptop. Both
-  clients use short connect timeouts with retries (`sst/gateway.py`, `sst/updates.py`).
+- The Python client's first connection to the company gateway, and sometimes to GitHub, stalls on the dev laptop. The
+  clients use short connect timeouts with retries (`sst/gateway.py`, `sst/updates.py`, `sst/engines/cloud.py`).
+- A cloud speech model sends the voice to the provider; the window says so and asks before one is used.
 
 ## Next steps
 
-1. **Owner:** try PR #35 and PR #37 together (the installer built from the phase-15 branch has both):
+1. **Owner:** try PRs #35, #37 and #39 together (an installer built from the phase-16 branch has all
+   three):
    - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"
    - dictate in English, and in Tamil with the language set
    - switch back to Parakeet
    - press "Scan my computer"
+   - Cloud → a provider you have a key for (Groq has a free tier) → paste the key → Test → Use this model → dictate;
+     then turn Wi-Fi off and dictate: Parakeet should type it, and say so
 
-   Then merge #35, retarget #37 to `main`, and merge it.
+   Then merge #35; retarget #37 to `main` and merge it; retarget #39 to `main` and merge it.
 2. **The owner's building-block plan, in this order** (2026-10-01; see **Speech recognition as a building block**):
-   - 16: cloud speech models (OpenAI, Gemini, Groq...: the voice goes to the provider, with a warning)
-   - 17: your own server (vLLM, the company gateway)
+   - 16: cloud speech models (PR #39)
+   - 17: your own server (vLLM, the company gateway: its `whisper-1` transcribed on 2026-09-30)
    - 18: Parakeet downloaded on demand, with a first-start choice of speech model. The installer drops from ~570 MB to
      ~90-100 MB (~270 MB installed). The website's "works offline, model included" changes.
    - then release. Whisper's runtime on demand too (installer ~50 MB) is possible later.
@@ -845,8 +897,8 @@ These were scratch scripts, not in git. The findings:
    - code signing (removes the SmartScreen warning)
    - a "paste last transcript" hotkey
    - the bench: resampling whole sessions, and substitutions / deletions / insertions counted apart
-8. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
-   against the local fakes).
+8. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page, and for OpenAI, Gemini
+   or Groq on the Speech recognition page's Cloud tab (they were only tested against the local fakes).
 9. Waiting on the owner:
    - the apps used most
    - code-signing budget

@@ -305,3 +305,24 @@ def test_every_provider_s_key_is_kept_encrypted_when_switching(tmp_path):
     assert not any(secret in text for secret in ("groq-secret", "openai-secret", "gw-secret"))
     assert GatewayConfig.load(path) == config
     assert "secret" not in repr(config)
+
+
+def test_cloud_speech_shares_each_providers_key():
+    config = GatewayConfig("", "sk-openai", "openai", {"anthropic": ("", "ant-key"), "vllm": ("http://10.0.0.5/v1", "")})
+    assert config.key_for("openai") == "sk-openai" and config.key_for("anthropic") == "ant-key"
+    assert config.key_for("groq") == ""
+    groq = config.with_key("groq", "gsk-key")
+    assert groq.key_for("groq") == "gsk-key" and groq.service.key == "openai"  # AI cleanup's choice stays
+    assert config.key_for("groq") == ""  # a copy: the original is unchanged
+    assert groq.with_key("openai", "sk-new").api_key == "sk-new"
+    vllm = config.with_key("vllm", "secret")
+    assert vllm.others["vllm"] == ("http://10.0.0.5/v1", "secret")  # its address is kept
+    assert "groq" not in groq.with_key("groq", "").others  # a key removed leaves nothing behind
+    assert set(groq.entries()) == {"openai", "anthropic", "vllm", "groq"}
+
+
+def test_a_key_saved_for_speech_survives_saving_and_loading(tmp_path):
+    path = tmp_path / "gateway.json"
+    GatewayConfig().with_key("gemini", "g-key").save(path)
+    assert "g-key" not in path.read_text(encoding="utf-8")  # encrypted
+    assert GatewayConfig.load(path).key_for("gemini") == "g-key"
