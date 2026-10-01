@@ -9,6 +9,11 @@ is typed where the cursor is.
 `Dictation` holds the logic and is shared by the console command (`run` below), the tray app
 (sst.app) and the tests. Transcription and typing run on a worker thread, so a new recording
 can start right away.
+
+With a voice pipeline (sst.pipeline.session.VoicePipeline), each recording is a session fed while the key is held:
+chunks cut at pauses go to the speech engine while the user is still speaking, and after the key is let go only the
+last chunk and the text stages (dictionary, formatting, LLM, guard) remain. Without one, the whole recording is
+transcribed at once (the classic way, and the tests' fake recorders).
 """
 import ctypes
 import logging
@@ -45,6 +50,8 @@ class Dictation:
     thread.
     `cleanup` is an optional sst.gateway.Polisher (or anything with prepare(), polish(text) and last_error). An engine
     may have prepare() too (connect while the user speaks) and last_error (why it fell back on another engine).
+    `pipeline` (set by the app) replaces engine + cleanup with the staged pipeline when the recorder offers the take
+    in progress (Recorder.current_take).
     """
 
     def __init__(self, engine, recorder, *, paste: Callable[[str], None] = paste_text, sounds: bool = True,
@@ -53,6 +60,9 @@ class Dictation:
         self.sounds, self.save = sounds, save
         self.listener: HotkeyListener | None = None  # told when recording, so that Esc cancels only then
         self.cleanup = None  # set and replaced by the app when the chosen model changes; None = type what was heard
+        self.pipeline = None  # sst.pipeline.session.VoicePipeline, set by the app; None = the classic way
+        self.last_failed: tuple[np.ndarray, int] | None = None  # a recording nothing could be typed for: retry_last()
+        self._session = None  # the pipeline session being recorded
         self.on_state: Callable[[str, str], None] = lambda state, message: None
         self.on_result: Callable[[str, str, float], None] = lambda heard, typed, seconds: None
         self.recording = False
@@ -116,8 +126,11 @@ class Dictation:
         prepare = getattr(self.engine, "prepare", None)
         if prepare:
             prepare()  # a cloud speech model: connect while the user speaks, not after
-        if self.cleanup:
-            self.cleanup.prepare()  # connect to the gateway while the user speaks, not after
+        self._session = self._open_session()
+        llm = getattr(self.pipeline.stages, "llm", None) if self._session else None
+        cleanup = llm if self._session else self.cleanup
+        if cleanup and hasattr(cleanup, "prepare"):
+            cleanup.prepare()  # connect to the gateway while the user speaks, not after
         if self.listener:
             self.listener.recording = True  # Esc now cancels
         self.recording, self._holding, self._started = True, True, at
@@ -130,6 +143,10 @@ class Dictation:
         # The take keeps recording a short tail after the key release; the worker waits for it, not this thread.
         stop_later = getattr(self.recorder, "stop_later", None)
         take = stop_later() if stop_later else Take.ready(self.recorder.stop(), self.recorder.rate)
+        session, self._session = self._session, None
+        if quiet or not keep or take.seconds < MIN_SECONDS:
+            if session is not None:
+                session.cancel()  # its feeder stops; results still on their way are dropped
         if quiet:
             self.on_state("idle", "")
         elif not keep:
@@ -139,12 +156,52 @@ class Dictation:
             self.on_state("ignored", "Too short, ignored.")
         else:
             self._beep(660)
-            self._jobs.put(take)
+            self._jobs.put((take, session))
             self.on_state("transcribing", "")
+
+    def retry_last(self) -> bool:
+        """Transcribe the last recording nothing could be typed for again (e.g. the internet was down)."""
+        if self.last_failed is None or self.pipeline is None:
+            return False
+        audio, rate = self.last_failed
+        self.last_failed = None
+        session = self.pipeline.start(rate)
+        _Feeder(Take.ready(audio, rate), session).start()
+        self._jobs.put((Take.ready(audio, rate), session))
+        self.on_state("transcribing", "")
+        return True
+
+    def _open_session(self):
+        """A pipeline session for the recording just started, fed by its own thread; None for the classic way."""
+        take = getattr(self.recorder, "current_take", None)
+        if self.pipeline is None or take is None:
+            return None
+        try:
+            preroll, n = [], 0
+            for block in list(take.chunks):  # the blocks from before the key press come first
+                if n >= take.preroll:
+                    break
+                preroll.append(block)
+                n += len(block)
+            session = self.pipeline.start(take.rate, np.concatenate(preroll) if preroll else None)
+            _Feeder(take, session, skip=len(preroll)).start()
+            return session
+        except Exception:  # the classic way still types the text
+            log.exception("Could not start a voice pipeline session")
+            return None
 
     def _work(self) -> None:
         while True:
-            take = self._jobs.get()
+            take, session = self._jobs.get()
+            if session is not None:
+                try:
+                    self._finish_session(take, session)
+                except Exception as e:  # keep the worker alive for the next recording
+                    log.exception("The voice pipeline failed")
+                    self.on_state("error", f"Error: {e}")
+                finally:
+                    self._jobs.task_done()
+                continue
             try:
                 audio, rate = take.audio(), take.rate
                 t0 = time.perf_counter()
@@ -181,9 +238,74 @@ class Dictation:
             finally:
                 self._jobs.task_done()
 
+    def _finish_session(self, take: Take, session) -> None:
+        audio, rate = take.audio(), take.rate
+        final = session.result()
+        if final.provenance.value == "failed" and self.engine is not None and len(audio):
+            try:  # the last resort before failing: the whole recording in one piece, as before the voice pipeline
+                text = self.engine.transcribe(audio, rate)
+                if text:
+                    log.warning("%s: %s; typed from the whole recording instead", final.session_id, final.error)
+                    final = session.text_result(text)
+            except Exception as e:
+                log.warning("The whole recording couldn't be transcribed either: %s", e)
+        if final.provenance.value == "failed":  # fail closed: nothing typed rather than a text with a hole in it
+            self.last_failed = (audio, rate)
+            kept = ""
+            if self.save:
+                save_recording(audio, rate, "")
+                kept = " The recording is kept; Retry the last dictation is in the tray menu."
+            self.on_state("error", f"Nothing was typed: {final.error}.{kept}")
+            return
+        typed = final.text
+        heard = final.stages.get("merged") or typed
+        if typed:
+            self.paste(typed + " ")  # trailing space so the next dictation doesn't run into this one
+        if len(audio) and float(np.abs(audio).max()) < 0.01:
+            self.on_state("warning", "Almost silent: check the microphone.")
+        if self.save:
+            save_recording(audio, rate, typed)
+        if typed:
+            self.on_result(heard, typed, len(audio) / rate)
+        if typed and final.notes:
+            self.on_state("typed_local", final.notes[0])
+        elif typed and final.provenance.value == "formatted_fallback" and final.error:
+            self.on_state("typed_raw", final.error)
+        else:
+            self.on_state("typed" if typed else "idle", typed)
+
     def _beep(self, frequency: int) -> None:
         if self.sounds:
             threading.Thread(target=winsound.Beep, args=(frequency, 60), daemon=True).start()
+
+
+class _Feeder(threading.Thread):
+    """Passes a take's audio to its pipeline session while it is being recorded, then finishes the session once the
+    tail after the key release has arrived. Polling keeps the audio callback free of any work."""
+
+    POLL = 0.03
+
+    def __init__(self, take: Take, session, skip: int = 0):
+        super().__init__(name="pipeline-feeder", daemon=True)
+        self.take, self.session, self.position = take, session, skip
+
+    def run(self) -> None:
+        try:
+            while True:
+                if getattr(self.session.state, "value", "") == "cancelled":
+                    return
+                done = self.take.done.is_set()  # read before the chunks: nothing appended after it is missed
+                blocks = self.take.chunks[self.position:]
+                self.position += len(blocks)
+                for block in blocks:
+                    self.session.feed(block)
+                if done and self.position >= len(self.take.chunks):
+                    break
+                time.sleep(self.POLL)
+            self.session.finish()
+        except Exception:
+            log.exception("Feeding the voice pipeline failed")
+            self.session.cancel()
 
 
 # ---- the console command: `sst dictate`

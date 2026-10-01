@@ -249,9 +249,11 @@ class Polisher:
     """Cleans up dictated text with a model on the endpoint. polish() never raises and never takes much longer than the
     answer timeout; when it can't help, it returns the text unchanged and says why in `last_error`."""
 
-    def __init__(self, config: GatewayConfig, model: str, vocabulary: list[str] = (), fallback: str | None = None):
+    def __init__(self, config: GatewayConfig, model: str, vocabulary: list[str] = (), fallback: str | None = None,
+                 system_prompt: str | None = None):
         self.config, self.model, self.fallback = config, model, fallback
         self.vocabulary = [w.strip() for w in vocabulary if w.strip()]
+        self.system_prompt = system_prompt  # None: SYSTEM_PROMPT (the voice pipeline passes its own, stricter one)
         self.last_error = ""
         self.address = config.address
         url = urlsplit(self.address)
@@ -442,9 +444,10 @@ class Polisher:
         log.warning("Endpoint unreachable, skipping cleanup for %.0fs: %s", DOWN_FOR, error)
 
     def _system_prompt(self) -> str:
+        prompt = SYSTEM_PROMPT if self.system_prompt is None else self.system_prompt
         if not self.vocabulary:
-            return SYSTEM_PROMPT
-        return SYSTEM_PROMPT + "\nThe user's vocabulary: " + ", ".join(self.vocabulary)
+            return prompt
+        return prompt + "\nThe user's vocabulary: " + ", ".join(self.vocabulary)
 
 
 def _short(model: str) -> str:

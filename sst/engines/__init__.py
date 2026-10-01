@@ -70,8 +70,8 @@ SPEECH_MODELS = {m.key: m for m in [
                 "a second.",
                 "99 languages", "Nothing to download", language_choice=True),
     SpeechModel("gemini", "Google Gemini", "cloud",
-                "Gemini's Flash models listen to the recording and write it down; good with names and mixed "
-                "languages.",
+                "Gemini 3.5 Transcribe writes down exactly what was said, with the time of each word; Gemini's Flash "
+                "models are there too. Good with names and mixed languages.",
                 "Many languages", "Nothing to download", language_choice=True),
     SpeechModel("server", "Your own server", "server",
                 "Whisper or another speech model on a server you run or trust: vLLM, your company's AI gateway, or any "

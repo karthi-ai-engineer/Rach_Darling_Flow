@@ -667,3 +667,50 @@ def test_without_parakeet_the_pages_offer_it_and_promise_no_fallback(no_parakeet
     assert parakeet.choose.isHidden() and parakeet.remove.isHidden() and "In use" not in parakeet.status.text()
     assert "Download Parakeet too" in page.models["openai"].privacy.text()
     assert "Download Parakeet too" in page.models["server"].note.text()
+
+
+# ---- the voice pipeline's controls
+
+def test_a_sound_alike_is_added_and_shown_with_its_word():
+    window, app = _window(settings=Settings(welcomed=True, vocabulary=["PostgreSQL"]))
+    window.show_page("dictionary")
+    page = window.pages["dictionary"]
+    assert page.alike_note.isHidden()
+    page.heard.setText("post grass")
+    page._add_sound_alike()
+    assert "Fill in both" in page.alike_note.text()
+    page.meant.setText("PostgreSQL")
+    page._add_sound_alike()
+    assert ("add_sound_alike", "post grass", "PostgreSQL") in app.calls
+    assert "post grass" in _labels(page) and page.heard.text() == ""
+    page.heard.setText("cube er net ease")
+    page.meant.setText("Kubernetes")  # a word not in Your words yet: listed with its sound-alike
+    page._add_sound_alike()
+    assert "Kubernetes" in _labels(page) and "2 WORDS" in page.count.text()
+
+
+def test_a_correction_made_twice_becomes_a_suggestion_to_accept():
+    window, app = _window(settings=Settings(welcomed=True))
+    home = window.pages["home"]
+    home.ask_correction = lambda typed: "I pushed it to GitHub today"
+    for _ in range(2):
+        home._correct("I pushed it to get hub today")
+    page = window.pages["dictionary"]
+    window.show_page("dictionary")
+    assert not page.suggestions_card.isHidden() and "get hub" in _labels(page)
+    _button(page.suggestions_card, "Add").click()
+    assert page.suggestions_card.isHidden()
+    assert any(t.preferred == "GitHub" and "get hub" in t.aliases for t in app.dictionary_terms())
+
+
+def test_the_pipeline_switches_are_settings():
+    window, app = _window(settings=Settings(welcomed=True))
+    page = window.pages["settings"]
+    assert page.always_on.isChecked() and not page.warm_mic.isEnabled()
+    page.always_on.setChecked(False)
+    assert page.warm_mic.isEnabled() and app.settings.always_on_mic is False
+    page.format_text.setChecked(False)
+    page.debug_pipeline.setChecked(True)
+    page.voice_pipeline.setChecked(False)
+    s = app.settings
+    assert (s.format_text, s.debug_pipeline, s.voice_pipeline) == (False, True, False)

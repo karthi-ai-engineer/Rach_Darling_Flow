@@ -8,8 +8,9 @@ _Last updated: 2026-10-01_
 ## Start here (a new session, or the owner's other laptop)
 
 **Where things stand (2026-10-01):**
-- **Rflow 1.5.0 is released** (2026-10-01, GitHub Release `v1.5.0`, the website's download): speech recognition as
-  building blocks (phases 13-18), and a 90 MB installer. 1.4.0 contained accuracy phases 10-12.
+- **Rflow 1.6.0 is released** (2026-10-01, GitHub Release `v1.6.0`, the website's download): the owner's voice
+  pipeline (phase 19: parts transcribed while speaking, dictionary, formatting, a guarded AI cleanup, an always-on
+  microphone). 1.5.0 brought speech recognition as building blocks (phases 13-18) and a 90 MB installer. 1.4.0 contained accuracy phases 10-12.
 - **On the owner's voice** (150 read sentences, laptop microphone):
   - word errors 9.2% → 7.1%
   - held-out sets 6.7% → **5.4%**, better than Parakeet's own benchmark average of 5.9%
@@ -96,8 +97,9 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
+| 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
-Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0 and v1.5.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
+Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0 and v1.6.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
 itself to 1.0.1.
 
@@ -862,6 +864,81 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
   the bundled vocabulary (no CR) and sample, a new install starting without a model then downloading Parakeet, a
   cloud-only start, the welcome's step, the pages without Parakeet, the kept recording, and the fallback's message.
 
+## The voice pipeline (phase 19, the owner's plan of 2026-10-01)
+
+The owner wrote the plan in `appropriate_plan.txt` (repository root, not in git): dictation as separate stages with
+contracts. It is built as written, with the deviations below, each backed by a measurement or a reason.
+
+```
+mic (always on, 2 s pre-roll in RAM) -> session -> VAD -> chunker (1.2 s pause / 20 s max, 1 s overlap at the max)
+-> bounded parallel ASR (retry, sanity check, Parakeet fallback) -> ordered results -> overlap merge
+-> dictionary -> formatting -> LLM polish -> guard -> FinalText -> the existing paste
+```
+
+| Stage | Where | What it does |
+|---|---|---|
+| Contracts, config | `sst/pipeline/contracts.py` | the objects passed between stages; every tunable value (`VoiceConfig`) |
+| Capture | `sst/audio.py` `Recorder` | always-on (`keep_open`, `warm_seconds = inf`), `preroll_seconds` 2 s for dictation, `current_take` for live feeding |
+| Ring, VAD, chunker | `sst/pipeline/audio_stream.py` | `RingBuffer` (monotonic index), energy VAD with adaptive floor and hysteresis, `Chunker`, `trim_preroll` |
+| ASR | `sst/pipeline/asr.py` | `EngineBackend` (any engine), `ASRScheduler` (bounded pool, per-session ordering, retry by error class with backoff and jitter, `ASRValidator` suspicion score, fallback), fail closed (`SessionFailed`) |
+| Word times | `sst/engines/cloud.py`, `parakeet.py`, `whisper.py` | `transcribe_chunk()` -> `RawTranscript` with words: Gemini 3.5 Transcribe (`audioTranscriptionConfig`, verbatim, `wordTimestamp`), whisper-1 / Groq `verbose_json`, Parakeet token times, faster-whisper words; a connection pool for parallel requests; the Files API for audio over 14 MB |
+| Merge | `sst/pipeline/merge.py` | boundary-only: timestamps, exact, normalized, fuzzy; keeps both when unsure; partial words at a forced cut |
+| Dictionary | `sst/pipeline/dictionary.py` | SQLite per profile (`dictionary.db`): terms, sound-alikes, AUTOMATIC / CAREFUL / HINT_ONLY, phrase and fuzzy matching with an ordinary-word guard (`sst/static/common_words.txt`); Your words mirrored in |
+| Learning | `sst/pipeline/learning.py` | correction events from Home's ✎; a suggestion after the same correction twice; Add / Dismiss on the Dictionary page |
+| Formatting | `sst/pipeline/formatting.py` | numbers, ordinals, dates, times, money, percentages, units, versions, emails, URLs; prose stays ("two options") |
+| LLM | `sst/pipeline/polish.py` | `POLISH_PROMPT` (strict); `GatewayLLM` wraps the AI cleanup provider; only the terms present are listed |
+| Guard | `sst/pipeline/guard.py` | protected entities, negation, speech act, substitutions, added/removed words; the formatted text is typed when it rejects |
+| Orchestrator | `sst/pipeline/session.py` | `Session` (feed / finish / result, state machine, metrics), `VoicePipeline`, `LazyBackend`, the debug folder |
+| Dictation, app | `sst/dictate.py`, `sst/app.py` | a session per key press fed by `_Feeder`; `retry_last()`; the pipeline rebuilt when the model or cleanup changes |
+
+- **Deviations from the plan:**
+  - Audio stays at the microphone's rate inside a session and is resampled to 16 kHz per chunk. A streaming
+    resampler would smear chunk boundaries; the result is the same.
+  - **No overlap after a pause cut.** The cut sits 0.3 s after the last word, so a 1 s overlap reached back into it.
+    On the owner's recordings Parakeet then decoded the next part to nothing. The overlap stays at the 20 s maximum,
+    where words can be cut.
+  - **A pause ends a part only after 0.4 s of its own speech** (`min_cut_speech_ms`). A breath or a word's tail alone
+    made Parakeet hear "Yeah."; it now stays with its neighbour.
+  - **Before failing closed, Dictation transcribes the whole recording in one piece** (as before the pipeline) and
+    runs the text stages on it. That text is complete, so it isn't a text with a hole in it. Only if that fails too
+    is nothing typed; the recording is kept, and the tray's "Retry the last dictation" tries again.
+  - After a pause cut the session merges without an overlap, even when an engine gives no word times.
+- **Gemini:** `gemini-3.5-transcribe` is the default Gemini speech model. It runs VERBATIM, and `timestamp_mode`
+  "timestamps" asks for word times; "vocabulary" sends Your words instead, since Google says the two can't be
+  combined. Google doesn't fully document the REST response, so the parser accepts several shapes; it is tested
+  only against fakes so far.
+- **The microphone is on while Rflow runs (default, the plan's locked spec).** Only the last 2 s are kept, in RAM.
+  Windows shows the microphone icon. It is never kept open for Bluetooth headsets. Settings can turn it off.
+- **Settings:**
+  - "Keep the microphone on while Rflow runs"
+  - "Write numbers, dates, times and money as such"
+  - "Voice pipeline" (off: the classic whole-recording path)
+  - "Keep each dictation's steps for troubleshooting" (`%LOCALAPPDATA%\sst\debug\<session>`)
+- **The Dictionary page:** "When Rflow writes ... write instead ..." adds a sound-alike, which always applies. Each
+  word shows what it is also heard as, and suggestions from corrections appear at the top.
+- **Measured on the owner's voice** (12 reading-test sentences from this laptop joined into one 100 s dictation:
+  every third with a real pause, the others run together; local Parakeet, one part at a time):
+
+  | | Words wrong | Parts |
+  |---|---|---|
+  | The whole recording at once (before) | 23 of 166 (13.9%) | 1 |
+  | The pipeline | **20 of 166 (12.0%)** | 9 (2 cut at the maximum, 6 at pauses, the end) |
+
+  The overlap of the two forced cuts was merged without duplicates. Script: `real_pipeline.py` in the session's
+  scratchpad (not in git); it reads the reading tests in `%LOCALAPPDATA%\sst\bench`.
+- **Known limitations:**
+  - A quiet phrase after a mid-sentence pause ("...credit card | tomorrow morning") was still dropped. The energy
+    VAD heard too little of it to cut there, and Parakeet drops a quiet phrase before louder speech. A model VAD
+    (Silero via sherpa-onnx) is the likely fix.
+  - At a forced cut the merge keeps the earlier part's version of the overlap words, which had less context
+    ("went up against" where the next part heard "went up again"). Preferring the next part's words in the second
+    half of the overlap is worth trying.
+  - The fuzzy dictionary is English (ASCII), and so are the guard's question and correction rules. Rejections only
+    mean the formatted text is typed.
+  - Learning only sees corrections made with Home's ✎, not edits in the target app.
+- **Tests: 1525.** Every stage has its own file (`tests/test_pipeline_*.py`, `tests/test_engine_words.py`), plus
+  end-to-end sessions with synthetic speech and fake engines (`tests/test_pipeline_session.py`).
+
 ## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
 
 - **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
@@ -963,7 +1040,18 @@ These were scratch scripts, not in git. The findings:
    The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
    to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
    (`tag.gpgsign`), so a tag needs `-m`.
-2. **The building-block plan is built** (phases 13-18; see **Speech recognition as a building block**). Possible
+2. **Owner: try the voice pipeline** (phase 19, released as 1.6.0: update from the banner; the download is the
+   ~90 MB installer, nothing else):
+   - dictate a long paragraph with pauses: the text should arrive soon after you let go
+   - say "twenty five percent" and "October first at three thirty pm"
+   - add a sound-alike on the Dictionary page
+   - correct a dictation twice with ✎ on Home and accept the suggestion
+   - with AI cleanup on, try a sentence with a number; turn "Keep each dictation's steps" on for a while and look at
+     `%LOCALAPPDATA%\sst\debug`
+
+   Then tune with the debug folder (plan §108: audio, VAD, chunk boundaries, ASR, merge, dictionary, formatting, LLM,
+   guard, in that order).
+3. **The building-block plan is built** (phases 13-18; see **Speech recognition as a building block**). Possible
    later: Whisper's runtime on demand too (installer ~50 MB), and the website's screenshots of the new pages.
 3. **The owner, meanwhile:**
    - Keep only names and terms in Your words.

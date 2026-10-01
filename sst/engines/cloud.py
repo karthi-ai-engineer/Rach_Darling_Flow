@@ -2,13 +2,22 @@
 server (vLLM, a company AI gateway, any server with OpenAI's transcription API).
 
 The voice is sent to the provider: the window asks before a cloud model is used. OpenAI, Groq and own servers share
-OpenAI's transcription API (a multipart upload of the recording); Gemini gets the recording inline in a generateContent
-request, with an instruction to write down exactly what was said. Your words and the chosen language go along as hints.
+OpenAI's transcription API (a multipart upload of the recording); Gemini's Flash models get the recording inline in a
+generateContent request, with an instruction to write down exactly what was said. Your words and the chosen language
+go along as hints.
 
-Built never to lose a dictation: the connection is opened while the user speaks (prepare), the first-connection stall
+Gemini Transcribe (gemini-3.5-transcribe), Google's dedicated speech-to-text model, gets no instruction: the recording
+and an audioTranscriptionConfig. Always VERBATIM (fillers and false starts kept: the voice pipeline does its own
+cleanup), with either word times ("timestamps", the default: merging overlapping chunks needs them) or Your words as
+custom vocabulary ("vocabulary"): Google offers only one of the two at a time. A recording too big to send inline goes
+through the Files API and is deleted afterwards. Whisper models (OpenAI's whisper-1, Groq's) give word times too.
+
+Built never to lose a dictation: a connection is opened while the user speaks (prepare), the first-connection stall
 seen on the dev laptop is retried with a short connect timeout, and when the provider can't be reached or fails, the
 recording is transcribed on this computer instead (Parakeet), with a note saying so (`last_error`). A provider that
-couldn't be reached is skipped for a minute, so being offline costs one wait, not one per dictation.
+couldn't be reached is skipped for a minute, so being offline costs one wait, not one per dictation. The voice
+pipeline's chunks (transcribe_chunk) never fall back here: the pipeline decides. They can be sent two or three at once,
+each on a kept-alive connection of its own.
 """
 import base64
 import hashlib
@@ -30,6 +39,7 @@ import numpy as np
 
 from sst.audio import TARGET_RATE, condition, resample
 from sst.engines.whisper import LANGUAGES
+from sst.pipeline.contracts import RawTranscript, WordInfo
 
 CONNECT_TIMEOUT = 1.5  # a first connection sometimes stalls (seen from Python); a retry gets through in milliseconds
 CONNECT_ATTEMPTS = 3
@@ -37,7 +47,13 @@ ANSWER_TIMEOUT = 10.0  # seconds, plus ANSWER_PER_SECOND for each second of audi
 ANSWER_PER_SECOND = 0.5
 DOWN_FOR = 60.0  # after the provider couldn't be reached, go straight to Parakeet this long
 RATE_LIMIT_WAITS = (10, 20, 30, 60)  # seconds; scoring reading tests waits out a provider's per-minute limit
-IDLE_RECONNECT = 30.0  # servers drop idle connections; refresh an older one while the user is speaking
+IDLE_RECONNECT = 30.0  # servers drop idle connections; an older one is replaced, not used
+POOL_SIZE = 4  # idle connections kept: the pipeline sends 2-3 chunks at once (ASRConfig.max_in_flight)
+# A WAV up to this size goes inside the request (Gemini takes 20 MB, and base64 adds a third); a bigger one through the
+# Files API. A 20 s chunk is 640 KB: only a recording of over 7 minutes transcribed whole is uploaded.
+INLINE_LIMIT = 14_000_000
+VOCABULARY_LIMIT = 100  # Your words given to Gemini Transcribe as custom vocabulary
+FILE_POLL = 0.5  # seconds between looks at an uploaded file Google is still processing (audio is normally ready at once)
 
 log = logging.getLogger(__name__)
 
@@ -58,8 +74,8 @@ CLOUD = {p.key: p for p in [
     CloudProvider("groq", "Groq", "https://api.groq.com/openai/v1", "openai",
                   ("whisper-large-v3-turbo", "whisper-large-v3"), "https://console.groq.com/keys"),
     CloudProvider("gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini",
-                  ("gemini-flash-lite-latest", "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.6-flash"),
-                  "https://aistudio.google.com/apikey"),
+                  ("gemini-3.5-transcribe", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-3.5-flash-lite",
+                   "gemini-3.6-flash"), "https://aistudio.google.com/apikey"),
 ]}
 
 # Your own server: its address (and a key, if it needs one) is the user's; the model is whatever the server offers.
@@ -70,6 +86,7 @@ SPEECH = re.compile(r"whisper|transcri|speech|asr|parakeet|canary|voxtral|stt|au
 
 INSTRUCTION = ("Write down exactly what is said in this recording, word for word, with punctuation and capital letters. "
                "Output only the transcript: no introduction, no notes, no translation.")
+TIMESTAMP_MODES = ("timestamps", "vocabulary")  # Gemini Transcribe: word times, or Your words as custom vocabulary
 
 
 class CloudError(Exception):
@@ -110,20 +127,20 @@ class CloudEngine:
         self.api_key = api_key
         self.language = language  # "" = the provider detects it; the app keeps it up to date
         self.words: list[str] = []  # Your words, sent as a hint; the app keeps it up to date
-        self.biased = True  # it uses Your words (sst eval says so)
+        self.timestamp_mode = "timestamps"  # Gemini Transcribe (TIMESTAMP_MODES); the voice pipeline sets it
         self.last_error = ""  # set when the provider failed and the recording was transcribed on this computer
         self._fallback_loader, self._fallback = fallback, None
         self._down_until = 0.0
-        self._conn: http.client.HTTPConnection | None = None
-        self._conn_target: tuple | None = None  # where the open connection goes
-        self._used = 0.0
-        self._lock = threading.Lock()
+        self._idle: list[tuple[http.client.HTTPConnection, tuple, float]] = []  # (connection, target, last used)
+        self._connecting = 0  # connections being opened ahead of time (prepare)
+        self._pool = threading.Condition()  # guards the two above; requests themselves run without it
+        self._plain_json: set[tuple[str, str]] = set()  # (server, model) that refused verbose_json: not asked again
         self.url = ""
         self.set_url(url or self.provider.url)
 
     def set_url(self, url: str) -> None:
         """Where requests go: an own server's address can change while it is in use. Taken from the next request on,
-        so the window never waits for a dictation being transcribed."""
+        so the window never waits for a dictation being transcribed; connections to the old address aren't reused."""
         url = url.strip().rstrip("/")
         if url != self.url:
             parts = urlsplit(url)
@@ -138,14 +155,34 @@ class CloudEngine:
         return f"{self.provider.name} {self.model}"
 
     @property
+    def biased(self) -> bool:
+        """Whether Your words reach the model (sst eval says so): Gemini Transcribe takes them only as vocabulary."""
+        return not self._transcribe_model() or self._mode == "vocabulary"
+
+    @property
     def signature(self) -> str:
         words = hashlib.sha1("/".join(self.words).encode("utf-8")).hexdigest()[:10] if self.words else "none"
         where = self.name if self.name in CLOUD else f"{self.name}@{hashlib.sha1(self.url.encode()).hexdigest()[:8]}"
-        return f"cloud|{where}|{self.model}|lang:{self.language or 'auto'}|words:{words}|peak-1"
+        mode = f"|verbatim:{self._mode}" if self._transcribe_model() else ""  # the vocabulary changes the text
+        return f"cloud|{where}|{self.model}|lang:{self.language or 'auto'}|words:{words}{mode}|peak-1"
+
+    @property
+    def _mode(self) -> str:
+        return "vocabulary" if self.timestamp_mode == "vocabulary" else "timestamps"
+
+    def _transcribe_model(self) -> bool:
+        """Gemini Transcribe, Google's speech-to-text model (OpenAI's gpt-4o-*-transcribe are chat-style models)."""
+        return self.provider.api == "gemini" and "transcribe" in self.model
 
     def prepare(self) -> None:
-        """Open or refresh the connection in the background, while the user is still speaking."""
-        threading.Thread(target=self._prepare, name="cloud-connect", daemon=True).start()
+        """Open a connection in the background while the user is still speaking, unless a fresh one is waiting."""
+        target = self._target
+        with self._pool:
+            self._prune()
+            if time.monotonic() < self._down_until or self._connecting or self._idle:
+                return
+            self._connecting += 1  # counted now: a request made before the thread runs waits for it
+        threading.Thread(target=self._prepare, args=(target,), name="cloud-connect", daemon=True).start()
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         """The provider's text; if it can't be had, Parakeet's on this computer, and `last_error` says why."""
@@ -176,6 +213,22 @@ class CloudEngine:
         self.last_error = f"{self.provider.name}: {reason}"
         return self._fallback.transcribe(audio, sample_rate)
 
+    def transcribe_chunk(self, audio: np.ndarray, sample_rate: int) -> RawTranscript:
+        """One chunk of the voice pipeline, with word times (seconds from the chunk's start) when the model gives them.
+        Never falls back on Parakeet and never waits out a rate limit: the pipeline retries and decides. Raises
+        CloudError (.status: the HTTP status, 0 without an answer), OSError or TimeoutError. Thread-safe: chunks may be
+        sent at the same time."""
+        if time.monotonic() < self._down_until:
+            raise CloudError("it couldn't be reached a moment ago")
+        audio16 = resample(condition(audio), sample_rate, TARGET_RATE)
+        try:
+            return self._ask(wav_bytes(audio16, TARGET_RATE), len(audio16) / TARGET_RATE, timed=True)
+        except Unreachable:
+            self._down_until = time.monotonic() + DOWN_FOR  # the next chunks fail at once, as dictation does
+            raise
+        except http.client.HTTPException as e:  # a broken answer (not an OSError): readable, like the rest
+            raise CloudError(f"a broken answer ({type(e).__name__})") from None
+
     def check(self, audio: np.ndarray, sample_rate: int) -> str:
         """For the Test button: one recording through the provider, never Parakeet. Raises with a readable reason."""
         audio16 = resample(condition(audio), sample_rate, TARGET_RATE)
@@ -204,39 +257,145 @@ class CloudEngine:
 
     def ask(self, wav: bytes, seconds: float) -> str:
         """The provider's transcript of one WAV recording. Raises CloudError with a readable reason, or OSError."""
+        return self._ask(wav, seconds).text
+
+    def _ask(self, wav: bytes, seconds: float, timed: bool = False) -> RawTranscript:
+        """The provider's transcript. `timed` asks a Whisper model for word times too (verbose_json: the same text,
+        a bigger answer). Gemini Transcribe's request is the same either way, so `sst eval` scores what dictation gets."""
         timeout = ANSWER_TIMEOUT + ANSWER_PER_SECOND * seconds
-        words = ", ".join(w for w in self.words if w.strip())
-        if self.provider.api == "gemini":
-            instruction = INSTRUCTION
-            if self.language:
-                instruction += f" The speech is in {LANGUAGES.get(self.language, self.language)}."
-            if words:
-                instruction += f" These names and terms may occur; spell them like this: {words}."
-            body = json.dumps({"contents": [{"parts": [
-                {"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(wav).decode("ascii")}},
-                {"text": instruction}]}], "generationConfig": {"temperature": 0}}).encode("utf-8")
-            status, data = self._request(f"/models/{self.model}:generateContent", body,
-                                         {"Content-Type": "application/json", "x-goog-api-key": self.api_key}, timeout)
-            answer = _json(status, data)
-            parts = ((answer.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-            text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+        backend = self.title
+        if self._transcribe_model():
+            raw = self._ask_transcribe(wav, timeout)
+        elif self.provider.api == "gemini":
+            raw = self._ask_gemini(wav, timeout)
         else:
-            fields = {"model": self.model, "response_format": "json"} if self.model else {"response_format": "json"}
-            if self.language:
-                fields["language"] = self.language
-            if words:
-                fields["prompt"] = f"Names and terms: {words}."
-            body, content_type = _multipart(fields, "recording.wav", wav)
-            status, data = self._request("/audio/transcriptions", body, {"Content-Type": content_type, **self._auth()},
-                                         timeout)
-            text = str(_json(status, data).get("text") or "")
-        return " ".join(text.split())
+            raw = self._ask_openai(wav, timeout, timed and self._asks_word_times())
+        raw.text, raw.backend = " ".join(raw.text.split()), backend
+        raw.language = raw.language or self.language
+        return raw
+
+    def _ask_gemini(self, wav: bytes, timeout: float) -> RawTranscript:
+        """A Flash model: the recording inline, with an instruction (and the hints) in words."""
+        words = ", ".join(w for w in self.words if w.strip())
+        instruction = INSTRUCTION
+        if self.language:
+            instruction += f" The speech is in {LANGUAGES.get(self.language, self.language)}."
+        if words:
+            instruction += f" These names and terms may occur; spell them like this: {words}."
+        body = json.dumps({"contents": [{"parts": [
+            {"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(wav).decode("ascii")}},
+            {"text": instruction}]}], "generationConfig": {"temperature": 0}}).encode("utf-8")
+        status, data, _ = self._request(f"/models/{self.model}:generateContent", body, self._google(), timeout)
+        answer = _json(status, data)
+        parts = ((answer.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+        return RawTranscript("".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought")))
+
+    # ---- Gemini Transcribe (the owner's plan, sections 18-21): upload, transcribe and delete kept apart
+
+    def _ask_transcribe(self, wav: bytes, timeout: float) -> RawTranscript:
+        mode = self._mode
+        if len(wav) <= INLINE_LIMIT:
+            transport = "inline"
+            answer = self.transcribe_audio(
+                {"inlineData": {"mimeType": "audio/wav", "data": base64.b64encode(wav).decode("ascii")}}, timeout, mode)
+        else:
+            transport = "files"
+            file = self.upload_audio(wav, timeout)
+            try:
+                answer = self.transcribe_audio({"fileData": {"mimeType": "audio/wav", "fileUri": file["uri"]}}, timeout,
+                                               mode)
+            finally:
+                self.delete_remote_file(str(file.get("name") or ""))
+        text, words, language = gemini_transcript(answer)
+        return RawTranscript(text, words, language, diagnostics={"mode": mode, "transport": transport})
+
+    def transcribe_audio(self, audio: dict, timeout: float, mode: str | None = None) -> dict:
+        """Gemini Transcribe's answer for one recording, given inline ({"inlineData": ...}) or uploaded
+        ({"fileData": ...}). No instruction: the config says what to do. VERBATIM, since SMART mode (cleaned up)
+        allows no word times and the pipeline cleans up itself."""
+        config = {"mode": "VERBATIM", "languageCodes": [self.language] if self.language else [], "wordTimestamp": True}
+        if (mode or self._mode) == "vocabulary":  # Google: custom vocabulary works only without word times
+            config["wordTimestamp"] = False
+            if vocabulary := vocabulary_list(self.words):
+                config["customVocabulary"] = vocabulary
+        body = json.dumps({"contents": [{"parts": [audio]}], "generationConfig": {"audioTranscriptionConfig": config}})
+        status, data, _ = self._request(f"/models/{self.model}:generateContent", body.encode("utf-8"), self._google(),
+                                        timeout)
+        return _json(status, data)
+
+    def upload_audio(self, wav: bytes, timeout: float) -> dict:
+        """The recording into Gemini's Files API (a resumable upload, sent in one piece): the file's {"name", "uri"}."""
+        base = urlsplit(self.url)
+        start = f"{base.scheme}://{base.netloc}/upload{base.path}/files"  # .../upload/v1beta/files
+        headers = {**self._google(), "X-Goog-Upload-Protocol": "resumable", "X-Goog-Upload-Command": "start",
+                   "X-Goog-Upload-Header-Content-Length": str(len(wav)), "X-Goog-Upload-Header-Content-Type": "audio/wav"}
+        status, data, reply = self._request(start, json.dumps({"file": {"display_name": "rflow-chunk"}}).encode("utf-8"),
+                                            headers, timeout)
+        if status != 200:
+            _json(status, data)  # raises with the provider's reason
+        address = reply.get("x-goog-upload-url")
+        if not address:
+            raise CloudError("the Files API gave no upload address", status)
+        # The upload address carries its own authorisation: the key isn't sent again.
+        status, data, _ = self._request(address, wav, {"X-Goog-Upload-Command": "upload, finalize",
+                                                       "X-Goog-Upload-Offset": "0"}, timeout)
+        file = _json(status, data).get("file")
+        if not isinstance(file, dict) or not file.get("uri"):
+            raise CloudError("the Files API kept no file", status)
+        deadline = time.monotonic() + timeout
+        while file.get("state") == "PROCESSING" and file.get("name") and time.monotonic() < deadline:
+            time.sleep(FILE_POLL)
+            status, data, _ = self._request(f"/{file['name']}", None, self._google(), timeout, method="GET")
+            file = {**file, **_json(status, data)}
+        return file
+
+    def delete_remote_file(self, name: str) -> None:
+        """Remove an uploaded recording from Google at once (it would stay 48 hours). Best effort: never raises."""
+        if not name:
+            return
+        try:
+            status, data, _ = self._request(f"/{name}", None, self._google(), ANSWER_TIMEOUT, method="DELETE")
+            if status not in (200, 204):
+                log.info("%s kept %s: HTTP %d %s", self.provider.name, name, status, data[:120])
+        except Exception as e:
+            log.info("Could not delete %s from %s: %s", name, self.provider.name, e)
+
+    # ---- OpenAI's transcription API (OpenAI, Groq, own servers)
+
+    def _asks_word_times(self) -> bool:
+        """Whisper models give word times; gpt-4o-*-transcribe only plain JSON. An own server is asked only for a
+        Whisper model, and no more once it refused."""
+        return "whisper" in self.model.lower() and (self.url, self.model) not in self._plain_json
+
+    def _ask_openai(self, wav: bytes, timeout: float, timed: bool) -> RawTranscript:
+        words = ", ".join(w for w in self.words if w.strip())
+        fields = {"model": self.model} if self.model else {}
+        fields["response_format"] = "verbose_json" if timed else "json"
+        if timed:
+            fields["timestamp_granularities[]"] = "word"
+        if self.language:
+            fields["language"] = self.language
+        if words:
+            fields["prompt"] = f"Names and terms: {words}."
+        body, content_type = _multipart(fields, "recording.wav", wav)
+        status, data, _ = self._request("/audio/transcriptions", body, {"Content-Type": content_type, **self._auth()},
+                                        timeout)
+        if timed and self.name == SERVER.key and status in (400, 422):  # FastAPI-based servers say 422
+            # A server that answers only plain JSON: ask again without word times. Once that works, this server and
+            # model aren't asked for them again (a 400 for another reason fails the plain request too).
+            raw = self._ask_openai(wav, timeout, False)
+            self._plain_json.add((self.url, self.model))
+            log.info("%s gives no word times (HTTP %d); asking for plain JSON from now on", self.title, status)
+            return raw
+        answer = _json(status, data)
+        return RawTranscript(str(answer.get("text") or ""), _words(answer.get("words")) if timed else [],
+                             _language_code(answer.get("language")), diagnostics={"format": fields["response_format"]})
 
     def models(self) -> list[str]:
         """For "Load models": the server's models, the speech ones first (a gateway lists its chat models too).
         Raises CloudError with a readable reason."""
         try:
-            status, data = self._request("/models", None, self._auth(), 10.0, method="GET")
+            status, data, _ = self._request("/models", None, self._auth(), 10.0, method="GET")
         except TimeoutError:
             raise CloudError("no answer in time") from None
         except (OSError, http.client.HTTPException) as e:
@@ -249,47 +408,99 @@ class CloudEngine:
     def _auth(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}  # an own server may need no key
 
-    # ---- HTTP: one kept-alive connection, like sst.gateway's
+    def _google(self) -> dict:
+        return {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
+
+    # ---- HTTP: a small pool of kept-alive connections, so two or three chunks can be transcribed at once
 
     def _request(self, path: str, body: bytes | None, headers: dict, timeout: float,
-                 method: str = "POST") -> tuple[int, str]:
-        with self._lock:
-            for attempt in (1, 2):
-                if self._stale():
-                    self._connect()
-                self._conn.sock.settimeout(timeout)
-                try:
-                    self._conn.request(method, self._conn_target[3] + path, body=body, headers=headers)
-                    response = self._conn.getresponse()
-                    data = response.read().decode("utf-8", "replace")
-                except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError):
-                    self._close()  # the server dropped a kept-alive connection: reconnect once
-                    if attempt == 2:
-                        raise
-                    continue
-                except BaseException:
-                    self._close()
+                 method: str = "POST") -> tuple[int, str, http.client.HTTPMessage]:
+        """One request: `path` is under the base URL ("/models"), or a whole URL (the Files API's). A connection is
+        taken from the pool and given back after the answer: only that takes the lock, never the request."""
+        target = self._target
+        if path.startswith(("http://", "https://")):
+            parts = urlsplit(path)
+            where = (parts.scheme == "https", parts.hostname, parts.port)
+            path = parts.path + (f"?{parts.query}" if parts.query else "")
+        else:
+            where, path = target[:3], target[3] + path
+        pooled = where == target[:3]  # an address on another host gets a connection of its own, closed afterwards
+        for attempt in (1, 2):
+            conn = self._checkout(target) if pooled else None
+            if conn is None:
+                conn = self._connect(target if pooled else (*where, ""))
+            conn.sock.settimeout(timeout)
+            try:
+                conn.request(method, path, body=body, headers=headers)
+                response = conn.getresponse()
+                data = response.read().decode("utf-8", "replace")
+            except (http.client.RemoteDisconnected, ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                conn.close()  # the server dropped a kept-alive connection: reconnect once
+                if attempt == 2:
                     raise
-                self._used = time.monotonic()
-                return response.status, data
+                continue
+            except BaseException:
+                conn.close()
+                raise
+            if pooled and not response.will_close:
+                self._checkin(conn, target)
+            else:
+                conn.close()
+            return response.status, data, response.headers
         raise AssertionError("unreachable")
 
-    def _prepare(self) -> None:
-        with self._lock:
-            if time.monotonic() >= self._down_until and self._stale():
-                try:
-                    self._connect()
-                except Unreachable as e:  # the dictation finds out too, and uses Parakeet at once
-                    self._down_until = time.monotonic() + DOWN_FOR
-                    log.info("Could not connect to %s ahead of time: %s", self.provider.name, e)
+    def _checkout(self, target: tuple) -> http.client.HTTPConnection | None:
+        """An idle connection to `target`, or None (the caller opens one). One being opened ahead of time is waited
+        for rather than opening a second, as when a single connection was kept."""
+        deadline = time.monotonic() + CONNECT_TIMEOUT * CONNECT_ATTEMPTS
+        with self._pool:
+            while True:
+                self._prune()
+                if target != self._target:
+                    return None
+                if self._idle:
+                    return self._idle.pop()[0]  # the most recently used: the least likely to have been dropped
+                left = deadline - time.monotonic()
+                if not self._connecting or left <= 0:
+                    return None
+                self._pool.wait(left)
 
-    def _stale(self) -> bool:
-        """No connection, an idle one the server may have dropped, or one to an address no longer chosen."""
-        return self._conn is None or self._conn_target != self._target or time.monotonic() - self._used > IDLE_RECONNECT
+    def _checkin(self, conn: http.client.HTTPConnection, target: tuple) -> None:
+        with self._pool:
+            if target == self._target and len(self._idle) < POOL_SIZE:
+                self._idle.append((conn, target, time.monotonic()))
+                self._pool.notify()
+                return
+        conn.close()
 
-    def _connect(self) -> None:
-        self._close()
-        target = self._target
+    def _prune(self) -> None:
+        """(Under the lock.) Drop idle connections the server may have closed, or to an address no longer chosen."""
+        now, keep = time.monotonic(), []
+        for conn, target, used in self._idle:
+            if target == self._target and now - used <= IDLE_RECONNECT:
+                keep.append((conn, target, used))
+            else:
+                conn.close()
+        self._idle = keep
+
+    def _prepare(self, target: tuple) -> None:
+        conn = None
+        try:
+            conn = self._connect(target)
+        except Unreachable as e:  # the dictation finds out too, and uses Parakeet at once
+            self._down_until = time.monotonic() + DOWN_FOR
+            log.info("Could not connect to %s ahead of time: %s", self.provider.name, e)
+        finally:
+            with self._pool:  # given back and counted off together, so a waiting request finds it
+                self._connecting -= 1
+                if conn is not None and target == self._target:
+                    self._idle.append((conn, target, time.monotonic()))
+                    conn = None
+                self._pool.notify_all()
+            if conn is not None:
+                conn.close()
+
+    def _connect(self, target: tuple) -> http.client.HTTPConnection:
         https, host, port, _ = target
         error: OSError | None = None
         for _ in range(CONNECT_ATTEMPTS):
@@ -301,14 +512,96 @@ class CloudEngine:
                 error = e
                 conn.close()
                 continue
-            self._conn, self._conn_target, self._used = conn, target, time.monotonic()
-            return
+            return conn
         raise Unreachable(f"cannot reach {host}: {error}")
 
-    def _close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+
+def vocabulary_list(words: list[str]) -> list[str]:
+    """Your words as Gemini Transcribe's custom vocabulary: each once (whatever its case), at most VOCABULARY_LIMIT."""
+    unique: dict[str, str] = {}
+    for word in words:
+        word = " ".join(str(word).split())
+        if word:
+            unique.setdefault(word.casefold(), word)
+    return list(unique.values())[:VOCABULARY_LIMIT]
+
+
+def gemini_transcript(answer: dict) -> tuple[str, list[WordInfo], str]:
+    """Text, word times and language from a Gemini Transcribe answer. Its REST shape isn't fully documented, so this
+    reads it leniently: the text from the candidate's non-thought text parts (else an audioTranscription's own text,
+    else its words), the words from any part's audioTranscription. A blocked, empty or cut-off answer raises
+    CloudError; a finished one with nothing in it is silence ("")."""
+    candidates = answer.get("candidates")
+    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+        feedback = answer.get("promptFeedback") or answer.get("prompt_feedback") or {}
+        reason = (feedback.get("blockReason") or feedback.get("block_reason")) if isinstance(feedback, dict) else None
+        raise CloudError(f"Gemini blocked the recording ({reason})" if reason else "Gemini gave no transcript at all")
+    candidate = candidates[0]
+    finish = str(candidate.get("finishReason") or candidate.get("finish_reason") or "STOP")
+    if finish not in ("STOP", "FINISH_REASON_UNSPECIFIED"):  # SAFETY, RECITATION... or MAX_TOKENS (cut off)
+        raise CloudError(f"Gemini stopped transcribing ({finish})")
+    content = candidate.get("content")
+    parts = content.get("parts") if isinstance(content, dict) else None
+    texts, others, words, language = [], [], [], ""
+    for part in parts if isinstance(parts, list) else []:
+        if not isinstance(part, dict) or part.get("thought"):
+            continue
+        if isinstance(part.get("text"), str):
+            texts.append(part["text"])
+        found = part.get("audioTranscription") or part.get("audio_transcription")
+        if isinstance(found, dict):
+            other = found.get("text") or found.get("transcript")
+            if isinstance(other, str):
+                others.append(other)
+            words += _words(found.get("words"))
+            language = language or str(found.get("languageCode") or found.get("language_code") or "")
+    text = "".join(texts).strip() or " ".join(others).strip() or " ".join(w.text for w in words)
+    return text, words, language
+
+
+def _seconds(value) -> float | None:
+    """A time as the providers write it: 1.5, "1.5", "1.500s" (Google's Duration), or {"seconds": 1, "nanos": 5e8}."""
+    try:
+        if isinstance(value, dict):
+            return float(value.get("seconds") or 0) + float(value.get("nanos") or 0) / 1e9
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str):
+            return float(value.strip().removesuffix("s"))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _first(item: dict, *keys: str):
+    return next((item[k] for k in keys if item.get(k) is not None), None)
+
+
+def _words(items) -> list[WordInfo]:
+    """Word times from an answer: OpenAI's [{word, start, end}] or Google's [{word, startOffset, endOffset}] (snake_case
+    too). All or nothing: a list with a word lacking its time can't be lined up with the text, so it counts as none."""
+    words = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            return []
+        text = str(_first(item, "word", "text") or "").strip()
+        start = _seconds(_first(item, "start", "startOffset", "start_offset", "startTime", "start_time"))
+        end = _seconds(_first(item, "end", "endOffset", "end_offset", "endTime", "end_time"))
+        if start is None:
+            return []
+        if text:
+            confidence = _first(item, "confidence", "probability")
+            words.append(WordInfo(text, start, max(start, end if end is not None else start),
+                                  float(confidence) if isinstance(confidence, int | float) else None))
+    return words
+
+
+def _language_code(name) -> str:
+    """OpenAI's verbose_json names the language ("english"); Rflow uses codes ("en"). Anything else is kept."""
+    if not isinstance(name, str):
+        return ""
+    codes = {title.lower(): code for code, title in LANGUAGES.items() if code}
+    return codes.get(name.strip().lower(), name.strip())
 
 
 def _multipart(fields: dict[str, str], filename: str, data: bytes) -> tuple[bytes, str]:
