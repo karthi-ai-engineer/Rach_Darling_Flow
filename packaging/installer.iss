@@ -1,5 +1,5 @@
 ; Inno Setup script for Rflow. build_installer.cmd compiles it after PyInstaller has produced dist\sst\
-; (the app, with the model in dist\sst\models\).
+; (the app, without a speech model: Rflow downloads Parakeet when the user chooses it).
 #ifndef AppVersion
   #error Pass /DAppVersion=x.y.z (build_installer.cmd does this)
 #endif
@@ -39,15 +39,15 @@ WizardStyle=modern
 WizardImageFile=images\wizard-164.bmp,images\wizard-205.bmp,images\wizard-246.bmp,images\wizard-328.bmp
 WizardSmallImageFile=images\wizard-small-55.bmp,images\wizard-small-69.bmp,images\wizard-small-83.bmp,images\wizard-small-110.bmp
 DisableWelcomePage=no
-; The model is ~95% of the size; LZMA2 brings it to about 60%. Solid mode would only add memory use.
-Compression=lzma2/normal
-SolidCompression=no
+; Python, Qt and the speech runtimes: many files, which solid LZMA2 packs best.
+Compression=lzma2/max
+SolidCompression=yes
 LZMAUseSeparateProcess=yes
 LZMANumBlockThreads=4
 
 [Messages]
-WelcomeLabel2=This will install [name/ver] on your computer.%n%nRflow types what you say, in any app: hold Ctrl+Win, speak, and let go. Your speech is recognised on this computer; your voice is never uploaded.%n%nIt needs no administrator rights and no internet connection.
-FinishedLabel=[name] is installed.%n%nWhen you click Finish, Rflow opens and helps you choose your microphone and try your first dictation. After that, hold Ctrl+Win in any app and speak.
+WelcomeLabel2=This will install [name/ver] on your computer.%n%nRflow types what you say, in any app: hold Ctrl+Win, speak, and let go. It recognises your speech on this computer with NVIDIA Parakeet, downloaded once when you choose it (about 660 MB), or with a cloud model or your own server.%n%nIt needs no administrator rights.
+FinishedLabel=[name] is installed.%n%nWhen you click Finish, Rflow opens and helps you choose how it recognises your speech, choose your microphone and try your first dictation. After that, hold Ctrl+Win in any app and speak.
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked

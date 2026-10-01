@@ -4,9 +4,11 @@ Run build_installer.cmd, not this file: it uses its own environment (build/venv)
 sst running from .venv doesn't get in the way.
 
   1. PyInstaller turns the app into dist/sst/ (Rflow.exe, rflow-cli.exe, Python and the libraries)
-  2. the Parakeet model is added as dist/sst/models/
-  3. smoke test: rflow-cli.exe must transcribe the model's test recording, Rflow.exe must pass --self-test
-  4. Inno Setup packs dist/sst/ into a single setup .exe   (skipped with --no-installer)
+  2. the Parakeet model is linked in as dist/sst/models/, for the smoke test
+  3. smoke test: rflow-cli.exe must transcribe the sample sentence, Rflow.exe must pass --self-test
+  4. the model is taken out again: the installer comes without it, and Rflow downloads it when the user chooses it
+     (an update from Rflow 1.4 keeps the copy that version installed)
+  5. Inno Setup packs dist/sst/ into a single setup .exe   (steps 4-5 skipped with --no-installer)
 """
 import argparse
 import os
@@ -23,6 +25,7 @@ from sst.engines.parakeet import MODEL_DIR  # noqa: E402
 
 APP_DIR = ROOT / "dist" / "sst"
 PACKAGING = ROOT / "packaging"
+SAMPLE = ROOT / "sst" / "static" / "sample.wav"
 
 
 def build_app() -> None:
@@ -43,8 +46,12 @@ def add_model() -> None:
                 shutil.copy2(src, target / src.name)
 
 
+def remove_model() -> None:
+    shutil.rmtree(APP_DIR / "models")  # hard links: the model in models/ stays
+
+
 def smoke_test() -> None:
-    wav = MODEL_DIR / "test_wavs" / "0.wav"
+    wav = SAMPLE
     result = subprocess.run([str(APP_DIR / "rflow-cli.exe"), "file", str(wav)], capture_output=True, text=True,
                             encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=300)
     text = next((line.split("Text:", 1)[1].strip() for line in result.stdout.splitlines() if "Text:" in line), "")
@@ -82,10 +89,11 @@ def main() -> None:
     parser.add_argument("--no-installer", action="store_true", help="stop after the smoke test (no Inno Setup needed)")
     args = parser.parse_args()
 
-    steps = [("Building the app with PyInstaller", build_app), ("Adding the model", add_model),
+    steps = [("Building the app with PyInstaller", build_app), ("Adding the model for the smoke test", add_model),
              ("Smoke test", smoke_test)]
     if not args.no_installer:
-        steps.append(("Packing the installer with Inno Setup (a few minutes)", build_installer))
+        steps += [("Taking the model out (Rflow downloads it when chosen)", remove_model),
+                  ("Packing the installer with Inno Setup (a minute)", build_installer)]
     t0 = time.perf_counter()
     for number, (title, step) in enumerate(steps, 1):
         print(f"[{number}/{len(steps)}] {title}...", flush=True)

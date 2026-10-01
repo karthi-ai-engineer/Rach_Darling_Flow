@@ -1,8 +1,8 @@
 Rflow - third-party notices
 ===========================
 
-Rflow includes the following model and software. Each is the property of its owners and
-is distributed under its own license.
+Rflow includes, or downloads when the user chooses them, the following models and software. Each is
+the property of its owners and is distributed under its own license.
 
 Speech recognition model
 ------------------------
@@ -10,7 +10,13 @@ NVIDIA Parakeet 0.6B unified English (sherpa-onnx int8 export:
 sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming)
   Licensed by NVIDIA Corporation under the NVIDIA Open Model License Agreement.
   https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/
-  The model card files (bias, explainability, privacy, safety) are in the models folder.
+  Rflow downloads it from Hugging Face when the user chooses it, with NVIDIA's model card (bias, explainability,
+  privacy, safety), which is kept next to the model. Rflow itself includes the model's tokenizer vocabulary
+  (bpe.vocab, from NVIDIA's parakeet-unified-en-0.6b), under the same license.
+
+Sample sentence (sst/static/sample.wav, used to try the speech models)
+  A LibriVox reading (public domain) of Nathaniel Hawthorne's "The House of the Seven Gables", as included in
+  LibriSpeech (Vassil Panayotov et al., CC BY 4.0, https://www.openslr.org/12) and in sherpa-onnx's model packages.
 
 OpenAI Whisper large-v3 turbo (CTranslate2 conversion, dropbox-dash/faster-whisper-large-v3-turbo;
 not included: downloaded from Hugging Face only when the user chooses it)
