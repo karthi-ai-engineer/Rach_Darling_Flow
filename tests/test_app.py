@@ -45,8 +45,9 @@ def test_pill_grows_to_fit_long_messages():
 
 def _fake_tray_app(settings: Settings):
     """TrayApp's methods on a stand-in: apply_settings only records, so nothing touches the real settings file."""
+    from sst.pipeline.dictionary import DictionaryStore
     fake = SimpleNamespace(settings=settings, gateway=GatewayConfig(), dictation=None, applied=[], cleanups=0, loads=0,
-                           profile=Profile("default"))
+                           profile=Profile("default"), dictionary=DictionaryStore())
 
     def apply(new):
         fake.settings = new
@@ -151,6 +152,7 @@ def tray_app(monkeypatch, tmp_path):
     monkeypatch.setattr(sst_app, "load_engine", lambda name, *options, **named: loads.append(name) or FakeEngine(
         name, *options, **named))
     monkeypatch.setattr(sst_app, "HotkeyListener", FakeListener)
+    monkeypatch.setattr(sst_app.Recorder, "keep_open", lambda self: None)  # the always-on microphone stays closed
     monkeypatch.setattr(sst_app, "wispr_flow_running", lambda: False)
     monkeypatch.setattr(sst_app, "input_device_names", lambda refresh=True: ["Mic A"])
     monkeypatch.setattr(sst_app, "SERVER_NAME", f"Rflow-test-app-{os.getpid()}")
@@ -438,3 +440,19 @@ def test_a_new_install_can_start_with_a_cloud_model_only(no_parakeet, tray_app):
     app.use_cloud_speech("groq", "gsk-test", "")
     assert _wait_for(lambda: app.speech_in_use() == "groq", QTest.qWait)
     assert app.listener.running and app._local is None  # nothing on this computer
+
+
+def test_the_tray_app_dictates_through_the_voice_pipeline(tray_app):
+    app, _, _ = tray_app
+    pipeline = app.dictation.pipeline
+    assert pipeline is not None and pipeline.engine is app.dictation.engine
+    assert pipeline.stages.formatter is not None and pipeline.stages.guard is not None and pipeline.stages.llm is None
+    assert app.recorder.preroll_seconds == 2.0 and app.recorder.warm_seconds == float("inf")  # always-on, 2 s pre-roll
+    app.add_words(["PostgreSQL"])
+    app.add_sound_alike("post grass", "PostgreSQL")
+    assert pipeline.stages.dictionary.correct("the post grass server").text == "the PostgreSQL server"
+    assert "PostgreSQL" in app.dictation.engine.words  # the recogniser listens for the term too
+    app.apply_settings(dataclasses.replace(app.settings, format_text=False))
+    assert app.dictation.pipeline.stages.formatter is None
+    app.apply_settings(dataclasses.replace(app.settings, voice_pipeline=False, always_on_mic=False))
+    assert app.dictation.pipeline is None and app.recorder.warm_seconds == sst_app.WARM_SECONDS  # the classic way

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLayout,
     QLineEdit,
@@ -75,7 +76,7 @@ log = logging.getLogger("sst.window")
 # Windows' own icon font (Segoe Fluent Icons on Windows 11, MDL2 Assets on 10): crisp icons without image files.
 ICON_FONTS = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
 GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanup": "\ue99a", "settings": "\ue713",
-          "copy": "\ue8c8", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
+          "copy": "\ue8c8", "edit": "\ue70f", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
           "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
           "profile": "\ue77b", "speech": "\ue720", "warning": "\ue7ba", "cancel": "\ue711", "dot": "\ue915"}
 
@@ -476,10 +477,23 @@ class HomePage(Page):
             body.setToolTip(f"Heard: {entry['heard']}")
         copy = icon_button("copy", "Copy")
         copy.clicked.connect(lambda: self._copy(copy, entry["text"]))
+        correct = icon_button("edit", "Correct it: Rflow learns from corrections you make twice")
+        correct.clicked.connect(lambda: self._correct(entry["text"]))
         layout.addWidget(time_label)
         layout.addWidget(body, 1)
+        layout.addWidget(correct, 0, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(copy, 0, Qt.AlignmentFlag.AlignTop)
         return widget
+
+    def ask_correction(self, typed: str) -> str | None:
+        """The corrected text, or None if cancelled (a dialog; the tests replace it)."""
+        value, ok = QInputDialog.getText(self, APP_NAME, "What should it have been?", text=typed)
+        return value if ok else None
+
+    def _correct(self, typed: str) -> None:
+        corrected = self.ask_correction(typed)
+        if corrected is not None and corrected.strip() and corrected.strip() != typed:
+            self.app.correct_dictation(typed, corrected.strip())
 
     def _copy(self, source: QToolButton, value: str) -> None:
         QGuiApplication.clipboard().setText(value)
@@ -501,6 +515,16 @@ class DictionaryPage(Page):
         self.entry.setPlaceholderText("Add a word or name (several: separate them with commas)")
         self.entry.returnPressed.connect(self._add)
         self.add(row(self.entry, button("Add", self._add, primary=True)))
+        # A sound-alike: what the speech model writes for a term ("post grass" for PostgreSQL), fixed before anything else.
+        self.heard = QLineEdit()
+        self.heard.setPlaceholderText("When Rflow writes... (e.g. post grass)")
+        self.meant = QLineEdit()
+        self.meant.setPlaceholderText("...write instead (e.g. PostgreSQL)")
+        self.meant.returnPressed.connect(self._add_sound_alike)
+        self.add(row(self.heard, self.meant, button("Add sound-alike", self._add_sound_alike)))
+        self.alike_note = text("", muted=True)
+        self.alike_note.hide()  # until there is something to say: an empty line would leave a gap
+        self.add(self.alike_note)
         self.cleanup_off = QFrame()
         self.cleanup_off.setObjectName("card")
         off = QHBoxLayout(self.cleanup_off)
@@ -508,6 +532,8 @@ class DictionaryPage(Page):
         off.addWidget(text("Speech recognition uses your words; AI cleanup is off, so it doesn't.", muted=True))
         off.addWidget(button("Set up AI cleanup", lambda: go_to("cleanup"), link=True), 0)
         self.add(self.cleanup_off)
+        self.suggestions_card, self.suggestions = card(6)
+        self.add(self.suggestions_card)
         self.count = text("", "section")
         self.add(self.count)
         self.list_card, self.list = card(0)
@@ -518,17 +544,65 @@ class DictionaryPage(Page):
     def refresh(self) -> None:
         settings: Settings = self.app.settings
         self.cleanup_off.setVisible(not settings.cleanup)
+        clear(self.suggestions)
+        suggestions = self.app.correction_suggestions()
+        self.suggestions_card.setVisible(bool(suggestions))
+        if suggestions:
+            self.suggestions.addWidget(text("From your corrections", "h2"))
+        for s in suggestions[:5]:
+            line = QWidget()
+            layout = QHBoxLayout(line)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(text(f"\u201c{s.original_phrase}\u201d \u2192 {s.corrected_phrase}   "
+                                  f"(corrected {s.seen_count} times)", wrap=False), 1)
+            layout.addWidget(button("Add", lambda _=False, s=s: self._suggestion(s, True), primary=True))
+            layout.addWidget(button("Dismiss", lambda _=False, s=s: self._suggestion(s, False)))
+            self.suggestions.addWidget(line)
         clear(self.list)
-        words = settings.vocabulary
-        self.count.setText(f"{len(words)} WORD{'S' if len(words) != 1 else ''}")
-        self.list_card.setVisible(bool(words))
-        for word in sorted(words, key=str.lower):
+        # Your words, plus terms that only have sound-alikes; each with what it is heard as.
+        entries = {w.lower(): (w, []) for w in settings.vocabulary}
+        for term in self.app.dictionary_terms():
+            word, aliases = entries.get(term.preferred.lower(), (term.preferred, []))
+            entries[term.preferred.lower()] = (word, aliases + [a for a in term.aliases if a not in aliases])
+        self.count.setText(f"{len(entries)} WORD{'S' if len(entries) != 1 else ''}")
+        self.list_card.setVisible(bool(entries))
+        for word, aliases in sorted(entries.values(), key=lambda e: e[0].lower()):
             line = QWidget()
             layout = QHBoxLayout(line)
             layout.setContentsMargins(10, 4, 4, 4)
-            layout.addWidget(text(word, wrap=False), 1)
+            layout.addWidget(text(word, wrap=False))
+            if aliases:
+                layout.addWidget(text("also when heard as " + ", ".join(f"\u201c{a}\u201d" for a in aliases), muted=True,
+                                      wrap=False))
+            layout.addStretch(1)
             layout.addWidget(icon_button("delete", f"Remove {word}", lambda _=False, w=word: self._remove(w)))
             self.list.addWidget(line)
+
+    def _suggestion(self, suggestion, accept: bool) -> None:
+        if accept:
+            self.app.accept_suggestion(suggestion)
+        else:
+            self.app.reject_suggestion(suggestion)
+        self.refresh()
+
+    def _say(self, message: str) -> None:
+        self.alike_note.setText(message)
+        self.alike_note.setVisible(bool(message))
+
+    def _add_sound_alike(self) -> None:
+        heard, meant = self.heard.text().strip(), self.meant.text().strip()
+        if not heard or not meant:
+            self._say("Fill in both: what Rflow writes, and what it should write.")
+            return
+        try:
+            self.app.add_sound_alike(heard, meant)
+        except ValueError as e:  # e.g. the same sound-alike already stands for another word
+            self._say(str(e))
+            return
+        self._say(f"From now on \u201c{heard}\u201d is written as {meant}.")
+        self.heard.clear()
+        self.meant.clear()
+        self.refresh()
 
     def _add(self) -> None:
         new = [w.strip() for w in re.split(r"[,\n]", self.entry.text()) if w.strip()]
@@ -1496,8 +1570,15 @@ class SettingsPage(Page):
                                  "so Rflow gets more words wrong, and your headset plays sound in call quality while it "
                                  "is open. The laptop's own microphone is usually clearer.", "warning")
         layout.addWidget(self.call_warning)
+        self.always_on = QCheckBox("Keep the microphone on while Rflow runs")
+        self.always_on.setChecked(s.always_on_mic)
+        self.always_on.setToolTip("Dictation starts at once and keeps the 2 seconds before you pressed the key, so a "
+                                  "word you began early isn't cut off. Those seconds stay in memory and are replaced "
+                                  "all the time: nothing is kept or sent until you press the key. Windows shows the "
+                                  "microphone icon meanwhile. Never done for Bluetooth headsets.")
         self.warm_mic = QCheckBox("Keep the microphone ready for 5 minutes after dictating")
         self.warm_mic.setChecked(s.warm_mic)
+        self.warm_mic.setEnabled(not s.always_on_mic)
         self.warm_mic.setToolTip("Dictation then starts at once and keeps the moment before you pressed the key, so "
                                  "first words aren't cut off. Windows shows the microphone icon meanwhile; nothing is "
                                  "recorded or sent until you press the key. Never done for Bluetooth headsets.")
@@ -1506,6 +1587,7 @@ class SettingsPage(Page):
         self.raw_audio.setToolTip("Records the microphone as it is, without Windows' or the driver's noise suppression "
                                   "and gain. Try it with the Reading test: it may help or hurt, depending on the "
                                   "microphone and the room.")
+        layout.addWidget(self.always_on)
         layout.addWidget(self.warm_mic)
         layout.addWidget(self.raw_audio)
         self.add(microphone)
@@ -1515,6 +1597,10 @@ class SettingsPage(Page):
         layout.addWidget(text("While dictating", "h2"))
         self.sounds = QCheckBox("Beep when recording starts and stops")
         self.sounds.setChecked(s.sounds)
+        self.format_text = QCheckBox("Write numbers, dates, times and money as such (25%, October 1, 3:30 PM, $5)")
+        self.format_text.setChecked(s.format_text)
+        self.format_text.setToolTip("Spoken forms are written the usual way. Ordinary words stay as said: \"two "
+                                    "options\" isn't changed, \"twenty five percent\" becomes 25%.")
         self.save_recordings = QCheckBox("Keep recordings (audio and text) on this laptop")
         self.save_recordings.setChecked(s.save_recordings)
         self.start_with_windows = QCheckBox("Start Rflow when I sign in to Windows")
@@ -1523,10 +1609,28 @@ class SettingsPage(Page):
         if not can_start_with_windows():
             self.start_with_windows.setToolTip("Available in the installed app")
         layout.addWidget(self.sounds)
+        layout.addWidget(self.format_text)
         layout.addLayout(row(self.save_recordings, button("Open folder", lambda: open_folder(RECORDINGS_DIR)),
                              stretch_at=1))
         layout.addWidget(self.start_with_windows)
         self.add(behaviour)
+
+        advanced, layout = card()
+        layout.addWidget(text("Voice pipeline", "h2"))
+        self.voice_pipeline = QCheckBox("Transcribe in parts while you speak, then fix, format and check the text")
+        self.voice_pipeline.setChecked(s.voice_pipeline)
+        self.voice_pipeline.setToolTip("Long dictations are cut at your pauses and transcribed while you are still "
+                                       "speaking, so the text is ready sooner. Then your dictionary, the formatting "
+                                       "and the AI cleanup run, and a check keeps the AI from changing numbers, names "
+                                       "or meaning. Off: the whole recording is transcribed at once, as before.")
+        self.debug_pipeline = QCheckBox("Keep each dictation's steps for troubleshooting")
+        self.debug_pipeline.setChecked(s.debug_pipeline)
+        self.debug_pipeline.setToolTip("Saves the text after each step, and the audio parts, in a folder on this "
+                                       "laptop. Turn it off when done: it keeps your voice.")
+        layout.addWidget(self.voice_pipeline)
+        layout.addLayout(row(self.debug_pipeline, button("Open folder", lambda: open_folder(LOG_DIR.parent / "debug")),
+                             stretch_at=1))
+        self.add(advanced)
 
         about, layout = card()
         layout.addWidget(text(f"{APP_NAME} {__version__}", "h2"))
@@ -1543,8 +1647,12 @@ class SettingsPage(Page):
         self.hotkey.currentIndexChanged.connect(self._apply)
         self.microphone.changed.connect(self._apply)
         self.microphone.changed.connect(self._show_call_warning)
+        self.always_on.toggled.connect(self._apply)
+        self.always_on.toggled.connect(lambda on: self.warm_mic.setEnabled(not on))
         self.warm_mic.toggled.connect(self._apply)
         self.raw_audio.toggled.connect(self._apply)
+        for box in (self.format_text, self.voice_pipeline, self.debug_pipeline):
+            box.toggled.connect(self._apply)
         self.sounds.toggled.connect(self._apply)
         self.save_recordings.toggled.connect(self._apply)
         self.start_with_windows.toggled.connect(lambda on: set_start_with_windows(on) if can_start_with_windows() else None)
@@ -1553,7 +1661,10 @@ class SettingsPage(Page):
         """The current settings with this page's choices (the other pages own the rest)."""
         return dataclasses.replace(current, hotkey=self.hotkey.currentData(), microphone=self.microphone.device(),
                                    sounds=self.sounds.isChecked(), save_recordings=self.save_recordings.isChecked(),
-                                   warm_mic=self.warm_mic.isChecked(), raw_audio=self.raw_audio.isChecked())
+                                   warm_mic=self.warm_mic.isChecked(), raw_audio=self.raw_audio.isChecked(),
+                                   always_on_mic=self.always_on.isChecked(), format_text=self.format_text.isChecked(),
+                                   voice_pipeline=self.voice_pipeline.isChecked(),
+                                   debug_pipeline=self.debug_pipeline.isChecked())
 
     def _show_call_warning(self, *_) -> None:
         self.call_warning.setVisible(call_quality(self.microphone.device() or None))
@@ -1938,6 +2049,7 @@ class PreviewApp:
         self.scanning = ""
         self.last_scan: dict | None = None
         self.calls: list[tuple] = []  # what the window asked for
+        self._dictionary = None
 
     def hotkey_label(self) -> str:
         return parse_hotkey(self.settings.hotkey).label
@@ -2019,6 +2131,47 @@ class PreviewApp:
 
     def remove_word(self, word: str) -> None:
         self.settings.vocabulary = [w for w in self.settings.vocabulary if w != word]
+        term = self.dictionary.find(word)
+        if term is not None and term.source != "vocabulary":
+            self.dictionary.remove_term(term.id)
+
+    @property
+    def dictionary(self):
+        if self._dictionary is None:
+            from sst.pipeline.dictionary import DictionaryStore
+            self._dictionary = DictionaryStore()  # in memory: the preview keeps nothing
+            self._dictionary.sync_vocabulary(self.settings.vocabulary)
+        return self._dictionary
+
+    def dictionary_terms(self) -> list:
+        self.dictionary.sync_vocabulary(self.settings.vocabulary)
+        return self.dictionary.terms(enabled_only=False)
+
+    def correct_dictation(self, typed: str, corrected: str) -> None:
+        from sst.pipeline.learning import CorrectionEvent, Learner
+        Learner(self.dictionary).observe(CorrectionEvent(typed, corrected, app="history"))
+        self.calls.append(("correct_dictation", typed, corrected))
+
+    def correction_suggestions(self) -> list:
+        from sst.pipeline.learning import Learner
+        return Learner(self.dictionary).suggestions()
+
+    def accept_suggestion(self, suggestion) -> None:
+        from sst.pipeline.learning import Learner
+        Learner(self.dictionary).accept(suggestion)
+
+    def reject_suggestion(self, suggestion) -> None:
+        from sst.pipeline.learning import Learner
+        Learner(self.dictionary).reject(suggestion)
+
+    def add_sound_alike(self, heard: str, meant: str) -> None:
+        from sst.pipeline.dictionary import TermMode
+        term = self.dictionary.find(meant)
+        if term is None:
+            self.dictionary.add_term(meant, aliases=[heard], mode=TermMode.AUTOMATIC, source="user")  # asked for: always
+        else:
+            self.dictionary.add_alias(term.id, heard)
+        self.calls.append(("add_sound_alike", heard, meant))
 
     def score_reading(self, folders, progress):
         raise RuntimeError("No speech model in the preview.")

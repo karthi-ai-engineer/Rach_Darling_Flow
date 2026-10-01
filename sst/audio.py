@@ -119,13 +119,16 @@ class Recorder:
     """Records mono audio between start() and stop() / stop_later().
 
     warm_seconds > 0 keeps the microphone open that long after a recording (tick() closes it), so the next one starts at
-    once, with PREROLL_SECONDS from before start(). A call-quality (Bluetooth) microphone is never kept open. `tail`
-    seconds are recorded after stop_later(). raw asks Windows for the microphone without its voice effects."""
+    once, with `preroll_seconds` from before start(); math.inf keeps it open while the app runs (keep_open() opens it
+    at start-up), the voice pipeline's always-on microphone. The moment before start() lives only in RAM. A
+    call-quality (Bluetooth) microphone is never kept open. `tail` seconds are recorded after stop_later(). raw asks
+    Windows for the microphone without its voice effects."""
 
     def __init__(self, device: int | str | None = None, *, warm_seconds: float = 0.0, tail: float = 0.0,
                  raw: bool = False):
         self.device = device  # number, microphone name, or None for the Windows default
         self.warm_seconds, self.tail, self.raw = warm_seconds, tail, raw
+        self.preroll_seconds = PREROLL_SECONDS
         self.rate = TARGET_RATE
         self.level = 0.0  # loudness of the latest block (RMS), for the recording indicator
         self.info: dict = {}  # the device, interface, rate and mode actually opened
@@ -141,6 +144,22 @@ class Recorder:
     @property
     def warm(self) -> bool:
         return self._stream is not None
+
+    @property
+    def current_take(self) -> Take | None:
+        """The recording in progress (its chunks grow while the key is held), for the voice pipeline's live chunking."""
+        return self._take
+
+    def keep_open(self) -> None:
+        """Open the microphone now, without recording, so that even the first dictation has its pre-roll (always-on
+        mode). Does nothing for a microphone that is never kept open."""
+        if self._stream is not None and self._opened_for != (self.device, self.raw):
+            self.close()  # another microphone or mode was chosen
+        if self._stream is None and self._keep_warm():
+            self._open()
+            self._idle_since = time.monotonic()
+            if not self._keep_warm():  # it turned out to be a call-quality microphone
+                self.close()
 
     def start(self) -> None:
         if self._take is not None:
@@ -270,7 +289,7 @@ class Recorder:
             else:
                 self._ring.append(block)
                 self._ring_samples += len(block)
-                while self._ring and self._ring_samples - len(self._ring[0]) >= PREROLL_SECONDS * self.rate:
+                while self._ring and self._ring_samples - len(self._ring[0]) >= self.preroll_seconds * self.rate:
                     self._ring_samples -= len(self._ring.popleft())
 
     def describe(self) -> dict:

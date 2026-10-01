@@ -29,6 +29,10 @@ class Settings:
     sounds: bool = True
     save_recordings: bool = True
     warm_mic: bool = True  # keep the microphone open a few minutes after dictating: instant start, no lost first word
+    always_on_mic: bool = True  # keep it open while Rflow runs: 2 s of pre-roll in RAM (the owner's plan, 2026-10-01)
+    voice_pipeline: bool = True  # chunks while speaking, then dictionary, formatting, LLM and guard (sst.pipeline)
+    format_text: bool = True  # spoken numbers, dates, times and money written as such ("25%", "3:30 PM")
+    debug_pipeline: bool = False  # keep every dictation's stages and chunk audio in %LOCALAPPDATA%\sst\debug
     raw_audio: bool = False  # ask Windows for the microphone without its voice effects (noise suppression, gating)
     speech_model: str = "parakeet"  # the speech recognition model, a key of sst.engines.SPEECH_MODELS
     speech_language: str = ""  # for models that know many languages (Whisper): "" = detected, or a code such as "ta"

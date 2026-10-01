@@ -35,6 +35,14 @@ from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, load_engine, usable
 from sst.engines.cloud import CLOUD, REMOTE, SERVER, CloudEngine
 from sst.gateway import SPEECH_SERVER, GatewayConfig, Polisher
 from sst.hotkey import HotkeyListener, parse_hotkey
+from sst.pipeline.asr import ASRScheduler, EngineBackend
+from sst.pipeline.contracts import VoiceConfig
+from sst.pipeline.dictionary import DictionaryEngine, DictionaryStore, TermMode
+from sst.pipeline.formatting import Formatter
+from sst.pipeline.guard import Guard
+from sst.pipeline.learning import CorrectionEvent, Learner
+from sst.pipeline.polish import GatewayLLM
+from sst.pipeline.session import LazyBackend, Stages, VoicePipeline
 from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
 from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
 
@@ -46,6 +54,7 @@ SAMPLE_FILE = Path(__file__).resolve().parent / "static" / "sample.wav"
 SERVER_NAME = f"Rflow-window-{os.environ.get('USERNAME', 'user')}"
 ASFW_ANY = -1  # AllowSetForegroundWindow: any process
 WARM_SECONDS = 300  # the microphone stays open this long after a dictation (the owner chose 5 minutes)
+DEBUG_DIR = LOG_DIR.parent / "debug"  # each dictation's stages and chunk audio, when Settings asks for them
 
 log = logging.getLogger("sst.app")
 
@@ -244,6 +253,7 @@ class TrayApp:
         self.profiles = Profiles.load()
         self._load_profile()
         self.recorder = self.new_recorder()
+        self._configure_dictation_mic()
         self.dictation: Dictation | None = None
         self.loading_speech = ""  # the speech model being loaded in the background, if any
         self.downloading: tuple[str, int, int] | None = None  # (speech model, bytes done, bytes in all)
@@ -297,6 +307,7 @@ class TrayApp:
         menu.addAction("AI cleanup", lambda: self.window.open("cleanup"))
         menu.addAction("Settings", lambda: self.window.open("settings"))
         menu.addAction("Check for updates", lambda: self.check_for_updates(manual=True))
+        menu.addAction("Retry the last dictation", self.retry_last_dictation)
         menu.addSeparator()
         menu.addAction(f"Quit {APP_NAME}", self.quit)
         self.menu = menu  # keep a reference; the tray only borrows it
@@ -404,7 +415,7 @@ class TrayApp:
             self.dictation.on_result = self.signals.result.emit
         else:
             self.dictation.engine = engine  # the next dictation uses it; one being transcribed finishes with the old
-        self._apply_cleanup()  # also gives the new model Your words
+        self._apply_cleanup()  # also gives the new model Your words, and builds its voice pipeline
         if first:
             self._start_listener()
             self.pump.start()
@@ -454,8 +465,10 @@ class TrayApp:
         s, engine = self.settings, self.dictation.engine
         if hasattr(engine, "language"):
             engine.language = s.speech_language
-        if hasattr(engine, "words"):
-            engine.words = list(s.vocabulary)  # the recogniser listens for them (hotwords)
+        if hasattr(engine, "words"):  # the recogniser listens for them (hotwords, a provider's prompt)
+            engine.words = self.dictionary.hint_terms() if s.voice_pipeline else list(s.vocabulary)
+        if hasattr(engine, "timestamp_mode"):
+            engine.timestamp_mode = VoiceConfig().asr.timestamp_mode  # Gemini Transcribe: word times for the merge
         if engine.name in CLOUD:
             engine.model = s.speech_cloud_models.get(engine.name) or CLOUD[engine.name].models[0]
             engine.api_key = self.gateway.key_for(engine.name) or engine.api_key  # no key: Parakeet is on its way
@@ -478,9 +491,46 @@ class TrayApp:
             self._notify(APP_NAME, "AI cleanup needs an endpoint and a model: set them in AI cleanup.",
                          QSystemTrayIcon.MessageIcon.Warning)
         self.dictation.cleanup = polisher
+        self._build_pipeline()
         self._update_status()
         log.info("Text cleanup: %s, backup %s (%s, %d words)", model or "off", s.cleanup_fallback or "none",
                  self.gateway, len(s.vocabulary))
+
+    def _build_pipeline(self) -> None:
+        """The staged voice pipeline (sst.pipeline) for the speech model in use: a new one when the model changes, new
+        text stages when the cleanup, the dictionary or the formatting change."""
+        s, dictation = self.settings, self.dictation
+        if not s.voice_pipeline:
+            dictation.pipeline = None  # the classic way: the whole recording at once
+            return
+        engine, pipeline = dictation.engine, dictation.pipeline
+        if pipeline is None or getattr(pipeline, "engine", None) is not engine:
+            config = VoiceConfig()
+            remote = engine.name in REMOTE
+            config.asr.max_in_flight = 2 if remote else 1  # a local model already uses every core
+            # A cloud model or own server falls back on Parakeet chunk by chunk; it is loaded only if needed.
+            fallback = LazyBackend("parakeet", lambda: EngineBackend(self._fallback_engine())) if remote else None
+            scheduler = ASRScheduler(EngineBackend(engine), config.asr, fallback=fallback, on_event=self._on_pipeline_event)
+            pipeline = VoicePipeline(scheduler, config)
+            pipeline.engine = engine
+        pipeline.debug_dir = DEBUG_DIR if s.debug_pipeline else None
+        pipeline.keep_audio = s.debug_pipeline
+        model = s.cleanup_model if s.cleanup else ""
+        llm = GatewayLLM(self.gateway, model, s.cleanup_fallback or None) if model and self.gateway.address else None
+        config = pipeline.config
+        config.formatting.enabled = s.format_text
+        pipeline.stages = Stages(dictionary=DictionaryEngine(self.dictionary, config.dictionary),
+                                 formatter=Formatter(config.formatting) if s.format_text else None,
+                                 llm=llm, guard=Guard(config.guard), terms=self.dictionary.hint_terms)
+        dictation.pipeline = pipeline
+
+    def _on_pipeline_event(self, name: str, data: dict) -> None:
+        # The ASR workers' events: the log tells where a slow or failed dictation spent its time.
+        (log.warning if name in ("asr_failed", "asr_fallback") else log.debug)("%s %s", name, data)
+
+    def retry_last_dictation(self) -> None:
+        if not (self.dictation and self.dictation.retry_last()):
+            self._notify(APP_NAME, "There is no failed dictation to retry.")
 
     def _update_status(self) -> None:
         if not self.listener or self.loading_speech:
@@ -565,11 +615,28 @@ class TrayApp:
         recorder.device, recorder.raw, recorder.tail = s.microphone or None, s.raw_audio, TAIL_SECONDS
         recorder.warm_seconds = WARM_SECONDS if s.warm_mic else 0.0
 
+    def _configure_dictation_mic(self) -> None:
+        """Dictation's microphone (not the reading test's): with the voice pipeline it keeps 2 s of pre-roll, and the
+        always-on mode keeps it open while Rflow runs (the audio stays in RAM; nothing is kept or sent before a key
+        press)."""
+        s, recorder = self.settings, self.recorder
+        self._configure(recorder)
+        if s.voice_pipeline:
+            recorder.preroll_seconds = VoiceConfig().audio.pre_roll_ms / 1000
+        if s.always_on_mic:
+            recorder.warm_seconds = math.inf
+            try:
+                recorder.keep_open()
+            except Exception as e:  # no microphone yet: it opens at the first dictation
+                log.warning("Could not keep the microphone open: %s", e)
+
     def apply_settings(self, new: Settings) -> None:
         """Save the settings and use them at once (the Settings page and the welcome change them one by one)."""
         old, self.settings = self.settings, new
         new.save(self.profile.settings_file)
-        self._configure(self.recorder)
+        self._configure_dictation_mic()
+        if new.vocabulary != old.vocabulary:
+            self.dictionary.sync_vocabulary(new.vocabulary)
         if self.dictation:
             self.dictation.sounds, self.dictation.save = new.sounds, new.save_recordings
             if (new.cleanup, new.cleanup_model, new.cleanup_fallback, new.vocabulary) != (
@@ -578,6 +645,9 @@ class TrayApp:
             elif (new.speech_language, new.speech_cloud_models, new.speech_server_model) != (
                     old.speech_language, old.speech_cloud_models, old.speech_server_model):
                 self._apply_speech()  # from the next dictation; no reload needed
+            if (new.voice_pipeline, new.format_text, new.debug_pipeline) != (
+                    old.voice_pipeline, old.format_text, old.debug_pipeline):
+                self._build_pipeline()
             if new.hotkey != old.hotkey:
                 self._start_listener()
         if new.speech_model != old.speech_model:
@@ -603,7 +673,52 @@ class TrayApp:
         return len(added)
 
     def remove_word(self, word: str) -> None:
-        self.apply_settings(dataclasses.replace(self.settings, vocabulary=[w for w in self.settings.vocabulary if w != word]))
+        term = self.dictionary.find(word)
+        if term is not None and term.source != "vocabulary":
+            self.dictionary.remove_term(term.id)  # a term that only had sound-alikes
+        if word in self.settings.vocabulary:
+            self.apply_settings(dataclasses.replace(self.settings, vocabulary=[w for w in self.settings.vocabulary
+                                                                               if w != word]))
+        elif self.dictation:
+            self._apply_speech()
+
+    def dictionary_terms(self) -> list:
+        return self.dictionary.terms(enabled_only=False)
+
+    def correct_dictation(self, typed: str, corrected: str) -> None:
+        """Home: the user corrected a dictation. Learned as a suggestion once the same correction comes twice."""
+        new = self.learner.observe(CorrectionEvent(typed, corrected, app="history"))
+        if new:
+            s = new[0]
+            self._notify(APP_NAME, f"You corrected \u201c{s.original_phrase}\u201d to {s.corrected_phrase} "
+                                   f"{s.seen_count} times. Add it on the Dictionary page?")
+        self.window.refresh()
+
+    def correction_suggestions(self) -> list:
+        return self.learner.suggestions()
+
+    def accept_suggestion(self, suggestion) -> None:
+        self.learner.accept(suggestion)
+        if self.dictation:
+            self._apply_speech()
+        self.window.refresh()
+
+    def reject_suggestion(self, suggestion) -> None:
+        self.learner.reject(suggestion)
+        self.window.refresh()
+
+    def add_sound_alike(self, heard: str, meant: str) -> None:
+        """The Dictionary page: what the speech model writes for a term, written as the term from now on (an exact
+        match: the dictionary fixes it before the formatting and the AI cleanup). Raises ValueError when the sound-alike
+        already stands for another term."""
+        term = self.dictionary.find(meant)
+        if term is None:
+            self.dictionary.add_term(meant, aliases=[heard], mode=TermMode.AUTOMATIC, source="user")  # asked for: always
+        else:
+            self.dictionary.add_alias(term.id, heard)
+        log.info("Sound-alike added for a dictionary term (%d terms)", len(self.dictionary.terms()))
+        if self.dictation:
+            self._apply_speech()  # the speech model listens for the term too
 
     def score_reading(self, folders: list[Path], progress) -> evaluate.Results:
         """The speech model alone, then with the cleanup model and the backup model, one at a time (the endpoint may be
@@ -800,6 +915,13 @@ class TrayApp:
         self.settings = Settings.load(self.profile.settings_file)
         self.gateway = GatewayConfig.load(self.profile.gateway_file)
         self.stats = Stats.load(self.profile.stats_file, history=self.profile.history_file)
+        old = getattr(self, "dictionary", None)
+        # Each person's dictionary (terms, sound-alikes, learned corrections), with "Your words" mirrored into it.
+        self.dictionary = DictionaryStore(self.profile.folder() / "dictionary.db")
+        self.dictionary.sync_vocabulary(self.settings.vocabulary)
+        self.learner = Learner(self.dictionary)  # corrections made twice become suggestions, never rules by themselves
+        if old is not None:
+            old.close()
 
     def bench_dir(self) -> Path:
         return self.profile.folder(bench.BENCH_DIR)
@@ -840,7 +962,7 @@ class TrayApp:
             self.dictation.close()  # a recording started for the other profile is dropped
         old_hotkey = self.settings.hotkey
         self._load_profile()
-        self._configure(self.recorder)
+        self._configure_dictation_mic()
         if self.dictation:
             self.dictation.sounds, self.dictation.save = self.settings.sounds, self.settings.save_recordings
             self._apply_cleanup()
