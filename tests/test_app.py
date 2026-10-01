@@ -406,3 +406,35 @@ def test_a_model_on_your_own_server_switches_its_address_without_a_reload(tray_a
     assert (app.gateway.base_url, app.gateway.api_key) == ("http://gateway.example/v1", "cleanup-key")  # AI cleanup's
     app.save_cleanup(False, "", "", app.gateway.with_entry(SPEECH_SERVER, "", ""))  # the server is gone: Parakeet
     assert _wait_for(lambda: app.speech_in_use() == "parakeet", QTest.qWait)
+
+
+def test_a_new_install_starts_without_a_speech_model_then_downloads_parakeet(no_parakeet, tray_app, monkeypatch,
+                                                                              tmp_path):
+    from PySide6.QtTest import QTest
+
+    from sst.engines import parakeet
+    app, _, _ = tray_app
+    assert app.dictation is None and not app.loading_speech
+    assert "Choose a speech model" in app.window.status_label.text()
+    with pytest.raises(RuntimeError, match="isn't downloaded"):
+        app._fallback_engine()  # a cloud model has nothing to fall back on yet
+    folder = tmp_path / "downloaded"
+
+    def fake_download(model, progress, cancelled):
+        progress(model.size, model.size)
+        folder.mkdir()
+        (folder / "encoder.int8.onnx").write_bytes(b"")
+        monkeypatch.setattr(parakeet, "MODEL_DIR", folder)  # as if the download had finished
+    monkeypatch.setattr(sst_app.downloads, "download", fake_download)
+    app.download_speech_model("parakeet")  # Parakeet was the setting all along: it loads once downloaded
+    assert _wait_for(lambda: app.speech_in_use() == "parakeet", QTest.qWait)
+    assert app.listener.running and "Ready: hold Ctrl+Win" in app.window.status_label.text()
+
+
+def test_a_new_install_can_start_with_a_cloud_model_only(no_parakeet, tray_app):
+    from PySide6.QtTest import QTest
+
+    app, _, _ = tray_app
+    app.use_cloud_speech("groq", "gsk-test", "")
+    assert _wait_for(lambda: app.speech_in_use() == "groq", QTest.qWait)
+    assert app.listener.running and app._local is None  # nothing on this computer

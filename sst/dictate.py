@@ -149,7 +149,13 @@ class Dictation:
                 audio, rate = take.audio(), take.rate
                 t0 = time.perf_counter()
                 engine = self.engine  # read once: the app may swap it meanwhile
-                text = engine.transcribe(audio, rate)
+                try:
+                    text = engine.transcribe(audio, rate)
+                except Exception as e:
+                    if self.save:  # e.g. a cloud model failed with no Parakeet to take over: the voice isn't lost
+                        save_recording(audio, rate, "")
+                        raise RuntimeError(f"{e}. The recording is kept in Rflow's recordings folder.") from e
+                    raise
                 fell_back = getattr(engine, "last_error", "")
                 took = time.perf_counter() - t0
                 log.info("%.1fs -> %.2fs  %s", len(audio) / rate, took, text or "(nothing recognised)")
