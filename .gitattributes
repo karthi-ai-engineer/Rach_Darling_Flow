@@ -5,3 +5,4 @@
 *.wav binary
 *.onnx binary
 *.bmp binary
+*.vocab -text

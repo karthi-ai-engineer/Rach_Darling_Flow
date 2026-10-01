@@ -275,3 +275,11 @@ def test_the_catalog_uses_an_own_server_only_with_its_address():
     assert usable("server", keys) == "server"
     engine = load_engine("server", "ta", model="whisper-1", url="http://10.0.0.5:8000/v1")
     assert engine.url == "http://10.0.0.5:8000/v1" and engine.language == "ta" and engine.api_key == ""
+
+
+def test_without_parakeet_a_failing_provider_says_why(fake):
+    def missing():
+        raise RuntimeError("Parakeet isn't downloaded to take over")
+    fake.statuses = [503]
+    with pytest.raises(CloudError, match=r"OpenAI: HTTP 503 .*\(Parakeet isn't downloaded to take over\)"):
+        fake.engine(fallback=missing).transcribe(AUDIO, RATE)

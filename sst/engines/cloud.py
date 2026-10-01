@@ -168,9 +168,9 @@ class CloudEngine:
         try:
             if self._fallback is None:
                 self._fallback = self._fallback_loader()
-        except Exception as e:
-            log.exception("Could not load the speech model to fall back on")
-            raise CloudError(f"{self.provider.name}: {reason}; and on this computer: {e}") from None
+        except Exception as e:  # e.g. Parakeet isn't downloaded (a cloud-only user)
+            log.warning("No speech model to fall back on: %s", e)
+            raise CloudError(f"{self.provider.name}: {reason} ({e})") from None
         if hasattr(self._fallback, "words"):
             self._fallback.words = list(self.words)
         self.last_error = f"{self.provider.name}: {reason}"

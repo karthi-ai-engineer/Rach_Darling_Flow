@@ -1,8 +1,12 @@
 """NVIDIA Parakeet (English) running locally on the CPU via sherpa-onnx.
 
-With the model's word-piece vocabulary (bpe.vocab, fetched by scripts/download_model.py) the recogniser decodes with
-beam search and listens for the user's own words ("hotwords"): on the owner's reading test that halved the errors on
-names and tech terms (40% -> 24.5%) without hurting the other words. Without it, it decodes greedily as before.
+With the model's word-piece vocabulary (bpe.vocab) the recogniser decodes with beam search and listens for the user's
+own words ("hotwords"): on the owner's reading test that halved the errors on names and tech terms (40% -> 24.5%)
+without hurting the other words. Without it, it decodes greedily as before.
+
+The model is downloaded when the user chooses it (sst.downloads, ~660 MB), from the sherpa-onnx author's copy on
+Hugging Face at a pinned revision: byte for byte the files Rflow 1.4 and older installed next to the program, where an
+update keeps finding them. bpe.vocab (10 KB, cut from NVIDIA's 2.5 GB .nemo archive) comes with Rflow.
 """
 import hashlib
 import logging
@@ -14,8 +18,24 @@ import numpy as np
 
 from sst import MODELS_DIR
 from sst.audio import condition, split_at_pauses
+from sst.downloads import Download, ModelFile
 
-MODEL_DIR = MODELS_DIR / "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
+FOLDER = "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
+MODEL_DIR = MODELS_DIR / FOLDER  # next to the program (Rflow 1.4 and older), or the source checkout's models/
+REPO = "csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
+REVISION = "8c3a10fb13408c7a7054f6898958bf1c64a8d6c7"
+MODEL = Download(FOLDER, f"https://huggingface.co/{REPO}/resolve/{REVISION}/", (
+    ModelFile("encoder.int8.onnx", 654040552, "6716910b7a0833997fec7a410494c995d70124001a0e9b66d6370d6aced577e0"),
+    ModelFile("decoder.int8.onnx", 7257753, "a5e223392c90e75f8144cdb5eb95af7625db389e39edef2bd1a9c872b3298fe6"),
+    ModelFile("joiner.int8.onnx", 1735860, "869f43f7d24595c55581ad3bf249a935fb8a71389fbdaa7504b9f46f93140f8a"),
+    ModelFile("tokens.txt", 8952, "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff"),
+    # NVIDIA's model card, kept with the model (see NOTICES.txt)
+    ModelFile("bias.md", 1008, "634920adfccd7897759e495166aef1561a04f3d13026afa4fa64fb4097edb9e0"),
+    ModelFile("explainability.md", 2428, "bd13ed3acf31895d29327ad9649cf1c27f45a0e0acaeb8faf8c1e12feba1a748"),
+    ModelFile("privacy.md", 4066, "10ec3440299669a2430cf5450732b3c2b04f7af2008350c231b335797fbec55c"),
+    ModelFile("safety.md", 782, "6307181203b91a766440a7b8276d4d53893fb30c8058636ea2965c1756bf5e8c"),
+))
+VOCAB = Path(__file__).resolve().parent.parent / "static" / "parakeet" / "bpe.vocab"  # comes with Rflow
 # Audio longer than this is transcribed in pieces cut at pauses: as one piece, onnxruntime fails somewhere
 # between 4 and 9 minutes (257 s worked, 514 s crashed). Up to 3 minutes (a whole dictation) stays one piece:
 # cutting at 30 s dropped a whole sentence that the model gets right with the full context.
@@ -27,6 +47,13 @@ HOTWORD_SCORE = 1.0
 BEAM = 4
 
 log = logging.getLogger(__name__)
+
+
+def find_model() -> Path | None:
+    """Where Parakeet is: next to the program (an older Rflow's, or the source checkout's), else downloaded."""
+    if _find(MODEL_DIR, "encoder"):
+        return MODEL_DIR
+    return MODEL.path() if MODEL.installed() else None
 
 
 def _find(model_dir: Path, prefix: str) -> Path | None:
@@ -63,13 +90,12 @@ class ParakeetEngine:
     name = "parakeet"
     title = "Parakeet"
 
-    def __init__(self, model_dir: Path = MODEL_DIR, num_threads: int = 4, conditioned: bool = True,
+    def __init__(self, model_dir: Path | None = None, num_threads: int = 4, conditioned: bool = True,
                  hotwords: bool = True):
-        if not model_dir.exists():
-            raise FileNotFoundError(
-                f"Parakeet model not found in {model_dir}\n"
-                "Download it with:  uv run python scripts/download_model.py parakeet"
-            )
+        model_dir = model_dir or find_model()
+        if not model_dir or not model_dir.exists():
+            raise FileNotFoundError("Parakeet isn't downloaded: choose it on the Speech recognition page (or run "
+                                    "uv run python scripts/download_model.py parakeet)")
         import sherpa_onnx
 
         self.conditioned = conditioned  # audio.condition() first: the laptop microphone is quiet, see there
@@ -78,7 +104,7 @@ class ParakeetEngine:
         self._lock = threading.Lock()  # dictation and the reading test may transcribe at the same time
         tokens = model_dir / "tokens.txt"
         encoder = _find(model_dir, "encoder")
-        vocab = model_dir / "bpe.vocab"
+        vocab = model_dir / "bpe.vocab" if (model_dir / "bpe.vocab").exists() else VOCAB
         self.biased = bool(hotwords and encoder and _vocab_matches(vocab, tokens))
         if hotwords and encoder and not self.biased:
             log.warning("No usable bpe.vocab in %s: Your words won't be used while recognising. Run "

@@ -17,7 +17,7 @@ from typing import Protocol
 import numpy as np
 
 from sst.downloads import Download
-from sst.engines import whisper
+from sst.engines import parakeet, whisper
 from sst.engines.cloud import REMOTE, CloudEngine
 
 
@@ -39,9 +39,10 @@ class SpeechModel:
     ready: bool = True  # usable in this version; the others are shown as coming next
     download: Download | None = None  # fetched when chosen (sst.downloads); None = comes with Rflow
     language_choice: bool = False  # the user can choose the language it listens for
+    found: Callable[[], bool] | None = None  # also there without the download (Parakeet next to an older Rflow)
 
     def installed(self) -> bool:
-        return self.download is None or self.download.installed()
+        return self.download is None or self.download.installed() or bool(self.found and self.found())
 
 
 # Where a speech model runs, in the order the window shows them.
@@ -54,7 +55,8 @@ WHERE = {
 SPEECH_MODELS = {m.key: m for m in [
     SpeechModel("parakeet", "NVIDIA Parakeet", "local",
                 "Fast and accurate English on any laptop's processor; listens for Your words.",
-                "English", "640 MB, included"),
+                "English", f"{parakeet.MODEL.size // 10**6} MB, downloaded when chosen", download=parakeet.MODEL,
+                found=lambda: parakeet.find_model() is not None),
     SpeechModel("whisper-turbo", "OpenAI Whisper large-v3 turbo", "local",
                 "Many languages, Tamil and Japanese included, and good with names. Without an NVIDIA graphics card "
                 "it takes several seconds per sentence (Parakeet about one).",
@@ -81,17 +83,19 @@ ENGINES = [key for key, model in SPEECH_MODELS.items() if model.ready]
 
 
 def usable(key: str, keys=None) -> str:
-    """The model to load for a setting: the chosen one if this version can use it, it is downloaded, and a cloud model
-    has its key (`keys`: the sst.gateway.GatewayConfig holding the user's keys); else the default. So a removed
-    download or a lost key never stops Rflow from starting."""
+    """The model to load for a setting: the chosen one if this version can use it, it is downloaded, a cloud model has
+    its key and an own server its address (`keys`: the sst.gateway.GatewayConfig holding them); else Parakeet if it is
+    on this computer, so a removed download or a lost key never stops dictation; else "" (no speech model yet: the
+    window asks for one)."""
     model = SPEECH_MODELS.get(key)
-    if not model or not model.ready or not model.installed():
-        return DEFAULT_MODEL
-    if model.where == "cloud" and not (keys and keys.key_for(key)):
-        return DEFAULT_MODEL
-    if model.where == "server" and not (keys and keys.speech_server()[0]):
-        return DEFAULT_MODEL
-    return key
+    ready = bool(model and model.ready and model.installed())
+    if ready and model.where == "cloud":
+        ready = bool(keys and keys.key_for(key))
+    elif ready and model.where == "server":
+        ready = bool(keys and keys.speech_server()[0])
+    if ready:
+        return key
+    return DEFAULT_MODEL if SPEECH_MODELS[DEFAULT_MODEL].installed() else ""
 
 
 def load_engine(name: str, language: str = "", api_key: str = "", model: str = "",
