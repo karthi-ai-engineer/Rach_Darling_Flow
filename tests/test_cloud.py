@@ -522,4 +522,6 @@ def test_an_old_idle_connection_is_replaced_and_a_dropped_one_reconnected(fake, 
     fake.drop = True  # from now on the server closes each connection after answering, without saying so
     for _ in range(2):
         assert engine.transcribe_chunk(AUDIO, RATE).text == "Hello from OpenAI."
-    assert len(fake.requests) == 4 and fake.connections == 3  # the dead connection was replaced, nothing asked twice
+    # The dead connection was replaced and nothing was asked twice. Whether the client notices the server's close
+    # before reusing the connection (one new connection) or only when it fails (two) depends on timing (seen on CI).
+    assert len(fake.requests) == 4 and fake.connections in (3, 4)
