@@ -8,12 +8,14 @@ _Last updated: 2026-10-01_
 ## Start here (a new session, or the owner's other laptop)
 
 **Where things stand (2026-10-01):**
-- **Rflow 1.4.0 is released** (GitHub Release `v1.4.0`, the website's download). It contains accuracy phases 10-12.
+- **Rflow 1.5.0 is released** (2026-10-01, GitHub Release `v1.5.0`, the website's download): speech recognition as
+  building blocks (phases 13-18), and a 90 MB installer. 1.4.0 contained accuracy phases 10-12.
 - **On the owner's voice** (150 read sentences, laptop microphone):
   - word errors 9.2% → 7.1%
   - held-out sets 6.7% → **5.4%**, better than Parakeet's own benchmark average of 5.9%
   - names and terms 40% → 24.5%, when Your words holds the names
-- The owner **uses 1.4.0 for real dictation**, now on both laptops. A raw-mode set is still to be read.
+- The owner **used 1.4.0 for real dictation** on both laptops, and updates to 1.5.0 from the banner. A raw-mode set
+  is still to be read.
 - **The owner's plan (2026-10-01):** Rflow becomes building blocks. Speech recognition is chosen like the AI cleanup:
   - 13: the building block itself (merged)
   - 14: Whisper turbo on this computer (PR #35)
@@ -22,9 +24,8 @@ _Last updated: 2026-10-01_
   - 17: your own server (PR #41)
   - 18: Parakeet downloaded on demand, and version 1.5.0 (PR #43)
 
-  Phases 14-18 are stacked PRs, all built, waiting for the owner's test and merge; then the tag `v1.5.0` releases
-  them. The installer drops from 571 MB to 90 MB. The correction work (sound-alike fixer, confidence-gated
-  cleanup) comes after them. See **Next steps**.
+  Phases 14-18 were merged and released as **v1.5.0** on 2026-10-01; the installer went from 571 MB to 90 MB. The
+  correction work (sound-alike fixer, confidence-gated cleanup) comes next. See **Next steps**.
 
 **Read in this order:**
 1. This section and **Next steps** (the end of this file).
@@ -90,13 +91,13 @@ _Last updated: 2026-10-01_
 | 11 | **Capture**: WASAPI, warm microphone with lead-in and tail, raw mode, Bluetooth warning, peak to -1 dBFS, retry of empty results | done, on `main` (PR #27) |
 | 12 | **Hotwords**: Parakeet listens for Your words (bpe.vocab from NVIDIA's archive, beam search, score 1.0, guard) | done, on `main` (PR #29); phases 10-12 released as **v1.4.0** |
 | 13 | **Speech recognition as a building block**: a catalog of speech models, a per-profile choice, background switching, the Speech recognition page | done, on `main` (PR #33) |
-| 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | PR #35, waiting for the owner's test + merge |
-| 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
-| 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR #39 (stacked on #37), waiting for the owner's test + merge |
-| 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | PR #41 (stacked on #39), waiting for the owner's test + merge |
-| 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | PR #43 (stacked on #41), waiting for the owner's test + merge, then the tag `v1.5.0` |
+| 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | done, on `main` (PR #35), released **v1.5.0** |
+| 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | done, on `main` (PR #37), released **v1.5.0** |
+| 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
+| 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
+| 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
 
-Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
+Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0 and v1.5.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
 itself to 1.0.1.
 
@@ -947,23 +948,21 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **Owner:** try PRs #35, #37, #39 and #41 together (an installer built from the newest branch has
-   them all):
-   - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"
-   - dictate in English, and in Tamil with the language set
-   - switch back to Parakeet
-   - press "Scan my computer"
+1. **Owner: update to 1.5.0 and try it** (released 2026-10-01; 91 MB, SHA-256 `c05c7c81...` checked by the updater):
+   - Open the installed 1.4.0: the banner offers 1.5.0 (or Settings → Check for updates) → Update now. Expected: no
+     Parakeet download (it stays next to the program), the same settings, words and history.
+   - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"; dictate in English, and in Tamil with the
+     language set; switch back to Parakeet; press "Scan my computer".
    - Cloud → a provider you have a key for (Groq has a free tier) → paste the key → Test → Use this model → dictate;
-     then turn Wi-Fi off and dictate: Parakeet should type it, and say so
+     then turn Wi-Fi off and dictate: Parakeet should type it, and say so.
    - Your own server → it is filled in from AI cleanup's server, or enter the company gateway → Load models →
-     whisper-1 → Test → Use this model → dictate
-   - a new install: on a computer (or Windows account) without Rflow, install `Rflow-Setup-1.5.0.exe`; the welcome
-     asks how to recognise speech → Download Parakeet → dictate when it's done. Updating over 1.4.0 must need no
-     download.
+     whisper-1 → Test → Use this model → dictate.
+   - Later, the new-install path: on another Windows account, install from the website; the welcome asks how to
+     recognise speech → Download Parakeet → dictate when it's done.
 
-   Then merge them in order (#35, #37, #39, #41, #43), retargeting each next one to `main` before deleting its
-   base. **Release:** after the last merge, tag `v1.5.0` on `main` (CLAUDE.md, step 7); the Release workflow
-   publishes the 90 MB `Rflow-Setup.exe`, the website's button follows, and installed copies offer the update.
+   The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
+   to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
+   (`tag.gpgsign`), so a tag needs `-m`.
 2. **The building-block plan is built** (phases 13-18; see **Speech recognition as a building block**). Possible
    later: Whisper's runtime on demand too (installer ~50 MB), and the website's screenshots of the new pages.
 3. **The owner, meanwhile:**
