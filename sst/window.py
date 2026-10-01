@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 from sst import RECORDINGS_DIR, __version__, bench
 from sst.audio import LevelMeter, Take, call_quality, save_wav
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, WHERE, usable
+from sst.engines.whisper import LANGUAGES
 from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
 from sst.settings import (
@@ -840,6 +841,73 @@ class ReadingTestPage(Page):
 
 # ---------------------------------------------------------------- Speech recognition
 
+class _ModelCard:
+    """One speech model on the Speech recognition page: what it is, its state, and the buttons that change it."""
+
+    def __init__(self, app, model):
+        self.app, self.model = app, model
+        self.frame, layout = card(6)
+        self.status = text("", muted=True, wrap=False)
+        mixed = QFont()  # the check mark comes from the icon font, the words from Segoe UI
+        mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+        self.status.setFont(mixed)
+        layout.addLayout(row(text(model.name, "h2", wrap=False), self.status, stretch_at=1))
+        layout.addWidget(text(model.summary))
+        layout.addWidget(text(f"Languages: {model.languages}  ·  Size: {model.size}", muted=True))
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
+        layout.addWidget(self.progress)
+        self.language_row = QWidget()
+        self.language = QComboBox()
+        for code, name in LANGUAGES.items():
+            self.language.addItem(name, code)
+        self.language.currentIndexChanged.connect(lambda _=0: self.app.set_speech_language(self.language.currentData()))
+        language = row(text("Language it listens for", wrap=False), self.language, stretch_at=2)
+        language.setContentsMargins(0, 0, 0, 0)
+        self.language_row.setLayout(language)
+        layout.addWidget(self.language_row)
+        size = f"{model.download.size / 1e9:.1f} GB" if model.download else ""
+        self.download = button(f"Download and use ({size})", lambda _=False: app.download_speech_model(model.key),
+                               primary=True)
+        self.cancel = button("Cancel", lambda _=False: app.cancel_download())
+        self.choose = button("Use this model", lambda _=False: app.choose_speech_model(model.key), primary=True)
+        self.remove = button("Remove download", lambda _=False: app.remove_speech_model(model.key), link=True)
+        layout.addLayout(row(self.download, self.cancel, self.choose, self.remove, stretch_at=3))
+
+    def refresh(self) -> None:
+        app, model, key = self.app, self.model, self.model.key
+        chosen, in_use, loading, downloading = (app.settings.speech_model, app.speech_in_use(), app.loading_speech,
+                                                app.downloading)
+        installed = model.installed()
+        here = bool(downloading) and downloading[0] == key
+        if not model.ready:
+            status = "Coming soon"
+        elif here:
+            done, total = downloading[1], downloading[2] or 1
+            status = f"Downloading {done * 100 // total}%  ({done / 1e9:.1f} of {total / 1e9:.1f} GB)"
+            self.progress.setValue(done * 1000 // total)
+        elif key == loading:
+            status = "Loading..."
+        elif key == in_use:
+            status = f"{GLYPHS['check']}  In use"
+        else:
+            status = "Downloaded" if installed and model.download else ""
+        self.status.setText(status)
+        self.progress.setVisible(here)
+        self.download.setVisible(model.ready and not installed and not here)
+        self.download.setEnabled(not downloading)  # one download at a time
+        self.cancel.setVisible(here)
+        self.choose.setVisible(model.ready and installed and key != chosen)
+        self.choose.setEnabled(not loading)
+        self.remove.setVisible(bool(model.download) and installed and key not in (chosen, in_use))
+        self.language_row.setVisible(model.language_choice and installed)
+        self.language.blockSignals(True)  # showing the setting isn't changing it
+        self.language.setCurrentIndex(max(0, self.language.findData(app.settings.speech_language)))
+        self.language.blockSignals(False)
+
+
 class SpeechPage(Page):
     """Which model turns the voice into text: a building block of its own, chosen apart from the AI cleanup."""
 
@@ -863,7 +931,7 @@ class SpeechPage(Page):
         tabs.addStretch()
         self.add(tabs)
         self.groups = QStackedWidget()
-        self.models: dict[str, tuple[QLabel, QPushButton]] = {}  # key -> (status, button)
+        self.models: dict[str, _ModelCard] = {}
         for key in WHERE:
             self.groups.addWidget(self._group(key))
         self.add(self.groups)
@@ -878,18 +946,8 @@ class SpeechPage(Page):
         layout.setSpacing(12)
         models = [m for m in SPEECH_MODELS.values() if m.where == where]
         for model in models:
-            frame, card_layout = card(6)
-            status = text("", muted=True, wrap=False)
-            mixed = QFont()  # the check mark comes from the icon font, the words from Segoe UI
-            mixed.setFamilies(["Segoe UI", *ICON_FONTS])
-            status.setFont(mixed)
-            choose = button("Use this model", lambda _=False, k=model.key: self.app.choose_speech_model(k), primary=True)
-            card_layout.addLayout(row(text(model.name, "h2", wrap=False), status, stretch_at=1))
-            card_layout.addWidget(text(model.summary))
-            card_layout.addWidget(text(f"Languages: {model.languages}  ·  Size: {model.size}", muted=True))
-            card_layout.addLayout(row(choose, stretch_at=1))
-            self.models[model.key] = (status, choose)
-            layout.addWidget(frame)
+            self.models[model.key] = _ModelCard(self.app, model)
+            layout.addWidget(self.models[model.key].frame)
         if where == "local":
             frame, card_layout = card(6)
             card_layout.addWidget(text("Not sure which model suits your computer?", "h2"))
@@ -921,19 +979,8 @@ class SpeechPage(Page):
         self.refresh()
 
     def refresh(self) -> None:
-        chosen, in_use, loading = self.app.settings.speech_model, self.app.speech_in_use(), self.app.loading_speech
-        for key, (status, choose) in self.models.items():
-            ready = SPEECH_MODELS[key].ready
-            if not ready:
-                status.setText("Coming soon")
-            elif key == loading:
-                status.setText("Loading...")
-            elif key == in_use:
-                status.setText(f"{GLYPHS['check']}  In use")
-            else:
-                status.setText("")
-            choose.setVisible(ready and key != chosen)
-            choose.setEnabled(not loading)
+        for model_card in self.models.values():
+            model_card.refresh()
 
 
 # ---------------------------------------------------------------- AI cleanup
@@ -1406,7 +1453,7 @@ class MainWindow(QWidget):
     def show_page(self, key: str) -> None:
         page = self.pages[key]
         self._show_profile()
-        if key in ("home", "dictionary", "profiles"):
+        if key in ("home", "dictionary", "profiles", "speech"):
             page.refresh()
         elif key == "welcome":
             page.refresh(self.ready)
@@ -1455,7 +1502,7 @@ class MainWindow(QWidget):
         """New dictation, words, settings or profile name: update what is on screen."""
         self._show_profile()
         current = self.current_page()
-        if current in ("home", "dictionary", "profiles"):
+        if current in ("home", "dictionary", "profiles", "speech"):
             self.pages[current].refresh()
         elif current == "welcome":
             self.pages[current].refresh(self.ready)
@@ -1500,6 +1547,7 @@ class PreviewApp:
         self.stats = stats or Stats()
         self._microphones = microphones if microphones is not None else ["Microphone (Realtek(R) Audio)"]
         self.loading_speech = ""
+        self.downloading: tuple[str, int, int] | None = None
         self.calls: list[tuple] = []  # what the window asked for
 
     def hotkey_label(self) -> str:
@@ -1524,6 +1572,19 @@ class PreviewApp:
     def choose_speech_model(self, key: str) -> None:
         self.settings.speech_model = key
         self.calls.append(("choose_speech_model", key))
+
+    def set_speech_language(self, code: str) -> None:
+        self.settings.speech_language = code
+        self.calls.append(("set_speech_language", code))
+
+    def download_speech_model(self, key: str) -> None:
+        self.calls.append(("download_speech_model", key))
+
+    def cancel_download(self) -> None:
+        self.calls.append(("cancel_download",))
+
+    def remove_speech_model(self, key: str) -> None:
+        self.calls.append(("remove_speech_model", key))
 
     def apply_settings(self, new: Settings) -> None:
         self.settings = new

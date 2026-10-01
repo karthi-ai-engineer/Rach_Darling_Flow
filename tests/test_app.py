@@ -107,6 +107,8 @@ class FakeEngine:
 
     def __init__(self, name="parakeet"):
         self.name, self.title, self.words = name, name.title(), []
+        if name.startswith("whisper"):
+            self.language = ""  # like the real one: a model that knows many languages
 
     def transcribe(self, audio, rate):
         return "hello"
@@ -138,7 +140,7 @@ def tray_app(monkeypatch, tmp_path):
         "time": "2026-09-30 10:15:00", "text": text}))
     monkeypatch.setattr(sst_app, "read_history", lambda path=None: history)
     loads = []
-    monkeypatch.setattr(sst_app, "load_engine", lambda name: loads.append(name) or FakeEngine(name))
+    monkeypatch.setattr(sst_app, "load_engine", lambda name, language="": loads.append(name) or FakeEngine(name))
     monkeypatch.setattr(sst_app, "HotkeyListener", FakeListener)
     monkeypatch.setattr(sst_app, "wispr_flow_running", lambda: False)
     monkeypatch.setattr(sst_app, "input_device_names", lambda refresh=True: ["Mic A"])
@@ -219,13 +221,10 @@ def _wait_for(condition, qt_wait):
     return condition()
 
 
-def test_another_speech_model_loads_in_the_background_and_takes_over(tray_app, monkeypatch):
+def test_another_speech_model_loads_in_the_background_and_takes_over(tray_app, whisper_downloaded):
     from PySide6.QtTest import QTest
 
-    from sst import engines
     app, saved, _ = tray_app
-    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
-                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
     first = app.dictation.engine
     assert first.name == "parakeet" and app.speech_in_use() == "parakeet"
     app.add_words(["Tamil"])
@@ -236,22 +235,19 @@ def test_another_speech_model_loads_in_the_background_and_takes_over(tray_app, m
     assert not app.loading_speech and "Ready" in app.window.status_label.text()
 
 
-def test_a_model_this_version_cannot_use_is_not_chosen(tray_app):
+def test_a_model_not_downloaded_or_unknown_is_not_chosen(tray_app):
     app, saved, _ = tray_app
-    app.choose_speech_model("whisper-turbo")  # listed as coming soon
+    app.choose_speech_model("whisper-turbo")  # not downloaded: the page offers the download instead
     app.choose_speech_model("no-such-model")
     assert app.settings.speech_model == "parakeet" and app.speech_in_use() == "parakeet"
 
 
-def test_a_failed_switch_keeps_the_model_in_use(tray_app, monkeypatch):
+def test_a_failed_switch_keeps_the_model_in_use(tray_app, monkeypatch, whisper_downloaded):
     from PySide6.QtTest import QTest
 
-    from sst import engines
     app, _, _ = tray_app
-    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
-                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
 
-    def broken(name):
+    def broken(name, language=""):
         raise OSError("not downloaded")
     monkeypatch.setattr(sst_app, "load_engine", broken)
     told = []
@@ -261,15 +257,55 @@ def test_a_failed_switch_keeps_the_model_in_use(tray_app, monkeypatch):
     assert app.speech_in_use() == "parakeet" and "still using NVIDIA Parakeet" in told[-1]
 
 
-def test_switching_profiles_switches_the_speech_model(tray_app, monkeypatch):
+def test_switching_profiles_switches_the_speech_model(tray_app, whisper_downloaded):
     from PySide6.QtTest import QTest
 
-    from sst import engines
     app, _, _ = tray_app
-    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
-                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
     app.create_profile("Rahul")
     app.choose_speech_model("whisper-turbo")
     assert _wait_for(lambda: app.speech_in_use() == "whisper-turbo", QTest.qWait)
     app.switch_profile("default")  # Karthi's profile still uses Parakeet
     assert _wait_for(lambda: app.speech_in_use() == "parakeet", QTest.qWait)
+
+
+def test_downloading_a_speech_model_then_using_it(tray_app, monkeypatch, whisper_downloaded):
+    from PySide6.QtTest import QTest
+    app, saved, _ = tray_app
+    seen = []
+
+    def fake_download(model, progress, cancelled):
+        progress(model.size // 2, model.size)
+        seen.append(app.downloading)
+        progress(model.size, model.size)
+    monkeypatch.setattr(sst_app.downloads, "download", fake_download)
+    app.download_speech_model("whisper-turbo")
+    assert _wait_for(lambda: app.speech_in_use() == "whisper-turbo", QTest.qWait)
+    assert app.downloading is None and saved["settings"].speech_model == "whisper-turbo"
+    app.set_speech_language("ta")
+    assert app.dictation.engine.language == "ta"  # no reload needed
+
+
+def test_a_cancelled_or_failed_download_changes_nothing(tray_app, monkeypatch):
+    from PySide6.QtTest import QTest
+    app, _, _ = tray_app
+    told = []
+    monkeypatch.setattr(app, "_notify", lambda title, message, *_: told.append(message))
+    for error in (sst_app.downloads.Cancelled("cancelled"), sst_app.downloads.DownloadError("no connection")):
+        def fake_download(model, progress, cancelled, error=error):
+            raise error
+        monkeypatch.setattr(sst_app.downloads, "download", fake_download)
+        app.download_speech_model("whisper-turbo")
+        assert _wait_for(lambda: app.downloading is None, QTest.qWait)
+    assert app.speech_in_use() == "parakeet" and len(told) == 1 and "no connection" in told[0]
+
+
+def test_only_a_model_not_in_use_can_be_removed(tray_app, monkeypatch, whisper_downloaded):
+    removed = []
+    monkeypatch.setattr(sst_app.downloads, "remove", lambda model: removed.append(model.folder))
+    app, _, _ = tray_app
+    app.remove_speech_model("parakeet")  # comes with Rflow: nothing to remove
+    app.remove_speech_model("whisper-turbo")
+    assert removed == ["faster-whisper-large-v3-turbo"]
+    app.choose_speech_model("whisper-turbo")
+    app.remove_speech_model("whisper-turbo")  # chosen now: stays
+    assert removed == ["faster-whisper-large-v3-turbo"]

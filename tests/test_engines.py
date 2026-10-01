@@ -14,13 +14,17 @@ def test_every_model_says_where_it_runs_and_what_it_is():
 def test_parakeet_is_the_default_and_the_models_ready_now_can_be_loaded():
     assert engines.DEFAULT_MODEL == "parakeet" and engines.SPEECH_MODELS["parakeet"].ready
     assert engines.ENGINES == [k for k, m in engines.SPEECH_MODELS.items() if m.ready]
-    assert "whisper-turbo" in engines.SPEECH_MODELS  # listed as coming next
+    assert engines.SPEECH_MODELS["whisper-turbo"].download is not None  # downloaded when chosen
 
 
 def test_a_setting_this_version_cannot_use_falls_back_to_the_default():
     assert engines.usable("parakeet") == "parakeet"
-    assert engines.usable("whisper-turbo") == "parakeet"  # not ready yet
+    assert engines.usable("whisper-turbo") == "parakeet"  # chosen but not downloaded (removed, or another laptop)
     assert engines.usable("from-a-newer-version") == "parakeet"
+
+
+def test_a_downloaded_model_is_used(whisper_downloaded):
+    assert engines.usable("whisper-turbo") == "whisper-turbo"
 
 
 def test_the_chosen_model_is_a_profile_setting_and_old_files_get_parakeet(tmp_path):

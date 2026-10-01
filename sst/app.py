@@ -28,7 +28,7 @@ from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QFont, QFo
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
-from sst import __version__, bench, evaluate, updates
+from sst import __version__, bench, downloads, evaluate, updates
 from sst.audio import TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import SPEECH_MODELS, load_engine, usable
@@ -224,6 +224,8 @@ class _Signals(QObject):
     update_progress = Signal(str)
     update_ready = Signal(str)
     update_failed = Signal(str, bool)  # (message, tell the user)
+    download_progress = Signal(str, int, int)  # (speech model, bytes done, bytes in all)
+    download_done = Signal(str, str)  # (speech model, "" or "cancelled" or why it failed)
 
 
 class TrayApp:
@@ -235,6 +237,8 @@ class TrayApp:
         self.recorder = self.new_recorder()
         self.dictation: Dictation | None = None
         self.loading_speech = ""  # the speech model being loaded in the background, if any
+        self.downloading: tuple[str, int, int] | None = None  # (speech model, bytes done, bytes in all)
+        self._cancel_download = threading.Event()
         self.listener: HotkeyListener | None = None
         self.quiet_start = quiet_start
         self._cleanup_notice = -1e9  # when the user was last told that the cleanup couldn't help
@@ -251,6 +255,8 @@ class TrayApp:
         self.signals.update_progress.connect(lambda message: self.window.show_update(message, busy=True))
         self.signals.update_ready.connect(self._on_update_ready)
         self.signals.update_failed.connect(self._on_update_failed)
+        self.signals.download_progress.connect(self._on_download_progress)
+        self.signals.download_done.connect(self._on_download_done)
 
         self.icon = QIcon(str(ICON_FILE))
         self.recording_icon = _with_red_dot(self.icon)
@@ -321,7 +327,7 @@ class TrayApp:
         def work() -> None:
             try:
                 t0 = time.perf_counter()
-                engine = load_engine(key)
+                engine = load_engine(key, self.settings.speech_language)
                 log.info("Speech model %s loaded in %.1fs", key, time.perf_counter() - t0)
                 self.signals.loaded.emit(engine)
             except Exception as e:
@@ -390,6 +396,8 @@ class TrayApp:
     def _apply_cleanup(self) -> None:
         """Use Your words and the model chosen in AI cleanup from the next dictation on."""
         s = self.settings
+        if hasattr(self.dictation.engine, "language"):
+            self.dictation.engine.language = s.speech_language
         if hasattr(self.dictation.engine, "words"):
             self.dictation.engine.words = list(s.vocabulary)  # the recogniser listens for them (hotwords)
         model = s.cleanup_model if s.cleanup else ""
@@ -489,6 +497,8 @@ class TrayApp:
             if (new.cleanup, new.cleanup_model, new.cleanup_fallback, new.vocabulary) != (
                     old.cleanup, old.cleanup_model, old.cleanup_fallback, old.vocabulary):
                 self._apply_cleanup()  # the chosen model is active from the next dictation
+            if new.speech_language != old.speech_language and hasattr(self.dictation.engine, "language"):
+                self.dictation.engine.language = new.speech_language  # from the next dictation; no reload needed
             if new.hotkey != old.hotkey:
                 self._start_listener()
         if new.speech_model != old.speech_model:
@@ -531,8 +541,66 @@ class TrayApp:
 
     def choose_speech_model(self, key: str) -> None:
         """The Speech recognition page: use this model from now on (it loads in the background)."""
-        if key in SPEECH_MODELS and SPEECH_MODELS[key].ready and key != self.settings.speech_model:
+        model = SPEECH_MODELS.get(key)
+        if model and model.ready and model.installed() and key != self.settings.speech_model:
             self.apply_settings(dataclasses.replace(self.settings, speech_model=key))
+
+    def set_speech_language(self, code: str) -> None:
+        if code != self.settings.speech_language:
+            self.apply_settings(dataclasses.replace(self.settings, speech_language=code))
+
+    def download_speech_model(self, key: str) -> None:
+        """Download a speech model in the background (one at a time), then use it."""
+        model = SPEECH_MODELS.get(key)
+        if not model or not model.download or self.downloading:
+            return
+        self.downloading = (key, 0, model.download.size)
+        self._cancel_download.clear()
+        self.window.refresh()
+        last = [-1]
+
+        def progress(done: int, total: int) -> None:
+            percent = done * 100 // total if total else 0
+            if percent != last[0]:  # the window needn't redraw for every megabyte
+                last[0] = percent
+                self.signals.download_progress.emit(key, done, total)
+
+        def work() -> None:
+            try:
+                downloads.download(model.download, progress, self._cancel_download.is_set)
+                self.signals.download_done.emit(key, "")
+            except downloads.Cancelled:
+                self.signals.download_done.emit(key, "cancelled")
+            except Exception as e:
+                log.exception("Downloading %s failed", key)
+                self.signals.download_done.emit(key, str(e) or type(e).__name__)
+        threading.Thread(target=work, name="model-download", daemon=True).start()
+
+    def cancel_download(self) -> None:
+        self._cancel_download.set()  # what is downloaded so far stays, and the next try goes on from there
+
+    def remove_speech_model(self, key: str) -> None:
+        """Free the disk space of a downloaded model that isn't in use."""
+        model = SPEECH_MODELS.get(key)
+        if model and model.download and key not in (self.settings.speech_model, self.speech_in_use()) and \
+                not (self.downloading and self.downloading[0] == key):
+            downloads.remove(model.download)
+            log.info("Removed the download of %s", key)
+            self.window.refresh()
+
+    def _on_download_progress(self, key: str, done: int, total: int) -> None:
+        self.downloading = (key, done, total)
+        self.window.refresh()
+
+    def _on_download_done(self, key: str, error: str) -> None:
+        self.downloading = None
+        name = SPEECH_MODELS[key].name
+        if not error:
+            log.info("%s downloaded", name)
+            self.choose_speech_model(key)  # what the user asked for: download it and use it
+        elif error != "cancelled":
+            self._notify(APP_NAME, f"Could not download {name}: {error}", QSystemTrayIcon.MessageIcon.Warning)
+        self.window.refresh()
 
     def speech_in_use(self) -> str:
         """The speech model dictation uses right now ("" while the first one loads)."""
@@ -751,6 +819,9 @@ def self_test() -> int:
         window.grab()
     window.pages["reading"].ensure_test().grab()
     _with_red_dot(QIcon(str(ICON_FILE)))
+    import ctranslate2  # noqa: F401 (Whisper's runtime: bundled and its DLLs load, without needing the downloaded model)
+    import faster_whisper  # noqa: F401
+
     from sst.engines.parakeet import MODEL_DIR
     wav = MODEL_DIR / "test_wavs" / "0.wav"
     engine = load_engine("parakeet")
