@@ -68,7 +68,7 @@ ICON_FILE = Path(__file__).parent / "static" / "sst.ico"
 UI_IMAGES = Path(__file__).parent / "static" / "ui"  # drawn by scripts/make_ui_images.py
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "sst" / "logs"
 WEBSITE = "https://rachdarlingflow-site.vercel.app"
-REPO = "https://github.com/karthi-ai-engineer/Rach_Darling_Flow"
+REPO = "https://github.com/karthi-ai-engineer/Rach_flow"
 HOTKEY_CHOICES = [("Ctrl+Win (like Wispr Flow)", "ctrl+win"), ("Menu key", "menu"), ("Ctrl+Alt+D", "ctrl+alt+d")]
 
 log = logging.getLogger("sst.window")

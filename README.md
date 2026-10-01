@@ -1,6 +1,6 @@
 # Rflow
 
-[![CI](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml/badge.svg)](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml)
+[![CI](https://github.com/karthi-ai-engineer/Rach_flow/actions/workflows/ci.yml/badge.svg)](https://github.com/karthi-ai-engineer/Rach_flow/actions/workflows/ci.yml)
 
 **Speak anywhere, Rflow types it.** Hold **Ctrl+Win** in any Windows app, speak, let go: your words are typed where
 your cursor is. Speech is recognised **on your laptop** by NVIDIA Parakeet (English), so your voice never leaves it;
@@ -10,7 +10,7 @@ choose cleans up the text (punctuation, fillers, your own words).
 ## Install
 
 Download **`Rflow-Setup.exe`** (the latest version:
-[releases/latest](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases/latest), about 90 MB) and run it. It
+[releases/latest](https://github.com/karthi-ai-engineer/Rach_flow/releases/latest), about 90 MB) and run it. It
 needs no administrator rights and no Python. Windows 10/11, 64-bit. The first time, Rflow asks how to recognise your
 speech: download NVIDIA Parakeet once (about 660 MB; offline from then on), or use a cloud model or your own server.
 
@@ -128,8 +128,8 @@ in a console window, without cleanup. Also `uv run sst web` (a Record button in 
 Needs Windows 10/11 and [uv](https://docs.astral.sh/uv/).
 
 ```
-git clone https://github.com/karthi-ai-engineer/Rach_Darling_Flow.git
-cd Rach_Darling_Flow
+git clone https://github.com/karthi-ai-engineer/Rach_flow.git
+cd Rach_flow
 uv sync                                          # install dependencies into .venv
 uv run python scripts/download_model.py parakeet # ~630 MB model into models/, and its bpe.vocab for Your words
 ```
@@ -162,7 +162,7 @@ Work happens phase by phase: an issue, a branch and a pull request into `main`, 
 ## Layout
 
 ```
-Rach_Darling_Flow/
+Rach_flow/
 ├─ site/                      the download website (Vercel): index.html, screenshots, icon
 ├─ dictate.cmd                double-click: dictate in a console window (from source)
 ├─ web.cmd                    double-click: web page

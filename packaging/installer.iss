@@ -16,9 +16,9 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher=karthi-ai-engineer
-AppPublisherURL=https://github.com/karthi-ai-engineer/Rach_Darling_Flow
-AppSupportURL=https://github.com/karthi-ai-engineer/Rach_Darling_Flow/issues
-AppUpdatesURL=https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases
+AppPublisherURL=https://github.com/karthi-ai-engineer/Rach_flow
+AppSupportURL=https://github.com/karthi-ai-engineer/Rach_flow/issues
+AppUpdatesURL=https://github.com/karthi-ai-engineer/Rach_flow/releases
 ; Per-user install into %LOCALAPPDATA%\Programs: no administrator rights needed.
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\{#AppName}
