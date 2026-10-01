@@ -103,7 +103,10 @@ class FakeListener:
 
 
 class FakeEngine:
-    name = "fake"
+    """Named after the model it was loaded as, like the real engines."""
+
+    def __init__(self, name="parakeet"):
+        self.name, self.title, self.words = name, name.title(), []
 
     def transcribe(self, audio, rate):
         return "hello"
@@ -134,7 +137,8 @@ def tray_app(monkeypatch, tmp_path):
     monkeypatch.setattr(sst_app, "add_to_history", lambda text, heard=None, path=None: history.insert(0, {
         "time": "2026-09-30 10:15:00", "text": text}))
     monkeypatch.setattr(sst_app, "read_history", lambda path=None: history)
-    monkeypatch.setattr(sst_app, "load_engine", lambda name: FakeEngine())
+    loads = []
+    monkeypatch.setattr(sst_app, "load_engine", lambda name: loads.append(name) or FakeEngine(name))
     monkeypatch.setattr(sst_app, "HotkeyListener", FakeListener)
     monkeypatch.setattr(sst_app, "wispr_flow_running", lambda: False)
     monkeypatch.setattr(sst_app, "input_device_names", lambda refresh=True: ["Mic A"])
@@ -205,3 +209,67 @@ def test_each_profile_has_its_own_setup(tray_app):
     assert saved["profiles"].active == "default"
     app.delete_profile("rahul")
     assert [p.id for p in app.profiles.items] == ["default"]
+
+
+def _wait_for(condition, qt_wait):
+    for _ in range(100):
+        if condition():
+            return True
+        qt_wait(20)
+    return condition()
+
+
+def test_another_speech_model_loads_in_the_background_and_takes_over(tray_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    from sst import engines
+    app, saved, _ = tray_app
+    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
+                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
+    first = app.dictation.engine
+    assert first.name == "parakeet" and app.speech_in_use() == "parakeet"
+    app.add_words(["Tamil"])
+    app.choose_speech_model("whisper-turbo")
+    assert saved["settings"].speech_model == "whisper-turbo"
+    assert _wait_for(lambda: app.speech_in_use() == "whisper-turbo", QTest.qWait)
+    assert app.dictation.engine is not first and app.dictation.engine.words == ["Tamil"]  # Your words go along
+    assert not app.loading_speech and "Ready" in app.window.status_label.text()
+
+
+def test_a_model_this_version_cannot_use_is_not_chosen(tray_app):
+    app, saved, _ = tray_app
+    app.choose_speech_model("whisper-turbo")  # listed as coming soon
+    app.choose_speech_model("no-such-model")
+    assert app.settings.speech_model == "parakeet" and app.speech_in_use() == "parakeet"
+
+
+def test_a_failed_switch_keeps_the_model_in_use(tray_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    from sst import engines
+    app, _, _ = tray_app
+    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
+                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
+
+    def broken(name):
+        raise OSError("not downloaded")
+    monkeypatch.setattr(sst_app, "load_engine", broken)
+    told = []
+    monkeypatch.setattr(app, "_notify", lambda title, message, *_: told.append(message))
+    app.choose_speech_model("whisper-turbo")
+    assert _wait_for(lambda: not app.loading_speech, QTest.qWait)
+    assert app.speech_in_use() == "parakeet" and "still using NVIDIA Parakeet" in told[-1]
+
+
+def test_switching_profiles_switches_the_speech_model(tray_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    from sst import engines
+    app, _, _ = tray_app
+    monkeypatch.setitem(engines.SPEECH_MODELS, "whisper-turbo",
+                        dataclasses.replace(engines.SPEECH_MODELS["whisper-turbo"], ready=True))
+    app.create_profile("Rahul")
+    app.choose_speech_model("whisper-turbo")
+    assert _wait_for(lambda: app.speech_in_use() == "whisper-turbo", QTest.qWait)
+    app.switch_profile("default")  # Karthi's profile still uses Parakeet
+    assert _wait_for(lambda: app.speech_in_use() == "parakeet", QTest.qWait)
