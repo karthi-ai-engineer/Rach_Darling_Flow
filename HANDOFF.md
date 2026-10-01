@@ -20,7 +20,7 @@ _Last updated: 2026-10-01_
   - 15: "Scan my computer" (PR #37)
   - 16: cloud speech models (PR #39)
   - 17: your own server (PR #41)
-  - 18: Parakeet downloaded on demand, and version 1.5.0 (the phase-18 PR)
+  - 18: Parakeet downloaded on demand, and version 1.5.0 (PR #43)
 
   Phases 14-18 are stacked PRs, all built, waiting for the owner's test and merge; then the tag `v1.5.0` releases
   them. The installer drops from 571 MB to 90 MB. The correction work (sound-alike fixer, confidence-gated
@@ -94,7 +94,7 @@ _Last updated: 2026-10-01_
 | 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR #39 (stacked on #37), waiting for the owner's test + merge |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | PR #41 (stacked on #39), waiting for the owner's test + merge |
-| 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | PR (stacked on #41), waiting for the owner's test + merge, then the tag `v1.5.0` |
+| 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | PR #43 (stacked on #41), waiting for the owner's test + merge, then the tag `v1.5.0` |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -961,7 +961,7 @@ These were scratch scripts, not in git. The findings:
      asks how to recognise speech → Download Parakeet → dictate when it's done. Updating over 1.4.0 must need no
      download.
 
-   Then merge them in order (#35, #37, #39, #41, phase 18), retargeting each next one to `main` before deleting its
+   Then merge them in order (#35, #37, #39, #41, #43), retargeting each next one to `main` before deleting its
    base. **Release:** after the last merge, tag `v1.5.0` on `main` (CLAUDE.md, step 7); the Release workflow
    publishes the 90 MB `Rflow-Setup.exe`, the website's button follows, and installed copies offer the update.
 2. **The building-block plan is built** (phases 13-18; see **Speech recognition as a building block**). Possible
