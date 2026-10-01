@@ -90,7 +90,7 @@ _Last updated: 2026-10-01_
 | 13 | **Speech recognition as a building block**: a catalog of speech models, a per-profile choice, background switching, the Speech recognition page | done, on `main` (PR #33) |
 | 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | PR #35, waiting for the owner's test + merge |
 | 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
-| 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR (stacked on #37), waiting for the owner's test + merge |
+| 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR #39 (stacked on #37), waiting for the owner's test + merge |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -860,7 +860,7 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **Owner:** try PRs #35, #37 and the phase-16 PR together (an installer built from the phase-16 branch has all
+1. **Owner:** try PRs #35, #37 and #39 together (an installer built from the phase-16 branch has all
    three):
    - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"
    - dictate in English, and in Tamil with the language set
@@ -869,9 +869,9 @@ These were scratch scripts, not in git. The findings:
    - Cloud → a provider you have a key for (Groq has a free tier) → paste the key → Test → Use this model → dictate;
      then turn Wi-Fi off and dictate: Parakeet should type it, and say so
 
-   Then merge #35; retarget #37 to `main` and merge it; retarget the phase-16 PR to `main` and merge it.
+   Then merge #35; retarget #37 to `main` and merge it; retarget #39 to `main` and merge it.
 2. **The owner's building-block plan, in this order** (2026-10-01; see **Speech recognition as a building block**):
-   - 16: cloud speech models (done: the phase-16 PR)
+   - 16: cloud speech models (PR #39)
    - 17: your own server (vLLM, the company gateway: find its speech endpoint first; `/audio/transcriptions` gave 404)
    - 18: Parakeet downloaded on demand, with a first-start choice of speech model. The installer drops from ~570 MB to
      ~90-100 MB (~270 MB installed). The website's "works offline, model included" changes.
