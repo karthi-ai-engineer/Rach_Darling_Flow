@@ -16,13 +16,15 @@ _Last updated: 2026-10-01_
 - The owner **uses 1.4.0 for real dictation**, now on both laptops. A raw-mode set is still to be read.
 - **The owner's plan (2026-10-01):** Rflow becomes building blocks. Speech recognition is chosen like the AI cleanup:
   - 13: the building block itself (merged)
-  - 14: Whisper turbo on this computer
-  - 15: "Scan my computer"
-  - 16: cloud speech models
-  - 17: your own server
-  - 18: Parakeet downloaded on demand, then the release
+  - 14: Whisper turbo on this computer (PR #35)
+  - 15: "Scan my computer" (PR #37)
+  - 16: cloud speech models (PR #39)
+  - 17: your own server (PR #41)
+  - 18: Parakeet downloaded on demand, and version 1.5.0 (the phase-18 PR)
 
-  The correction work (sound-alike fixer, confidence-gated cleanup) comes after them. See **Next steps**.
+  Phases 14-18 are stacked PRs, all built, waiting for the owner's test and merge; then the tag `v1.5.0` releases
+  them. The installer drops from 571 MB to 90 MB. The correction work (sound-alike fixer, confidence-gated
+  cleanup) comes after them. See **Next steps**.
 
 **Read in this order:**
 1. This section and **Next steps** (the end of this file).
@@ -92,6 +94,7 @@ _Last updated: 2026-10-01_
 | 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR #39 (stacked on #37), waiting for the owner's test + merge |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | PR #41 (stacked on #39), waiting for the owner's test + merge |
+| 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | PR (stacked on #41), waiting for the owner's test + merge, then the tag `v1.5.0` |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -152,7 +155,7 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
   dev copy is running. The steps are PyInstaller (one folder, `packaging/sst.spec`), then the model into
   `dist/sst/models` (hard links), then a smoke test (`dist/sst/sst.exe file` must transcribe the model's test WAV),
   then Inno Setup (`packaging/installer.iss`). It takes about 95 s and produces a 500 MB `Setup.exe`
-  (710 MB installed).
+  (710 MB installed). Since phase 18 the model is taken out before Inno Setup: see **Parakeet downloaded on demand**.
 - Installs per user into `%LOCALAPPDATA%\Programs\SST Dictation`, so no admin is needed. There is a Start menu
   shortcut, plus optional desktop and start-at-sign-in shortcuts. The model is inside, so it works offline.
 - The installed app keeps recordings in `%LOCALAPPDATA%\sst\recordings` and its model next to `sst.exe`
@@ -805,6 +808,59 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
   reload and back to Parakeet when the server is removed, and the card (prefilled from AI cleanup's server, Load
   models, Test, Use, Save).
 
+## Parakeet downloaded on demand (phase 18)
+
+- **Where Parakeet comes from:** `csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming` on Hugging
+  Face (the sherpa-onnx author's copy), revision `8c3a10fb`, pinned in `sst/engines/parakeet.py` (`MODEL`):
+  - the encoder, decoder, joiner and tokens.txt, plus NVIDIA's model card (bias, explainability, privacy, safety)
+  - 663 MB, every file's SHA-256 checked
+  - byte for byte the files Rflow 1.4 installed: the same hashes, and the same folder name, so the eval cache still
+    applies
+  - Downloaded through `sst.downloads` like Whisper (resume, cancel, retries), into
+    `%LOCALAPPDATA%\sst\models`. Tried for real on 2026-10-01: 663 MB in 370 s, then the sample transcribed with
+    hotwords on.
+- **Comes with Rflow:**
+  - `sst/static/parakeet/bpe.vocab`: 10 KB, cut from NVIDIA's 2.5 GB `.nemo`; the hotwords need it, and the
+    Hugging Face copy lacks it. `.gitattributes` keeps it byte-exact (`*.vocab -text`), because sherpa-onnx parses it.
+  - `sst/static/sample.wav`: the sample sentence for the scan and the cloud and server Tests; a LibriVox reading, see
+    NOTICES.
+- **Found first next to the program** (`parakeet.find_model()`): `MODEL_DIR` is where Rflow 1.4 and older installed
+  it, or the source checkout's `models/`.
+  - An update keeps it: the installer's `[InstallDelete]` only removes `_internal`, so `{app}\models` stays.
+  - `SpeechModel.found` counts it as installed, and "Remove download" only shows for a real download.
+- **No speech model yet** (a new install that hasn't chosen one): `usable()` returns `""`.
+  - The app starts without dictation, and the status says "Choose a speech model to start dictating".
+  - A welcomed user is told once.
+  - Dictation starts as soon as Parakeet is downloaded (`_on_download_done` also calls `_load_speech`, since
+    `parakeet` is the default setting) or a cloud or server model is chosen.
+- **The welcome** has a new step 2, "How Rflow recognises your speech":
+  - "Download Parakeet (663 MB)", with progress and Cancel ("Meanwhile, choose your microphone")
+  - or "Use a cloud model or your own server instead", which finishes the welcome on the Speech recognition page
+
+  Step 4 ("Try it") waits for it.
+- **Without Parakeet:**
+  - The cloud and server cards say "Download Parakeet too ... to have it type when ... can't be reached", instead
+    of promising it.
+  - A failed transcription keeps the recording (`recordings`), and the error says so.
+- **The installer:** `build_installer.py` links the model in for the smoke test (rflow-cli transcribes the sample;
+  `Rflow.exe --self-test` transcribes it when it finds the model), then takes it out before Inno Setup. Solid LZMA2
+  now (many small files).
+
+  | | Installer | Installed |
+  |---|---|---|
+  | 1.4.0 | 571 MB | ~900 MB |
+  | 1.5.0 | 90 MB | 288 MB, plus 663 MB once Parakeet is downloaded |
+
+  CI still downloads the model with `scripts/download_model.py` for the smoke test.
+- **The website and the installer's text** no longer say the model is included or that no internet is needed. They
+  describe the choice, Whisper's languages, and what goes where (FAQ "Is my voice sent anywhere?").
+- **Version 1.5.0** (`sst/__init__.py`): phases 14-18.
+- **Not removed on uninstall:** downloaded models stay in `%LOCALAPPDATA%\sst\models` (shared with the source
+  checkout), like the settings.
+- **Tests: 330.** They cover the pinned download, Parakeet found next to the program or downloaded, no model at all,
+  the bundled vocabulary (no CR) and sample, a new install starting without a model then downloading Parakeet, a
+  cloud-only start, the welcome's step, the pages without Parakeet, the kept recording, and the fallback's message.
+
 ## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
 
 - **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
@@ -901,14 +957,15 @@ These were scratch scripts, not in git. The findings:
      then turn Wi-Fi off and dictate: Parakeet should type it, and say so
    - Your own server → it is filled in from AI cleanup's server, or enter the company gateway → Load models →
      whisper-1 → Test → Use this model → dictate
+   - a new install: on a computer (or Windows account) without Rflow, install `Rflow-Setup-1.5.0.exe`; the welcome
+     asks how to recognise speech → Download Parakeet → dictate when it's done. Updating over 1.4.0 must need no
+     download.
 
-   Then merge them in order (#35, #37, #39, #41), retargeting each next one to `main` before deleting its base.
-2. **The owner's building-block plan, in this order** (2026-10-01; see **Speech recognition as a building block**):
-   - 16: cloud speech models (PR #39)
-   - 17: your own server (PR #41)
-   - 18: Parakeet downloaded on demand, with a first-start choice of speech model. The installer drops from ~570 MB to
-     ~90-100 MB (~270 MB installed). The website's "works offline, model included" changes.
-   - then release. Whisper's runtime on demand too (installer ~50 MB) is possible later.
+   Then merge them in order (#35, #37, #39, #41, phase 18), retargeting each next one to `main` before deleting its
+   base. **Release:** after the last merge, tag `v1.5.0` on `main` (CLAUDE.md, step 7); the Release workflow
+   publishes the 90 MB `Rflow-Setup.exe`, the website's button follows, and installed copies offer the update.
+2. **The building-block plan is built** (phases 13-18; see **Speech recognition as a building block**). Possible
+   later: Whisper's runtime on demand too (installer ~50 MB), and the website's screenshots of the new pages.
 3. **The owner, meanwhile:**
    - Keep only names and terms in Your words.
    - Read a set with Settings → "Turn off Windows' voice effects" on (raw mode). Set B in Windows mode was read on the

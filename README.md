@@ -3,18 +3,20 @@
 [![CI](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml/badge.svg)](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/actions/workflows/ci.yml)
 
 **Speak anywhere, Rflow types it.** Hold **Ctrl+Win** in any Windows app, speak, let go: your words are typed where
-your cursor is. Speech is recognised **on your laptop** by NVIDIA Parakeet (English); your voice is never uploaded.
-Optionally, an AI model you choose cleans up the text (punctuation, fillers, your own words).
+your cursor is. Speech is recognised **on your laptop** by NVIDIA Parakeet (English), so your voice never leaves it;
+or choose Whisper (99 languages), a cloud model with your own key, or your own server. Optionally, an AI model you
+choose cleans up the text (punctuation, fillers, your own words).
 
 ## Install
 
 Download **`Rflow-Setup.exe`** (the latest version:
-[releases/latest](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases/latest)) and run it. It needs no
-administrator rights, no Python and no internet connection: the ~650 MB speech model is inside. Windows 10/11, 64-bit.
+[releases/latest](https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases/latest), about 90 MB) and run it. It
+needs no administrator rights and no Python. Windows 10/11, 64-bit. The first time, Rflow asks how to recognise your
+speech: download NVIDIA Parakeet once (about 660 MB; offline from then on), or use a cloud model or your own server.
 
 - Windows may say *"Windows protected your PC"*, because the installer isn't code-signed yet. Click **More info → Run anyway**.
-- Rflow then opens its window. The first time, a welcome helps you choose your microphone (with a live level) and try
-  your first dictation. Closing the window keeps Rflow running in the tray (the icon near the clock), so dictation
+- Rflow then opens its window. The first time, a welcome helps you choose how it recognises your speech, choose your
+  microphone (with a live level) and try your first dictation. Closing the window keeps Rflow running in the tray (the icon near the clock), so dictation
   keeps working; it also starts when you sign in. Open the window again from the Start menu or by clicking the tray
   icon; **right-click** the icon for the menu (Quit is there).
 - **Updates:** when a new version is published, Rflow shows a banner in its window and a notification. **Update now**
@@ -55,7 +57,7 @@ in Settings if you prefer; a Bluetooth headset's microphone is never kept open.
 | **Home** | how to dictate, your words this week and in total, words per minute, day streak, and your recent dictations by day, each with a copy button |
 | **Dictionary** | *Your words*: names, products and terms that speech recognition listens for and the AI cleanup spells your way |
 | **Reading test** | how well Rflow understands your voice (below) |
-| **Speech recognition** | the model that turns your voice into text, chosen apart from the AI cleanup: NVIDIA Parakeet (included, English, fast) or OpenAI Whisper large-v3 turbo (99 languages, downloaded when chosen, slow without an NVIDIA card). **Scan my computer** checks memory, disk, processor and graphics card, times the downloaded models, and recommends one. **Cloud:** OpenAI, Groq or Google Gemini with your own key (shared with the AI cleanup), after a warning that your voice goes to the provider; Parakeet takes over if the provider can't be reached. **Your own server:** Whisper on vLLM, a company AI gateway, or any server with OpenAI's transcription API, with its address and an optional key |
+| **Speech recognition** | the model that turns your voice into text, chosen apart from the AI cleanup: NVIDIA Parakeet (English, fast; downloaded once when chosen, 663 MB) or OpenAI Whisper large-v3 turbo (99 languages, downloaded when chosen, slow without an NVIDIA card). **Scan my computer** checks memory, disk, processor and graphics card, times the downloaded models, and recommends one. **Cloud:** OpenAI, Groq or Google Gemini with your own key (shared with the AI cleanup), after a warning that your voice goes to the provider; Parakeet takes over if the provider can't be reached. **Your own server:** Whisper on vLLM, a company AI gateway, or any server with OpenAI's transcription API, with its address and an optional key |
 | **AI cleanup** | the model that cleans up the text (below) |
 | **Settings** | dictation key, microphone with a live level (and a warning for a Bluetooth headset's microphone, which records in call quality), keeping it ready, Windows' voice effects on or off, beeps, keeping recordings, starting with Windows, updates |
 | **Profiles** | one setup per person (below) |
@@ -138,10 +140,10 @@ uv run pytest           # tests (they use fakes: no keys pressed, no microphone,
 uv run ruff check .     # lint
 ```
 
-**Build the installer** with **`build_installer.cmd`** (needs the model and
+**Build the installer** with **`build_installer.cmd`** (needs the model in `models/` and
 [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`). It builds `Rflow.exe` and
-`rflow-cli.exe` with PyInstaller, checks that they really transcribe and open their windows, and writes
-`dist\Rflow-Setup-<version>.exe`.
+`rflow-cli.exe` with PyInstaller, checks with the model that they really transcribe and open their windows, then takes
+the model out again and writes `dist\Rflow-Setup-<version>.exe` (Rflow downloads Parakeet when the user chooses it).
 
 **Release** (this is what users' Update button picks up):
 
@@ -172,7 +174,7 @@ Rach_Darling_Flow/
 ├─ docs/research/             the full accuracy research: report with sources, and the detailed notes
 ├─ tests/                     pytest suite
 ├─ scripts/download_model.py  fetches models into models/
-├─ scripts/build_installer.py PyInstaller -> add model -> smoke tests -> Inno Setup
+├─ scripts/build_installer.py PyInstaller -> model in -> smoke tests -> model out -> Inno Setup
 ├─ scripts/make_*.py          draw the window's small images, the installer's pictures, the website's screenshots
 ├─ packaging/                 installer recipe: sst_gui.py / sst_app.py (entry points), sst.spec, installer.iss,
 │                             notices, images/ (the setup wizard's pictures)
