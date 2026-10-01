@@ -12,8 +12,20 @@ sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming)
   https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/
   The model card files (bias, explainability, privacy, safety) are in the models folder.
 
+OpenAI Whisper large-v3 turbo (CTranslate2 conversion, dropbox-dash/faster-whisper-large-v3-turbo;
+not included: downloaded from Hugging Face only when the user chooses it)
+  The Whisper model weights are released by OpenAI under the MIT License.
+  https://github.com/openai/whisper/blob/main/LICENSE
+
 Software
 --------
+faster-whisper        MIT License                 https://github.com/SYSTRAN/faster-whisper
+CTranslate2           MIT License                 https://github.com/OpenNMT/CTranslate2
+                      (its bundled Intel OpenMP runtime is under Intel's own license)
+Hugging Face tokenizers, huggingface_hub
+                      Apache License 2.0          https://github.com/huggingface/tokenizers
+PyAV                  BSD 3-Clause License        https://github.com/PyAV-Org/PyAV
+                      (with FFmpeg libraries under the GNU LGPL 2.1 or later, as separate DLLs)
 sherpa-onnx           Apache License 2.0          https://github.com/k2-fsa/sherpa-onnx
 ONNX Runtime          MIT License                 https://github.com/microsoft/onnxruntime
 PortAudio             MIT-style license           https://www.portaudio.com/license.html

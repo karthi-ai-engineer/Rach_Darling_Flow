@@ -12,9 +12,12 @@ COMMON = dict(
     pathex=[ROOT],
     # sherpa-onnx loads onnxruntime.dll from its own lib/ folder; keep them together there, or
     # Windows picks up the older onnxruntime.dll in System32 and the model fails to load.
-    binaries=collect_dynamic_libs("sherpa_onnx"),
+    # CTranslate2 (Whisper, through faster-whisper) brings its own DLLs too.
+    binaries=collect_dynamic_libs("sherpa_onnx") + collect_dynamic_libs("ctranslate2"),
     datas=[(os.path.join(ROOT, "sst", "static"), os.path.join("sst", "static"))],
-    excludes=["tkinter"],
+    # onnxruntime: faster-whisper only needs it for its voice detector, which Rflow doesn't use; a second
+    # onnxruntime.dll next to sherpa-onnx's could be loaded in its place.
+    excludes=["tkinter", "onnxruntime"],
 )
 
 gui = Analysis([os.path.join(SPECPATH, "sst_gui.py")], **COMMON)
