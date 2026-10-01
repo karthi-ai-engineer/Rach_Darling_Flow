@@ -61,6 +61,7 @@ def runaway(text: str, words: list[str]) -> bool:
 
 class ParakeetEngine:
     name = "parakeet"
+    title = "Parakeet"
 
     def __init__(self, model_dir: Path = MODEL_DIR, num_threads: int = 4, conditioned: bool = True,
                  hotwords: bool = True):

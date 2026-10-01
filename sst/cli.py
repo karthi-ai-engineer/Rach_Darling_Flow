@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sst import __version__
 from sst.audio import list_input_devices, load_wav, record_until_enter, save_recording
-from sst.engines import ENGINES, load_engine
+from sst.engines import DEFAULT_MODEL, ENGINES, load_engine, usable
 
 
 def _load(engine_name: str):
@@ -94,8 +94,9 @@ def cmd_eval(args) -> None:
     settings, gateway = Settings.load(profile.settings_file), GatewayConfig.load(profile.gateway_file)
     models = [] if args.no_cleanup else args.model or [m for m in (settings.cleanup_model, settings.cleanup_fallback) if m]
     polishers = {m.rsplit("/", 1)[-1]: Polisher(gateway, m, settings.vocabulary) for m in models} if gateway.address else {}
-    pipelines = evaluate.pipelines_for(polishers, args.degrade or [])
-    engine = _load(args.engine)
+    evaluate.pipelines_for(polishers, args.degrade or [])  # a typo in --degrade is reported before the slow model load
+    engine = _load(args.engine or usable(settings.speech_model))  # by default the profile's speech model, as in the app
+    pipelines = evaluate.pipelines_for(polishers, args.degrade or [], title=engine.title)
     if hasattr(engine, "words"):  # as in dictation: the recogniser listens for Your words
         chosen = [w.strip() for w in args.words.split(",")] if args.words else settings.vocabulary
         engine.words = [] if args.no_words else [w for w in chosen if w]
@@ -121,7 +122,8 @@ def main() -> None:
             stream.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(prog="sst", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"sst {__version__}")
-    parser.add_argument("--engine", default="parakeet", choices=ENGINES)
+    parser.add_argument("--engine", choices=ENGINES,
+                        help="speech recognition model (default: parakeet; for eval, the one chosen in the app)")
     parser.add_argument("--device", type=int, default=None, help="microphone number from `sst devices`")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("app", help="the tray app with the recording indicator, settings and history")
@@ -148,6 +150,8 @@ def main() -> None:
     p_web.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
 
     args = parser.parse_args()
+    if args.command not in ("eval", "bench"):  # eval takes the profile's own model when none is given
+        args.engine = args.engine or DEFAULT_MODEL
     logging.basicConfig(level=logging.INFO, format="  %(message)s")  # e.g. the per-dictation timing line
     try:
         commands = {"app": cmd_app, "dictate": cmd_dictate, "start": cmd_start, "file": cmd_file,

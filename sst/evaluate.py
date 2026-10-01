@@ -319,11 +319,12 @@ def _compare(scores: list[Score], recordings: list[Recording], resamples: int = 
                             float(np.percentile(diff, 97.5)))
 
 
-def pipelines_for(models: dict[str, object], degradations: list[str] = ()) -> list[Pipeline]:
-    """The usual comparison: the recogniser alone, then each degradation, then each cleanup model."""
-    out = [Pipeline("Parakeet alone")]
-    out += [Pipeline(f"Parakeet, {spec}", degrade=spec) for spec in degradations]
-    out += [Pipeline(f"Parakeet + {name}", polisher=polisher) for name, polisher in models.items()]
+def pipelines_for(models: dict[str, object], degradations: list[str] = (), title: str = "Parakeet") -> list[Pipeline]:
+    """The usual comparison: the recogniser alone (called by its title), then each degradation, then each cleanup
+    model."""
+    out = [Pipeline(f"{title} alone")]
+    out += [Pipeline(f"{title}, {spec}", degrade=spec) for spec in degradations]
+    out += [Pipeline(f"{title} + {name}", polisher=polisher) for name, polisher in models.items()]
     for spec in degradations:
         degrade(np.zeros(16, dtype=np.float32), 16000, spec)  # a typo is reported before any slow work
     return out
