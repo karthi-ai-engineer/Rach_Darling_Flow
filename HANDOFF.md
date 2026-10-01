@@ -14,14 +14,15 @@ _Last updated: 2026-10-01_
   - held-out sets 6.7% → **5.4%**, better than Parakeet's own benchmark average of 5.9%
   - names and terms 40% → 24.5%, when Your words holds the names
 - The owner **uses 1.4.0 for real dictation**, now on both laptops. A raw-mode set is still to be read.
-- **The owner's plan (2026-10-01):** Rflow becomes building blocks. Speech recognition is chosen like the AI cleanup,
-  in four steps (phases 13-16):
-  - 13: the building block itself
+- **The owner's plan (2026-10-01):** Rflow becomes building blocks. Speech recognition is chosen like the AI cleanup:
+  - 13: the building block itself (merged)
   - 14: Whisper turbo on this computer
   - 15: "Scan my computer"
-  - 16: cloud and server speech models
+  - 16: cloud speech models
+  - 17: your own server
+  - 18: Parakeet downloaded on demand, then the release
 
-  The correction work (sound-alike fixer, confidence-gated cleanup) moves to phase 17. See **Next steps**.
+  The correction work (sound-alike fixer, confidence-gated cleanup) comes after them. See **Next steps**.
 
 **Read in this order:**
 1. This section and **Next steps** (the end of this file).
@@ -88,6 +89,7 @@ _Last updated: 2026-10-01_
 | 12 | **Hotwords**: Parakeet listens for Your words (bpe.vocab from NVIDIA's archive, beam search, score 1.0, guard) | done, on `main` (PR #29); phases 10-12 released as **v1.4.0** |
 | 13 | **Speech recognition as a building block**: a catalog of speech models, a per-profile choice, background switching, the Speech recognition page | done, on `main` (PR #33) |
 | 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | PR #35, waiting for the owner's test + merge |
+| 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -683,6 +685,47 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
   - the app's download flow: done and used, cancelled, failed, remove rules
   - the card's states
 
+## Scan my computer (phase 15)
+
+- **`sst/scan.py`** reads the computer through Windows itself (no new dependency, no PowerShell):
+  - memory (`GlobalMemoryStatusEx`)
+  - free disk where models are downloaded
+  - the processor's name (registry) and physical cores (`GetLogicalProcessorInformationEx`)
+  - the display adapters (the display class key in the registry)
+  - whether Whisper can use an NVIDIA card: `ctranslate2.get_cuda_device_count()` and `cublas64_12.dll` loading
+- **A one-second benchmark:** GFLOPS of a float32 768x768 matrix multiply on all cores.
+- **The reference laptop** (i5-1334U, measured 2026-10-01; `REFERENCE_SCORE`, `SECONDS`, `MEMORY_GB`):
+
+  | | Benchmark | Seconds for the 7.4 s sample sentence | Memory once loaded |
+  |---|---|---|---|
+  | The laptop | 197-247 GFLOPS (others were using the processor); 228 used | | |
+  | Parakeet | | 0.9-1.0 s | 1.0 GB |
+  | Whisper turbo (int8, processor) | | 9-20 s; 10 used | 3.3 GB |
+
+- **`judge()`:**
+  - Measured seconds win; otherwise the reference seconds are scaled by the benchmark. Whisper with usable CUDA is
+    estimated at 1 s.
+  - Levels:
+    - "no" when memory is below the model's need plus 2.5 GB, or the disk can't take a download
+    - fast: up to 2 s
+    - usable: up to 5 s
+    - slow: beyond that
+  - The quickest fast model is "recommended", with Parakeet first among equals.
+  - Too little free memory adds "close some programs first".
+- **The app:** `TrayApp.scan_computer()` runs on a thread, with progress in the card. It times each downloaded model
+  on Parakeet's own test recording (`test_wavs/0.wav`):
+  - the model in use as it is
+  - others loaded for it if free memory allows
+
+  The result is kept in `%APPDATA%\sst\scan.json` (the computer's, not a profile's) and shown on the next start.
+- **The page:** the scan card shows "Scan my computer" / "Scan again" and "Last scan: ...". Then "This computer:
+  ..." and a line per model: an icon, the level's words, the speed, and the hint "Choose it for other languages, or
+  on a computer with an NVIDIA card" for a slow Whisper.
+- **On the second laptop:** Parakeet recommended (0.9 s, measured), Whisper slow (19.8 s, measured).
+- **Tests: 283.** They cover the rules (reference laptop, faster and slower processors, an NVIDIA card, memory and
+  disk, free memory), reading this computer, the benchmark, save and load, the card's states, and the real TrayApp
+  scanning with the model in use timed.
+
 ## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
 
 - **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
@@ -702,10 +745,10 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
 - **This laptop's Your words** held mostly everyday words, from the old reading test's suggestions (version,
   installer, tray, app, move, stand, meeting, morning, after...). The owner was told to keep only names and terms.
 - **Names still wrong with the names list:** Parakeet → parquit, Ollama → olama, Qwen → current, Groq → grok,
-  PowerToys → power toys, Vercel → vessel, commit → comet, PyInstaller → py install. That is the phase-17 fixer's
+  PowerToys → power toys, Vercel → vessel, commit → comet, PyInstaller → py install. That is the correction fixer's
   ground.
 
-## Correction groundwork, for phase 17 (experiments on 2026-10-01, nothing merged)
+## Correction groundwork, for after the building blocks (experiments on 2026-10-01, nothing merged)
 
 These were scratch scripts, not in git. The findings:
 
@@ -768,22 +811,26 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **Owner:** try PR #35:
+1. **Owner:** try PR #35 and PR #37 together (the installer built from the phase-15 branch has both):
    - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"
    - dictate in English, and in Tamil with the language set
    - switch back to Parakeet
+   - press "Scan my computer"
 
-   Then merge it.
-2. **Phases 14-16**, the owner's building-block plan (see **Speech recognition as a building block**):
-   - 14: Whisper large-v3 turbo on this computer, downloaded when chosen
-   - 15: "Scan my computer"
-   - 16: cloud and server speech models
+   Then merge #35, retarget #37 to `main`, and merge it.
+2. **The owner's building-block plan, in this order** (2026-10-01; see **Speech recognition as a building block**):
+   - 16: cloud speech models (OpenAI, Gemini, Groq...: the voice goes to the provider, with a warning)
+   - 17: your own server (vLLM, the company gateway)
+   - 18: Parakeet downloaded on demand, with a first-start choice of speech model. The installer drops from ~570 MB to
+     ~90-100 MB (~270 MB installed). The website's "works offline, model included" changes.
+   - then release. Whisper's runtime on demand too (installer ~50 MB) is possible later.
 3. **The owner, meanwhile:**
    - Keep only names and terms in Your words.
    - Read a set with Settings → "Turn off Windows' voice effects" on (raw mode). Set B in Windows mode was read on the
      second laptop on 2026-10-01.
    - On the second laptop, the other laptop's 150 recordings are missing: copy the data zip (see **Start here**).
-4. **Phase 17, correction, chosen by what goes wrong in real dictation** (see **Correction groundwork**):
+4. **Correction, after the building blocks, chosen by what goes wrong in real dictation** (see **Correction
+   groundwork**):
    - names still wrong → the sound-alike fixer with an ordinary-word guard
    - small words wrong → AI cleanup only when unsure (Ollama locally, or the owner's provider)
    - both mediocre → compare a stronger model (Qwen3-ASR or Canary via sherpa-onnx) on the same recordings
@@ -801,7 +848,6 @@ These were scratch scripts, not in git. The findings:
 8. With a key for OpenAI, Anthropic, Gemini or Groq: press Test once on the AI cleanup page (they were only tested
    against the local fakes).
 9. Waiting on the owner:
-   - Japanese/Tamil needed?
    - the apps used most
    - code-signing budget
    - the git history question above

@@ -309,3 +309,20 @@ def test_only_a_model_not_in_use_can_be_removed(tray_app, monkeypatch, whisper_d
     app.choose_speech_model("whisper-turbo")
     app.remove_speech_model("whisper-turbo")  # chosen now: stays
     assert removed == ["faster-whisper-large-v3-turbo"]
+
+
+def test_scanning_the_computer_times_the_model_in_use(tray_app, monkeypatch, tmp_path):
+    import numpy as np
+    from PySide6.QtTest import QTest
+    app, _, _ = tray_app
+    pc = sst_app.scan.Computer(processor="Test CPU", cores=4, threads=8, memory_gb=16, free_memory_gb=8,
+                               free_disk_gb=100, score=sst_app.scan.REFERENCE_SCORE)
+    monkeypatch.setattr(sst_app.scan, "computer", lambda: pc)
+    monkeypatch.setattr(sst_app.scan, "SCAN_FILE", tmp_path / "scan.json")
+    monkeypatch.setattr(sst_app, "_sample_sentence", lambda: (np.zeros(16_000, dtype=np.float32), 16_000))
+    app.scan_computer()
+    assert _wait_for(lambda: not app.scanning, QTest.qWait)
+    verdicts = {v["key"]: v for v in app.last_scan["verdicts"]}
+    assert verdicts["parakeet"]["measured"] and verdicts["parakeet"]["level"] == "recommended"
+    assert not verdicts["whisper-turbo"]["measured"]  # not downloaded: estimated
+    assert (tmp_path / "scan.json").exists()
