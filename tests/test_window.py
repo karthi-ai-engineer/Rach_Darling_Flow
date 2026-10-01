@@ -582,3 +582,44 @@ def test_the_scan_card_runs_shows_progress_and_the_verdicts(tmp_path):
     assert any("NVIDIA Parakeet: Recommended. About 0.9 s" in line for line in lines)
     assert any("Slow on this computer" in line and "other languages" in line for line in lines)
     assert card.button.text() == "Scan again" and "Last scan" in card.status.text()
+
+
+def test_the_server_card_starts_from_ai_cleanups_server_and_lists_its_speech_models():
+    window, app = _window(gateway=GatewayConfig("http://gateway.example/v1", "gw-key", "vllm"))
+    page = window.pages["speech"]
+    page.show_where("server")
+    server = page.models["server"]
+    assert (server.address.text(), server.key.text()) == ("http://gateway.example/v1", "gw-key")
+    assert "Filled in from AI cleanup's server" in server.result.text()
+    server.choose.click()
+    assert "Choose a model first" in server.result.text() and not app.calls
+    server._load_models()
+    assert _wait_until(lambda: server.result.text().startswith("Loaded"))
+    assert server.model_box.currentText() == "whisper-1" and "1 of them for speech" in server.result.text()
+    server._test()
+    assert _wait_until(lambda: server.result.text().startswith("OK"))
+    assert ("test_server_speech", "http://gateway.example/v1", "whisper-1") in app.calls
+    server.choose.click()  # no question: the user's own server
+    assert ("use_server_speech", "http://gateway.example/v1", "whisper-1") in app.calls
+    assert app.gateway.speech_server() == ("http://gateway.example/v1", "gw-key") and app.gateway.service.key == "vllm"
+    page.refresh()
+    assert "In use" in server.status.text() and server.choose.isHidden()
+    server.address.setText("http://localhost:8000/v1")
+    assert server.choose.text() == "Save" and not server.choose.isHidden()
+
+
+def test_the_server_card_needs_an_address():
+    window, app = _window()
+    server = window.pages["speech"].models["server"]
+    assert server.address.text() == "" and server.result.isHidden()
+    server._load_models()
+    assert "Enter your server's address first" in server.result.text() and not app.calls
+
+
+def _wait_until(condition) -> bool:
+    for _ in range(200):
+        QApplication.processEvents()
+        if condition():
+            return True
+        time.sleep(0.01)
+    return condition()

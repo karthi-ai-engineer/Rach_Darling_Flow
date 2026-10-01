@@ -32,8 +32,8 @@ from sst import __version__, bench, downloads, evaluate, scan, updates
 from sst.audio import TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, load_engine, usable
-from sst.engines.cloud import CLOUD
-from sst.gateway import GatewayConfig, Polisher
+from sst.engines.cloud import CLOUD, REMOTE, SERVER, CloudEngine
+from sst.gateway import SPEECH_SERVER, GatewayConfig, Polisher
 from sst.hotkey import HotkeyListener, parse_hotkey
 from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
 from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
@@ -350,12 +350,17 @@ class TrayApp:
         threading.Thread(target=work, name="model-loader", daemon=True).start()
 
     def _new_engine(self, key: str, fallback: bool = True):
-        """A speech model as the settings say. A cloud model gets its key and model, and Parakeet to fall back on."""
+        """A speech model as the settings say. A cloud model gets its key and model, an own server its address too, and
+        both get Parakeet to fall back on."""
         s = self.settings
-        if key not in CLOUD:
+        if key not in REMOTE:
             return load_engine(key, s.speech_language)
-        return load_engine(key, s.speech_language, self.gateway.key_for(key), s.speech_cloud_models.get(key, ""),
-                           self._fallback_engine if fallback else None)
+        on_failure = self._fallback_engine if fallback else None
+        if key in CLOUD:
+            return load_engine(key, s.speech_language, self.gateway.key_for(key), s.speech_cloud_models.get(key, ""),
+                               on_failure)
+        address, api_key = self.gateway.speech_server()
+        return load_engine(key, s.speech_language, api_key, s.speech_server_model, on_failure, address)
 
     def _fallback_engine(self):
         """Parakeet, for a cloud model that couldn't help: the one loaded already, or loaded now (once). Using only
@@ -374,7 +379,7 @@ class TrayApp:
             return
         if engine.name == DEFAULT_MODEL:
             self._local = engine  # a cloud model chosen later falls back on it without loading it again
-        elif engine.name not in CLOUD:
+        elif engine.name not in REMOTE:
             self._local = None  # another model runs on this computer: Parakeet's memory can go
         if first:
             self.dictation = Dictation(engine, self.recorder, sounds=self.settings.sounds,
@@ -429,7 +434,7 @@ class TrayApp:
 
     def _apply_speech(self) -> None:
         """The speech model's options that need no reload, from the next dictation on: the language, Your words, and a
-        cloud model's model and key."""
+        cloud model's model and key (an own server's address too)."""
         s, engine = self.settings, self.dictation.engine
         if hasattr(engine, "language"):
             engine.language = s.speech_language
@@ -438,6 +443,11 @@ class TrayApp:
         if engine.name in CLOUD:
             engine.model = s.speech_cloud_models.get(engine.name) or CLOUD[engine.name].models[0]
             engine.api_key = self.gateway.key_for(engine.name) or engine.api_key  # no key: Parakeet is on its way
+        elif engine.name in REMOTE:
+            address, engine.api_key = self.gateway.speech_server()
+            engine.model = s.speech_server_model
+            if address:  # none: Parakeet is on its way
+                engine.set_url(address)
 
     def _apply_cleanup(self) -> None:
         """Use Your words and the model chosen in AI cleanup from the next dictation on."""
@@ -549,7 +559,8 @@ class TrayApp:
             if (new.cleanup, new.cleanup_model, new.cleanup_fallback, new.vocabulary) != (
                     old.cleanup, old.cleanup_model, old.cleanup_fallback, old.vocabulary):
                 self._apply_cleanup()  # the chosen model is active from the next dictation
-            elif (new.speech_language, new.speech_cloud_models) != (old.speech_language, old.speech_cloud_models):
+            elif (new.speech_language, new.speech_cloud_models, new.speech_server_model) != (
+                    old.speech_language, old.speech_cloud_models, old.speech_server_model):
                 self._apply_speech()  # from the next dictation; no reload needed
             if new.hotkey != old.hotkey:
                 self._start_listener()
@@ -588,7 +599,7 @@ class TrayApp:
         models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.address else []
         polishers = {m.rsplit("/", 1)[-1]: Polisher(self.gateway, m, s.vocabulary) for m in models}
         engine = self.dictation.engine
-        if engine.name in CLOUD:  # scored without Parakeet to fall back on, so that a provider's failure shows
+        if engine.name in REMOTE:  # scored without Parakeet to fall back on, so that a provider's failure shows
             engine = self._new_engine(engine.name, fallback=False)
             engine.words = list(s.vocabulary)
         results = evaluate.run(folders, engine, evaluate.pipelines_for(polishers, title=engine.title), progress)
@@ -613,15 +624,34 @@ class TrayApp:
         models = {**self.settings.speech_cloud_models, provider: model or CLOUD[provider].models[0]}
         self.apply_settings(dataclasses.replace(self.settings, speech_model=provider, speech_cloud_models=models))
 
-    def test_cloud_speech(self, provider: str, api_key: str, model: str) -> str:
-        """A cloud card's Test button (the window runs it on a thread): the sample sentence through the provider.
-        Raises with a readable reason."""
+    def test_cloud_speech(self, provider: str, api_key: str, model: str, address: str | None = None) -> str:
+        """A cloud or server card's Test button (the window runs it on a thread): the sample sentence through the
+        provider. Raises with a readable reason."""
         sample = _sample_sentence()
         if sample is None:
             raise RuntimeError("the sample sentence is missing (it comes with Parakeet)")
-        engine = load_engine(provider, "", api_key, model)  # the sample is English, whatever language is chosen
+        engine = load_engine(provider, "", api_key, model, url=address)  # the sample is English, whatever the language
         engine.words = list(self.settings.vocabulary)
         return engine.check(*sample)
+
+    def use_server_speech(self, address: str, api_key: str, model: str) -> None:
+        """The server card's "Use this model", or "Save" while it is in use: keep the address and key (apart from AI
+        cleanup's, encrypted) and the model, and use it from the next dictation."""
+        if not address or not model:
+            return
+        if (address, api_key) != self.gateway.speech_server():
+            self.gateway = self.gateway.with_entry(SPEECH_SERVER, address, api_key)
+            self.gateway.save(self.profile.gateway_file)
+            if self.dictation:
+                self._apply_speech()  # a server in use goes to the new address from the next dictation
+        self.apply_settings(dataclasses.replace(self.settings, speech_model=SERVER.key, speech_server_model=model))
+
+    def test_server_speech(self, address: str, api_key: str, model: str) -> str:
+        return self.test_cloud_speech(SERVER.key, api_key, model, address)
+
+    def server_models(self, address: str, api_key: str) -> list[str]:
+        """The server card's "Load models" (on a thread): the server's models, its speech models first."""
+        return CloudEngine(SERVER.key, api_key, url=address).models()
 
     def set_speech_language(self, code: str) -> None:
         if code != self.settings.speech_language:
