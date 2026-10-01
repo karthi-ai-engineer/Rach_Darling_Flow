@@ -22,11 +22,28 @@ RATE = 48_000
 AUDIO = (0.1 * np.sin(np.linspace(0, 2000, 2 * RATE))).astype(np.float32)  # two seconds at the microphone's rate
 
 
+# Gemini Transcribe's documented answer: the text in a text part, the word times in an audioTranscription part.
+TRANSCRIBED = {"candidates": [{"content": {"parts": [
+    {"text": " Hello  from\nGemini Transcribe. "},
+    {"audioTranscription": {"speakerLabel": "spk_1", "words": [
+        {"word": "Hello", "startOffset": "0.100s", "endOffset": "0.450s"},
+        {"word": "from", "startOffset": "0.450s", "endOffset": "0.700s"},
+        {"word": "Gemini", "startOffset": "0.700s", "endOffset": "1.100s"},
+        {"word": "Transcribe.", "startOffset": "1.100s", "endOffset": "1.800s"}]}}], "role": "model"},
+    "finishReason": "STOP"}]}
+VERBOSE = {"task": "transcribe", "language": "english", "duration": 2.0, "text": " Hello  from OpenAI. ",
+           "words": [{"word": "Hello", "start": 0.0, "end": 0.42}, {"word": "from", "start": 0.42, "end": 0.7},
+                     {"word": "OpenAI.", "start": 0.7, "end": 1.5}]}
+
+
 class FakeProvider:
-    """Answers like OpenAI's /audio/transcriptions and Gemini's generateContent; `status` and `delay` make it fail."""
+    """Answers like OpenAI's /audio/transcriptions (verbose_json too), Gemini's generateContent (Gemini Transcribe
+    too) and Google's Files API; `statuses` and `delay` make transcriptions fail or slow, `answer` replaces Gemini
+    Transcribe's answer, `drop` closes each connection after one answer without saying so."""
 
     def __init__(self):
         self.requests, self.connections, self.statuses, self.delay = [], 0, [], 0.0
+        self.answer, self.drop = None, False
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -39,7 +56,16 @@ class FakeProvider:
             def do_POST(self):
                 body = self.rfile.read(int(self.headers["Content-Length"]))
                 request = {"path": self.path, "auth": self.headers.get("Authorization"),
-                           "x-goog-api-key": self.headers.get("x-goog-api-key")}
+                           "x-goog-api-key": self.headers.get("x-goog-api-key"),
+                           "headers": {k.lower(): v for k, v in self.headers.items()}}
+                fake.requests.append(request)
+                if self.path.startswith("/upload/"):  # the Files API: start an upload, then send the bytes
+                    request["body"] = body
+                    if self.headers.get("X-Goog-Upload-Command") == "start":
+                        request["json"] = json.loads(body)
+                        return self._reply(200, {}, {"X-Goog-Upload-URL": f"{fake.address}{self.path}?upload_id=u1"})
+                    return self._reply(200, {"file": {"name": "files/f1", "uri": f"{fake.address}/v1beta/files/f1",
+                                                      "mimeType": "audio/wav", "state": "ACTIVE"}})
                 if self.path.endswith(":generateContent"):
                     request["json"] = json.loads(body)
                 else:
@@ -47,14 +73,18 @@ class FakeProvider:
                         f"Content-Type: {self.headers['Content-Type']}\r\n\r\n".encode() + body)
                     request["fields"] = {part.get_param("name", header="content-disposition"): part.get_payload(decode=True)
                                          for part in message.iter_parts()}
-                fake.requests.append(request)
                 time.sleep(fake.delay)
                 status = fake.statuses.pop(0) if fake.statuses else 200
                 if status != 200:
-                    return self._reply(status, {"error": {"message": "Invalid API key" if status == 401 else "Slow down"}})
+                    reason = {401: "Invalid API key", 400: "Unsupported response_format"}.get(status, "Slow down")
+                    return self._reply(status, {"error": {"message": reason}})
+                if "json" in request and "transcribe" in self.path:
+                    return self._reply(200, fake.answer or TRANSCRIBED)
                 if "json" in request:
                     return self._reply(200, {"candidates": [{"content": {"parts": [
                         {"text": "Thinking about it...", "thought": True}, {"text": " Hello  from\nGemini. "}]}}]})
+                if request["fields"].get("response_format") == b"verbose_json":
+                    return self._reply(200, VERBOSE)
                 self._reply(200, {"text": " Hello  from OpenAI. "})
 
             def do_GET(self):
@@ -62,13 +92,21 @@ class FakeProvider:
                 self._reply(200, {"object": "list", "data": [{"id": "Qwen/Qwen3-30B"}, {"id": "whisper-1"},
                                                               {"id": "models/gemini-3.5-transcribe"}, {"id": "bge-m3"}]})
 
-            def _reply(self, status, payload):
+            def do_DELETE(self):
+                fake.requests.append({"path": self.path, "method": "DELETE",
+                                      "x-goog-api-key": self.headers.get("x-goog-api-key")})
+                self._reply(200, {})
+
+            def _reply(self, status, payload, headers=None):
                 data = json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
+                for name, value in (headers or {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(data)
+                self.close_connection = self.close_connection or fake.drop  # gone, without a "Connection: close"
 
             def log_message(self, *args):
                 pass
@@ -234,7 +272,7 @@ def test_the_catalog_uses_a_cloud_model_only_with_its_key():
     keys = GatewayConfig(provider="anthropic", api_key="ant", others={"groq": ("", "gsk")})
     assert usable("groq", keys) == "groq" and usable("openai", keys) == "parakeet"
     engine = load_engine("gemini", "ja", api_key="g-key")
-    assert isinstance(engine, CloudEngine) and engine.model == "gemini-flash-lite-latest" and engine.language == "ja"
+    assert isinstance(engine, CloudEngine) and engine.model == "gemini-3.5-transcribe" and engine.language == "ja"
 
 
 def test_an_own_server_needs_an_address_but_maybe_no_key(fake):
@@ -283,3 +321,205 @@ def test_without_parakeet_a_failing_provider_says_why(fake):
     fake.statuses = [503]
     with pytest.raises(CloudError, match=r"OpenAI: HTTP 503 .*\(Parakeet isn't downloaded to take over\)"):
         fake.engine(fallback=missing).transcribe(AUDIO, RATE)
+
+
+def _times(raw):
+    return [(w.text, round(w.start, 3), round(w.end, 3)) for w in raw.words]
+
+
+# ---- Gemini Transcribe
+
+def test_gemini_transcribe_is_the_default_and_hears_the_audio_alone_with_word_times(fake):
+    engine = fake.engine("gemini", language="ta", path="/v1beta")
+    engine.words = ["Karthi"]  # not sent: Google takes no custom vocabulary along with word times
+    assert engine.model == "gemini-3.5-transcribe" and not engine.biased
+    raw = engine.transcribe_chunk(AUDIO, RATE)
+    assert raw.text == "Hello from Gemini Transcribe." and raw.backend == "Google Gemini gemini-3.5-transcribe"
+    assert _times(raw) == [("Hello", 0.1, 0.45), ("from", 0.45, 0.7), ("Gemini", 0.7, 1.1), ("Transcribe.", 1.1, 1.8)]
+    assert raw.language == "ta" and raw.diagnostics == {"mode": "timestamps", "transport": "inline"}
+    request = fake.requests[0]
+    assert request["path"] == "/v1beta/models/gemini-3.5-transcribe:generateContent"
+    assert request["x-goog-api-key"] == "test-key" and request["auth"] is None
+    (audio,) = request["json"]["contents"][0]["parts"]  # the recording alone: no instruction
+    assert audio["inlineData"]["mimeType"] == "audio/wav"
+    assert _wav(base64.b64decode(audio["inlineData"]["data"])) == (16_000, 32_000)
+    assert request["json"]["generationConfig"] == {
+        "audioTranscriptionConfig": {"mode": "VERBATIM", "languageCodes": ["ta"], "wordTimestamp": True}}
+    assert engine.transcribe(AUDIO, RATE) == "Hello from Gemini Transcribe."  # dictation sends the same request
+    assert fake.requests[1]["json"] == request["json"]
+
+
+def test_in_vocabulary_mode_your_words_go_along_without_word_times(fake):
+    engine = fake.engine("gemini", path="/v1beta")
+    engine.words = ["Karthi", " Rflow ", "karthi", "", *(f"term {i}" for i in range(120))]
+    timestamps = engine.signature
+    engine.timestamp_mode = "vocabulary"
+    assert engine.biased and engine.signature != timestamps  # the vocabulary changes the text
+    assert engine.transcribe(AUDIO, RATE) == "Hello from Gemini Transcribe."
+    config = fake.requests[0]["json"]["generationConfig"]["audioTranscriptionConfig"]
+    assert config["mode"] == "VERBATIM" and config["languageCodes"] == [] and config["wordTimestamp"] is False
+    vocabulary = config["customVocabulary"]
+    assert vocabulary[:3] == ["Karthi", "Rflow", "term 0"] and len(vocabulary) == 100  # each once, at most 100
+    engine.words = []
+    engine.transcribe(AUDIO, RATE)
+    assert "customVocabulary" not in fake.requests[1]["json"]["generationConfig"]["audioTranscriptionConfig"]
+
+
+@pytest.mark.parametrize("answer, text, words", [
+    ({"candidates": [{"content": {"parts": [{"audioTranscription": {"words": [  # words only, other key and time styles
+        {"word": "Hi", "start_offset": {"seconds": 1, "nanos": 500000000}, "end_offset": 2},
+        {"text": "there", "startOffset": "2s", "endOffset": "2.5s", "confidence": 0.75}]}}]},
+        "finishReason": "STOP"}]}, "Hi there", [("Hi", 1.5, 2.0), ("there", 2.0, 2.5)]),
+    ({"candidates": [{"content": {"parts": [{"text": "Thinking...", "thought": True},
+                                             {"audio_transcription": {"transcript": "Hi there."}}]}}]}, "Hi there.", []),
+    ({"candidates": [{"content": {"parts": [{"audioTranscription": {"text": "Hi.", "words": [
+        {"word": "Hi.", "startOffset": "0.2s"}, {"word": "there"}]}}]}}]}, "Hi.", []),  # a word without a time: none
+    ({"candidates": [{"finishReason": "STOP"}]}, "", []),  # finished with nothing in it: silence
+])
+def test_gemini_transcribe_answers_are_read_leniently(answer, text, words):
+    got, timed, _ = cloud.gemini_transcript(answer)
+    assert got == text and [(w.text, w.start, w.end) for w in timed] == words
+
+
+@pytest.mark.parametrize("answer, reason", [
+    ({"candidates": []}, "no transcript"),
+    ({"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}}, r"blocked the recording \(PROHIBITED_CONTENT\)"),
+    ({"candidates": [{"finishReason": "SAFETY"}]}, r"stopped transcribing \(SAFETY\)"),
+    ({"candidates": [{"content": {"parts": [{"text": "Hello"}]}, "finishReason": "MAX_TOKENS"}]}, "MAX_TOKENS"),
+])
+def test_a_blocked_or_empty_answer_is_an_error(fake, answer, reason):
+    fake.answer = answer
+    with pytest.raises(CloudError, match=reason):
+        fake.engine("gemini", path="/v1beta").transcribe_chunk(AUDIO, RATE)
+    engine = fake.engine("gemini", path="/v1beta", fallback=Parakeet)  # dictation: Parakeet types it, and says why
+    assert engine.transcribe(AUDIO, RATE) == "hello from parakeet" and "Google Gemini: " in engine.last_error
+
+
+def test_a_long_recording_goes_through_the_files_api_and_is_deleted(fake, monkeypatch):
+    monkeypatch.setattr(cloud, "INLINE_LIMIT", 1000)  # instead of 14 MB
+    engine = fake.engine("gemini", path="/v1beta")
+    raw = engine.transcribe_chunk(AUDIO, RATE)
+    assert raw.text == "Hello from Gemini Transcribe." and raw.diagnostics["transport"] == "files"
+    start, upload, transcribe, delete = fake.requests
+    assert start["path"] == "/upload/v1beta/files" and start["x-goog-api-key"] == "test-key"
+    assert start["json"] == {"file": {"display_name": "rflow-chunk"}}
+    headers = start["headers"]
+    assert headers["x-goog-upload-protocol"] == "resumable" and headers["x-goog-upload-command"] == "start"
+    assert headers["x-goog-upload-header-content-type"] == "audio/wav"
+    assert int(headers["x-goog-upload-header-content-length"]) == len(upload["body"])
+    assert upload["path"] == "/upload/v1beta/files?upload_id=u1" and upload["x-goog-api-key"] is None  # its own auth
+    assert upload["headers"]["x-goog-upload-command"] == "upload, finalize"
+    assert upload["headers"]["x-goog-upload-offset"] == "0" and _wav(upload["body"]) == (16_000, 32_000)
+    (audio,) = transcribe["json"]["contents"][0]["parts"]
+    assert audio == {"fileData": {"mimeType": "audio/wav", "fileUri": f"{fake.address}/v1beta/files/f1"}}
+    assert delete == {"path": "/v1beta/files/f1", "method": "DELETE", "x-goog-api-key": "test-key"}
+    assert fake.connections == 1  # all on one kept-alive connection
+    fake.statuses = [503]
+    with pytest.raises(CloudError, match="HTTP 503"):
+        engine.transcribe_chunk(AUDIO, RATE)
+    assert fake.requests[-1]["method"] == "DELETE"  # a failed transcription removes the upload too
+
+
+# ---- word times from OpenAI's API
+
+@pytest.mark.parametrize("provider, model", [("openai", "whisper-1"), ("groq", "whisper-large-v3-turbo")])
+def test_whisper_models_give_word_times(fake, provider, model):
+    raw = fake.engine(provider, model=model).transcribe_chunk(AUDIO, RATE)
+    fields = fake.requests[0]["fields"]
+    assert fields["response_format"] == b"verbose_json" and fields["timestamp_granularities[]"] == b"word"
+    assert raw.text == "Hello from OpenAI." and raw.language == "en"  # "english", as OpenAI writes it
+    assert _times(raw) == [("Hello", 0.0, 0.42), ("from", 0.42, 0.7), ("OpenAI.", 0.7, 1.5)]
+    assert raw.backend == f"{cloud.CLOUD[provider].name} {model}"
+
+
+def test_gpt_4o_models_and_dictation_keep_plain_json(fake):
+    raw = fake.engine("openai").transcribe_chunk(AUDIO, RATE)  # gpt-4o-mini-transcribe gives no word times
+    assert raw.text == "Hello from OpenAI." and raw.words == []
+    assert set(fake.requests[0]["fields"]) == {"model", "response_format", "file"}
+    assert fake.requests[0]["fields"]["response_format"] == b"json"
+    fake.engine("groq").transcribe(AUDIO, RATE)  # dictation needs no word times: the text is the same
+    assert fake.requests[1]["fields"]["response_format"] == b"json"
+
+
+def test_a_server_that_refuses_verbose_json_is_asked_for_plain_json_from_then_on(fake):
+    engine = fake.engine("server", model="openai/whisper-large-v3", key="")
+    fake.statuses = [400]
+    raw = engine.transcribe_chunk(AUDIO, RATE)
+    assert raw.text == "Hello from OpenAI." and raw.words == []
+    assert [r["fields"]["response_format"] for r in fake.requests] == [b"verbose_json", b"json"]
+    engine.transcribe_chunk(AUDIO, RATE)
+    assert fake.requests[2]["fields"]["response_format"] == b"json"  # remembered: not asked with every chunk
+    engine.model = "openai/whisper-large-v3-turbo"  # another model may give them
+    assert engine.transcribe_chunk(AUDIO, RATE).words and fake.requests[3]["fields"]["response_format"] == b"verbose_json"
+
+
+def test_a_server_is_asked_for_word_times_only_for_a_whisper_model(fake):
+    engine = fake.engine("server", model="nvidia/canary-1b", key="")
+    engine.transcribe_chunk(AUDIO, RATE)
+    assert fake.requests[0]["fields"]["response_format"] == b"json"
+    engine.model = "whisper-1"
+    fake.statuses = [400, 400]  # a 400 for another reason: plain JSON fails too, so it isn't remembered
+    with pytest.raises(CloudError, match="HTTP 400") as error:
+        engine.transcribe_chunk(AUDIO, RATE)
+    assert error.value.status == 400
+    assert engine.transcribe_chunk(AUDIO, RATE).words and fake.requests[-1]["fields"]["response_format"] == b"verbose_json"
+
+
+# ---- the voice pipeline's chunks
+
+def test_chunks_are_transcribed_at_the_same_time(fake):
+    engine = fake.engine("groq")
+    fake.delay = 0.4
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(engine.transcribe_chunk(AUDIO, RATE))) for _ in range(2)]
+    t0 = time.perf_counter()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    elapsed = time.perf_counter() - t0
+    assert [r.text for r in results] == ["Hello from OpenAI."] * 2
+    assert 0.4 <= elapsed < 0.7, elapsed  # one after the other would take 0.8 s
+    assert fake.connections == 2
+    engine.transcribe_chunk(AUDIO, RATE)
+    assert fake.connections == 2  # both connections were kept for the next chunks
+
+
+def test_a_chunk_never_falls_back_on_parakeet_nor_waits_out_a_rate_limit(fake):
+    loads = []
+    engine = fake.engine(fallback=lambda: loads.append(1) or Parakeet())
+    fake.statuses = [503]
+    with pytest.raises(CloudError, match="HTTP 503") as error:
+        engine.transcribe_chunk(AUDIO, RATE)
+    assert error.value.status == 503 and loads == [] and engine.last_error == ""
+    fake.statuses = [429]  # the pipeline retries, with its own backoff
+    with pytest.raises(CloudError) as error:
+        fake.engine().transcribe_chunk(AUDIO, RATE)
+    assert error.value.status == 429 and len(fake.requests) == 2
+
+
+def test_an_unreachable_provider_fails_the_next_chunks_at_once(monkeypatch):
+    monkeypatch.setattr(cloud, "CONNECT_TIMEOUT", 0.3)
+    with socket.socket() as s:  # a port nothing listens on
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    engine = CloudEngine("openai", "test-key", fallback=Parakeet, url=f"http://127.0.0.1:{port}/v1")
+    with pytest.raises(cloud.Unreachable, match="cannot reach 127.0.0.1"):
+        engine.transcribe_chunk(AUDIO, RATE)
+    t0 = time.perf_counter()
+    with pytest.raises(CloudError, match="a moment ago") as error:
+        engine.transcribe_chunk(AUDIO, RATE)
+    assert error.value.status == 0 and time.perf_counter() - t0 < 0.3
+
+
+def test_an_old_idle_connection_is_replaced_and_a_dropped_one_reconnected(fake, monkeypatch):
+    engine = fake.engine()
+    engine.transcribe_chunk(AUDIO, RATE)
+    monkeypatch.setattr(cloud, "IDLE_RECONNECT", -1.0)  # every kept connection counts as too old
+    engine.transcribe_chunk(AUDIO, RATE)
+    assert fake.connections == 2
+    monkeypatch.setattr(cloud, "IDLE_RECONNECT", 30.0)
+    fake.drop = True  # from now on the server closes each connection after answering, without saying so
+    for _ in range(2):
+        assert engine.transcribe_chunk(AUDIO, RATE).text == "Hello from OpenAI."
+    assert len(fake.requests) == 4 and fake.connections == 3  # the dead connection was replaced, nothing asked twice

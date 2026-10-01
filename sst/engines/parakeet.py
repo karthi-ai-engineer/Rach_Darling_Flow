@@ -19,6 +19,7 @@ import numpy as np
 from sst import MODELS_DIR
 from sst.audio import condition, split_at_pauses
 from sst.downloads import Download, ModelFile
+from sst.pipeline.contracts import RawTranscript, WordInfo
 
 FOLDER = "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
 MODEL_DIR = MODELS_DIR / FOLDER  # next to the program (Rflow 1.4 and older), or the source checkout's models/
@@ -84,6 +85,25 @@ def runaway(text: str, words: list[str]) -> bool:
     boosted = {w.lower() for phrase in words for w in re.findall(r"[\w']+", phrase)}
     said = re.findall(r"[\w']+", text.lower())
     return any(a == b and a in boosted for a, b in zip(said, said[1:], strict=False))
+
+
+def token_words(tokens: list[str], times: list[float], end: float, offset: float = 0.0) -> list[WordInfo]:
+    """Words with times from the decoder's word pieces and each piece's start (seconds). A piece starting with "▁"
+    (sherpa-onnx hands it over as a space) begins a word, the others continue it ("We" "ll" "," -> "Well,"); a word
+    ends where the next begins, the last at `end` (the audio's). `offset` moves them all (a piece of longer audio).
+    No times ([]) when there isn't one per piece."""
+    if not tokens or len(tokens) != len(times):
+        return []
+    spans: list[list] = []  # [text, start]
+    for token, at in zip(tokens, times, strict=True):
+        piece = token.replace("\u2581", " ")
+        if piece.startswith(" ") or not spans:
+            spans.append([piece.strip(), float(at)])  # a lone "▁" starts a word the next piece spells
+        else:
+            spans[-1][0] += piece.strip()
+    spans = [s for s in spans if s[0]]
+    ends = [start for _, start in spans[1:]] + [end]
+    return [WordInfo(text, offset + start, offset + max(start, stop)) for (text, start), stop in zip(spans, ends, strict=True)]
 
 
 class ParakeetEngine:
@@ -161,7 +181,45 @@ class ParakeetEngine:
         return text
 
     def _run(self, audio: np.ndarray, sample_rate: int, hotwords: str) -> str:
+        return self._result(audio, sample_rate, hotwords).text.strip()
+
+    def _result(self, audio: np.ndarray, sample_rate: int, hotwords: str):
+        """sherpa-onnx's result: the text, and for a transducer its word pieces (tokens) with their start times."""
         stream = self._recognizer.create_stream(hotwords=hotwords) if hotwords else self._recognizer.create_stream()
         stream.accept_waveform(sample_rate, audio)
         self._recognizer.decode_stream(stream)
-        return stream.result.text.strip()
+        return stream.result
+
+    # ---- the voice pipeline: the same text, with each word's time
+
+    def transcribe_chunk(self, audio: np.ndarray, sample_rate: int) -> RawTranscript:
+        """transcribe() with word times in seconds from the chunk's start, for merging overlapping chunks: the same
+        conditioning, Your words, runaway guard, pieces and retry in halves. No times (words=[]) when the model gives
+        none."""
+        with self._lock:
+            if self.conditioned:
+                audio = condition(audio)
+            decoded, at = [], 0
+            for piece in split_at_pauses(audio, sample_rate, MAX_PIECE_SECONDS):
+                decoded.append(self._decode_timed(piece, sample_rate, at / sample_rate))
+                at += len(piece)
+            if (not any(text for text, _ in decoded) and self.conditioned and len(audio) > sample_rate
+                    and float(np.abs(audio).max()) > 0.05):  # as in _transcribe: each half on its own
+                half = len(audio) // 2
+                decoded = [self._decode_timed(audio[:half], sample_rate, 0.0),
+                           self._decode_timed(audio[half:], sample_rate, half / sample_rate)]
+        text = " ".join(text for text, _ in decoded if text)
+        timed = all(words is not None for _, words in decoded)
+        return RawTranscript(text, [w for _, words in decoded for w in words or []] if timed else [], "en", self.name)
+
+    def _decode_timed(self, audio: np.ndarray, sample_rate: int, offset: float) -> tuple[str, list[WordInfo] | None]:
+        """_decode() with the words' times (None: the model gave none for this text)."""
+        words = list(self.words) if self.biased else []
+        result = self._result(audio, sample_rate, hotword_text(words))
+        if words and runaway(result.text.strip(), words):
+            log.warning("Hotwords ran away (%r); decoding again without them", result.text.strip())
+            result = self._result(audio, sample_rate, "")
+        text = result.text.strip()
+        timed = token_words(list(getattr(result, "tokens", None) or []), list(getattr(result, "timestamps", None) or []),
+                            len(audio) / sample_rate, offset)
+        return text, timed if timed or not text else None

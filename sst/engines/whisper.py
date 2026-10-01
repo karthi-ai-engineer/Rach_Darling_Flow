@@ -17,6 +17,7 @@ import numpy as np
 
 from sst.audio import TARGET_RATE, condition, resample
 from sst.downloads import Download, ModelFile
+from sst.pipeline.contracts import RawTranscript, WordInfo
 
 REPO = "dropbox-dash/faster-whisper-large-v3-turbo"  # formerly mobiuslabsgmbh/...; Hugging Face redirects the old name
 REVISION = "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
@@ -33,6 +34,19 @@ LANGUAGES = {"": "Automatic", "en": "English", "ta": "Tamil", "ja": "Japanese", 
              "ar": "Arabic", "es": "Spanish", "fr": "French", "de": "German", "pt": "Portuguese", "ru": "Russian"}
 
 log = logging.getLogger(__name__)
+
+
+def segment_words(segments) -> list[WordInfo]:
+    """faster-whisper's word times (word_timestamps=True) as WordInfo. Its words carry the space before them
+    (" Hello"), which is dropped; its probability becomes the confidence."""
+    words = []
+    for segment in segments:
+        for word in getattr(segment, "words", None) or []:
+            if text := word.word.strip():
+                probability = getattr(word, "probability", None)
+                words.append(WordInfo(text, float(word.start), max(float(word.start), float(word.end)),
+                                      None if probability is None else float(probability)))
+    return words
 
 
 def _cuda_devices() -> int:
@@ -81,3 +95,17 @@ class WhisperEngine:
                 audio, language=self.language or None, beam_size=1, condition_on_previous_text=False,
                 without_timestamps=True, vad_filter=False, hotwords=words or None)
             return " ".join(s.text.strip() for s in segments).strip()
+
+    def transcribe_chunk(self, audio: np.ndarray, sample_rate: int) -> RawTranscript:
+        """transcribe() with word times in seconds from the chunk's start, and the language it heard. The decoding is
+        the same; faster-whisper lines the words up with the audio afterwards (beyond 30 s that moves where its next
+        window starts, but a chunk is at most about 20 s)."""
+        with self._lock:
+            audio = resample(condition(audio), sample_rate, TARGET_RATE)
+            words = ", ".join(w for w in self.words if w.strip())
+            segments, info = self._model.transcribe(
+                audio, language=self.language or None, beam_size=1, condition_on_previous_text=False,
+                without_timestamps=True, vad_filter=False, hotwords=words or None, word_timestamps=True)
+            segments = list(segments)  # decoded while iterated: inside the lock
+        text = " ".join(s.text.strip() for s in segments).strip()
+        return RawTranscript(text, segment_words(segments), getattr(info, "language", None) or self.language, self.name)
