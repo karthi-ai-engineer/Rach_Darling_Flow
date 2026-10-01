@@ -16,7 +16,7 @@ import pytest
 
 from sst.engines import cloud, load_engine, usable
 from sst.engines.cloud import CloudEngine, CloudError
-from sst.gateway import GatewayConfig
+from sst.gateway import SPEECH_SERVER, GatewayConfig
 
 RATE = 48_000
 AUDIO = (0.1 * np.sin(np.linspace(0, 2000, 2 * RATE))).astype(np.float32)  # two seconds at the microphone's rate
@@ -57,6 +57,11 @@ class FakeProvider:
                         {"text": "Thinking about it...", "thought": True}, {"text": " Hello  from\nGemini. "}]}}]})
                 self._reply(200, {"text": " Hello  from OpenAI. "})
 
+            def do_GET(self):
+                fake.requests.append({"path": self.path, "auth": self.headers.get("Authorization")})
+                self._reply(200, {"object": "list", "data": [{"id": "Qwen/Qwen3-30B"}, {"id": "whisper-1"},
+                                                              {"id": "models/gemini-3.5-transcribe"}, {"id": "bge-m3"}]})
+
             def _reply(self, status, payload):
                 data = json.dumps(payload).encode()
                 self.send_response(status)
@@ -72,8 +77,8 @@ class FakeProvider:
         self.address = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def engine(self, provider="openai", model="", language="", fallback=None, path="/v1"):
-        return CloudEngine(provider, "test-key", model, language, fallback, url=self.address + path)
+    def engine(self, provider="openai", model="", language="", fallback=None, path="/v1", key="test-key"):
+        return CloudEngine(provider, key, model, language, fallback, url=self.address + path)
 
 
 @pytest.fixture
@@ -230,3 +235,43 @@ def test_the_catalog_uses_a_cloud_model_only_with_its_key():
     assert usable("groq", keys) == "groq" and usable("openai", keys) == "parakeet"
     engine = load_engine("gemini", "ja", api_key="g-key")
     assert isinstance(engine, CloudEngine) and engine.model == "gemini-flash-lite-latest" and engine.language == "ja"
+
+
+def test_an_own_server_needs_an_address_but_maybe_no_key(fake):
+    with pytest.raises(ValueError, match="needs its address"):
+        CloudEngine("server", "")
+    engine = fake.engine("server", model="openai/whisper-large-v3-turbo", key="")
+    assert engine.transcribe(AUDIO, RATE) == "Hello from OpenAI." and engine.title == "Your server openai/whisper-large-v3-turbo"
+    request = fake.requests[0]
+    assert request["path"] == "/v1/audio/transcriptions" and request["auth"] is None  # no key: no header
+    assert request["fields"]["model"] == b"openai/whisper-large-v3-turbo"
+    fake.engine("server", model="whisper-1", key="gw-key").transcribe(AUDIO, RATE)
+    assert fake.requests[1]["auth"] == "Bearer gw-key"
+
+
+def test_load_models_lists_the_speech_models_first(fake):
+    assert fake.engine("server", key="gw-key").models() == ["gemini-3.5-transcribe", "whisper-1", "bge-m3",
+                                                              "Qwen/Qwen3-30B"]
+    assert fake.requests[0] == {"path": "/v1/models", "auth": "Bearer gw-key"}
+
+
+def test_a_new_server_address_is_used_from_the_next_request(fake):
+    other = FakeProvider()
+    try:
+        engine = fake.engine("server", model="whisper-1")
+        engine.transcribe(AUDIO, RATE)
+        before = engine.signature
+        engine.set_url(other.address + "/v1/")
+        engine.transcribe(AUDIO, RATE)
+        assert len(fake.requests) == 1 and len(other.requests) == 1
+        assert engine.signature != before  # another server may give other text
+    finally:
+        other.server.shutdown()
+
+
+def test_the_catalog_uses_an_own_server_only_with_its_address():
+    assert usable("server", GatewayConfig()) == "parakeet"
+    keys = GatewayConfig().with_entry(SPEECH_SERVER, "http://10.0.0.5:8000/v1", "")
+    assert usable("server", keys) == "server"
+    engine = load_engine("server", "ta", model="whisper-1", url="http://10.0.0.5:8000/v1")
+    assert engine.url == "http://10.0.0.5:8000/v1" and engine.language == "ta" and engine.api_key == ""

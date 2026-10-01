@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from sst import app as sst_app  # noqa: E402
 from sst import settings as settings_module  # noqa: E402
-from sst.engines.cloud import CLOUD  # noqa: E402
+from sst.engines.cloud import CLOUD, REMOTE  # noqa: E402
 from sst.gateway import GatewayConfig  # noqa: E402
 from sst.settings import Profile, Profiles, Settings  # noqa: E402
 
@@ -107,12 +107,16 @@ class FakeListener:
 class FakeEngine:
     """Named after the model it was loaded as, like the real engines."""
 
-    def __init__(self, name="parakeet", language="", api_key="", model="", fallback=None):
+    def __init__(self, name="parakeet", language="", api_key="", model="", fallback=None, url=None):
         self.name, self.title, self.words = name, name.title(), []
-        if name.startswith("whisper") or name in CLOUD:
+        if name.startswith("whisper") or name in REMOTE:
             self.language = language  # like the real one: a model that knows many languages
-        if name in CLOUD:  # like sst.engines.cloud.CloudEngine
-            self.api_key, self.model, self.fallback = api_key, model or CLOUD[name].models[0], fallback
+        if name in REMOTE:  # like sst.engines.cloud.CloudEngine
+            self.api_key, self.fallback, self.url = api_key, fallback, url
+            self.model = model or (CLOUD[name].models[0] if name in CLOUD else "")
+
+    def set_url(self, url):
+        self.url = url
 
     def transcribe(self, audio, rate):
         return "hello"
@@ -144,7 +148,8 @@ def tray_app(monkeypatch, tmp_path):
         "time": "2026-09-30 10:15:00", "text": text}))
     monkeypatch.setattr(sst_app, "read_history", lambda path=None: history)
     loads = []
-    monkeypatch.setattr(sst_app, "load_engine", lambda name, *options: loads.append(name) or FakeEngine(name, *options))
+    monkeypatch.setattr(sst_app, "load_engine", lambda name, *options, **named: loads.append(name) or FakeEngine(
+        name, *options, **named))
     monkeypatch.setattr(sst_app, "HotkeyListener", FakeListener)
     monkeypatch.setattr(sst_app, "wispr_flow_running", lambda: False)
     monkeypatch.setattr(sst_app, "input_device_names", lambda refresh=True: ["Mic A"])
@@ -379,3 +384,25 @@ def test_parakeet_typing_for_the_cloud_is_said_once_in_a_while(tray_app, monkeyp
     assert told == [("Cloud speech unavailable", "Parakeet typed it on this computer (OpenAI: cannot reach "
                                                  "api.openai.com).")]
     assert app.pill.state == "typed_local"
+
+
+def test_a_model_on_your_own_server_switches_its_address_without_a_reload(tray_app):
+    from PySide6.QtTest import QTest
+
+    from sst.gateway import SPEECH_SERVER
+    app, saved, _ = tray_app
+    app.gateway = GatewayConfig("http://gateway.example/v1", "cleanup-key", "vllm")
+    app.choose_speech_model("server")  # nothing set up yet
+    assert app.settings.speech_model == "parakeet"
+    app.use_server_speech("http://gateway.example/v1", "cleanup-key", "whisper-1")
+    assert saved["gateway"].speech_server() == ("http://gateway.example/v1", "cleanup-key")
+    assert _wait_for(lambda: app.speech_in_use() == "server", QTest.qWait)
+    engine = app.dictation.engine
+    assert (engine.url, engine.api_key, engine.model) == ("http://gateway.example/v1", "cleanup-key", "whisper-1")
+    assert engine.fallback is not None
+    app.use_server_speech("http://localhost:8000/v1", "", "openai/whisper-large-v3-turbo")  # Save: no reload
+    assert app.dictation.engine is engine and engine.url == "http://localhost:8000/v1" and engine.api_key == ""
+    assert engine.model == "openai/whisper-large-v3-turbo"
+    assert (app.gateway.base_url, app.gateway.api_key) == ("http://gateway.example/v1", "cleanup-key")  # AI cleanup's
+    app.save_cleanup(False, "", "", app.gateway.with_entry(SPEECH_SERVER, "", ""))  # the server is gone: Parakeet
+    assert _wait_for(lambda: app.speech_in_use() == "parakeet", QTest.qWait)

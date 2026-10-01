@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
 from sst import RECORDINGS_DIR, __version__, bench
 from sst.audio import LevelMeter, Take, call_quality, save_wav
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, WHERE, usable
-from sst.engines.cloud import CLOUD
+from sst.engines.cloud import CLOUD, SPEECH
 from sst.engines.whisper import LANGUAGES
 from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
@@ -117,8 +117,7 @@ def stylesheet(theme: str) -> str:
     QPushButton#segment {{ background: {t['surface']}; color: {t['text']}; border: 1px solid {t['line']};
                            border-radius: 8px; padding: 7px 16px; }}
     QPushButton#segment:hover {{ border-color: {t['accent']}; }}
-    QPushButton#segment:checked {{ background: {t['accent']}; border-color: {t['accent']}; color: white;
-                                   font-weight: 600; }}
+    QPushButton#segment:checked {{ background: {t['accent']}; border-color: {t['accent']}; color: white; }}
     QPushButton#profile {{ text-align: left; padding: 8px 12px; border: 1px solid {t['line']}; border-radius: 8px;
                            background: {t['surface']}; color: {t['text']}; }}
     QPushButton#profile:hover {{ border-color: {t['accent']}; }}
@@ -1024,6 +1023,154 @@ class _CloudCard:
         run_in_background(self.frame, lambda: self.app.test_cloud_speech(self.model.key, api_key, model), done)
 
 
+class _ServerCard:
+    """The speech model on the user's own server: its address, a key if it needs one, the model (Load models lists the
+    server's speech models first), a Test, and "Use this model". The address and key are kept apart from AI
+    cleanup's; a new card starts from AI cleanup's own server (e.g. a company gateway)."""
+
+    def __init__(self, app, model):
+        self.app, self.model = app, model
+        self.frame, layout = card(8)
+        mixed = QFont()  # the icons come from the icon font, the words from Segoe UI
+        mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+        self.status = text("", muted=True, wrap=False)
+        self.status.setFont(mixed)
+        layout.addLayout(row(text(model.name, "h2", wrap=False), self.status, stretch_at=1))
+        layout.addWidget(text(model.summary))
+        layout.addWidget(text(f"Languages: {model.languages}  ·  {model.size}", muted=True))
+        layout.addWidget(text("Your voice goes to this server each time you dictate. If it can't be reached, Parakeet "
+                              "types it on this computer.", muted=True))
+        self._saved = app.gateway.speech_server()  # (address, key) as last saved
+        address, key = self._saved if self._saved[0] else app.gateway.entries().get("vllm", ("", ""))
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        self.address = QLineEdit(address)
+        self.address.setPlaceholderText("e.g. http://localhost:8000/v1, or your company's AI gateway")
+        form.addRow("Address", self.address)
+        self.key = QLineEdit(key)
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.key.setPlaceholderText("Only if your server needs one (encrypted on this computer)")
+        self.load = button("Load models", self._load_models)
+        key_row = row(self.key, self.load)
+        key_row.setStretch(0, 1)
+        form.addRow("API key", key_row)
+        self.model_box = QComboBox()
+        self.model_box.setEditable(True)  # one of the loaded models, or any name the server knows
+        self.model_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model_box.lineEdit().setPlaceholderText("e.g. whisper-1 or openai/whisper-large-v3-turbo: Load models")
+        if app.settings.speech_server_model:
+            self.model_box.addItem(app.settings.speech_server_model)
+        self.model_box.setCurrentText(app.settings.speech_server_model)
+        self.test = button("Test", self._test)
+        model_row = row(self.model_box, self.test)
+        model_row.setStretch(0, 1)
+        form.addRow("Model", model_row)
+        self.language = QComboBox()
+        for code, name in LANGUAGES.items():
+            self.language.addItem(name, code)
+        self.language.currentIndexChanged.connect(lambda _=0: self.app.set_speech_language(self.language.currentData()))
+        form.addRow("Language", self.language)
+        layout.addLayout(form)
+        self.result = text("", muted=True)
+        self.result.hide()  # until there is something to say: an empty line would leave a gap
+        layout.addWidget(self.result)
+        if not self._saved[0] and address:
+            self._say("Filled in from AI cleanup's server. Load models to see what it offers.")
+        self.choose = button("Use this model", self._use, primary=True)
+        layout.addLayout(row(self.choose, stretch_at=1))
+        for box in (self.address, self.key):
+            box.textChanged.connect(lambda _="": self._show_buttons())
+        self.model_box.currentTextChanged.connect(lambda _="": self._show_buttons())
+
+    def _fields(self) -> tuple[str, str, str]:
+        return self.address.text().strip(), self.key.text().strip(), self.model_box.currentText().strip()
+
+    def _edited(self) -> bool:
+        return self._fields() != (*self._saved, self.app.settings.speech_server_model)
+
+    def refresh(self) -> None:
+        app, key = self.app, self.model.key
+        saved = app.gateway.speech_server()
+        if saved != self._saved and self._fields()[:2] == self._saved:
+            self.address.setText(saved[0])  # changed elsewhere; what is being typed here is left alone
+            self.key.setText(saved[1])
+        self._saved = saved
+        if key == app.loading_speech:
+            status = "Loading..."
+        elif key == app.speech_in_use():
+            status = f"{GLYPHS['check']}  In use"
+        else:
+            status = ""
+        self.status.setText(status)
+        self.language.blockSignals(True)  # showing the setting isn't changing it
+        self.language.setCurrentIndex(max(0, self.language.findData(app.settings.speech_language)))
+        self.language.blockSignals(False)
+        self._show_buttons()
+
+    def _show_buttons(self) -> None:
+        chosen = self.model.key == self.app.settings.speech_model
+        self.choose.setText("Save" if chosen else "Use this model")
+        self.choose.setVisible(not chosen or self._edited())
+        self.choose.setEnabled(not self.app.loading_speech)
+
+    def _say(self, message: str) -> None:
+        self.result.setText(message)
+        self.result.setVisible(bool(message))
+
+    def _ready(self, need_model: bool = True) -> bool:
+        address, _, model = self._fields()
+        if not address:
+            self._say("Enter your server's address first.")
+        elif need_model and not model:
+            self._say("Choose a model first (Load models).")
+        return bool(address and (model or not need_model))
+
+    def _use(self) -> None:
+        if self._ready():
+            address, api_key, model = self._fields()
+            self._saved = (address, api_key)
+            self.app.use_server_speech(address, api_key, model)
+            self._say("Saved. Active from the next dictation.")
+
+    def _busy(self, busy: bool, message: str = "") -> None:
+        self.load.setEnabled(not busy)
+        self.test.setEnabled(not busy)
+        if message:
+            self._say(message)
+
+    def _load_models(self) -> None:
+        if not self._ready(need_model=False):
+            return
+        address, api_key, _ = self._fields()
+        self._busy(True, "Loading models...")
+
+        def done(models, error) -> None:
+            self._busy(False)
+            if error:
+                self._say(f"Failed: {error}")
+                return
+            current = self.model_box.currentText()
+            self.model_box.clear()
+            self.model_box.addItems(models)
+            speech = [m for m in models if SPEECH.search(m)]
+            self.model_box.setCurrentText(current or (speech[0] if speech else ""))
+            self._say(f"Loaded {len(models)} models, {len(speech)} of them for speech (listed first): choose one, then "
+                      "Test." if models else "The server lists no models; type the model's name.")
+        run_in_background(self.frame, lambda: self.app.server_models(address, api_key), done)
+
+    def _test(self) -> None:
+        if not self._ready():
+            return
+        address, api_key, model = self._fields()
+        self._busy(True, "Sending a sample sentence to the server...")
+
+        def done(answer, error) -> None:
+            self._busy(False)
+            self._say(f"Failed: {error}" if error else f"OK: {answer}")
+        run_in_background(self.frame, lambda: self.app.test_server_speech(address, api_key, model), done)
+
+
 # What a scan verdict looks like: (icon, words).
 SCAN_LEVELS = {"recommended": ("check", "Recommended"), "fast": ("check", "Fast here"),
                "usable": ("dot", "Works, with a short wait"), "slow": ("warning", "Slow on this computer"),
@@ -1102,7 +1249,7 @@ class SpeechPage(Page):
         tabs.addStretch()
         self.add(tabs)
         self.groups = QStackedWidget()
-        self.models: dict[str, _ModelCard | _CloudCard] = {}
+        self.models: dict[str, _ModelCard | _CloudCard | _ServerCard] = {}
         for key in WHERE:
             self.groups.addWidget(self._group(key))
         self.add(self.groups)
@@ -1120,19 +1267,13 @@ class SpeechPage(Page):
             layout.addWidget(text("The provider recognises your speech on its servers, with your API key: nothing to "
                                   "download, little memory, quick on any computer. Keys are shared with AI cleanup.",
                                   muted=True))
+        cards = {"cloud": lambda model: _CloudCard(self, self.app, model), "server": lambda model: _ServerCard(self.app, model)}
         for model in models:
-            self.models[model.key] = (_CloudCard(self, self.app, model) if where == "cloud"
-                                      else _ModelCard(self.app, model))
+            self.models[model.key] = cards.get(where, lambda model: _ModelCard(self.app, model))(model)
             layout.addWidget(self.models[model.key].frame)
         if where == "local":
             self.scan = _ScanCard(self.app)
             layout.addWidget(self.scan.frame)
-        elif not models:
-            frame, card_layout = card(6)
-            card_layout.addWidget(text("Your own server", "h2"))
-            card_layout.addWidget(text("A speech model on a vLLM server, or your company's AI gateway, with its "
-                                       "address and key. Coming in a next update.", muted=True))
-            layout.addWidget(frame)
         layout.addStretch()  # cards keep their own height when another group is taller
         return group
 
@@ -1770,6 +1911,20 @@ class PreviewApp:
     def test_cloud_speech(self, provider: str, api_key: str, model: str) -> str:
         self.calls.append(("test_cloud_speech", provider, model))
         return f"{model} answered in 0.6 s: After early nightfall the yellow lamps would light up."
+
+    def use_server_speech(self, address: str, api_key: str, model: str) -> None:
+        from sst.gateway import SPEECH_SERVER
+        self.gateway = self.gateway.with_entry(SPEECH_SERVER, address, api_key)
+        self.settings.speech_server_model, self.settings.speech_model = model, "server"
+        self.calls.append(("use_server_speech", address, model))
+
+    def test_server_speech(self, address: str, api_key: str, model: str) -> str:
+        self.calls.append(("test_server_speech", address, model))
+        return f"{model} answered in 0.3 s: After early nightfall the yellow lamps would light up."
+
+    def server_models(self, address: str, api_key: str) -> list[str]:
+        self.calls.append(("server_models", address))
+        return ["whisper-1", "Qwen/Qwen3-30B-A3B-Instruct-2507-FP8"]
 
     def cancel_download(self) -> None:
         self.calls.append(("cancel_download",))

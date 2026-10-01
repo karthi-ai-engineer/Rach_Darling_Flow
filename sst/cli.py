@@ -8,7 +8,7 @@
   uv run sst eval [<folder>...]    score reading tests (all of them by default); --degrade, --model, --no-cleanup
   uv run sst web                   open a Record / Stop page in the browser
 
-Options: --engine parakeet (or whisper-turbo; openai, groq, gemini with the key saved in Rflow)
+Options: --engine parakeet (or whisper-turbo; openai, groq, gemini, server as set up in Rflow)
          --device <number from `sst devices`>
 """
 import argparse
@@ -20,7 +20,7 @@ from pathlib import Path
 from sst import __version__
 from sst.audio import list_input_devices, load_wav, record_until_enter, save_recording
 from sst.engines import DEFAULT_MODEL, ENGINES, load_engine, usable
-from sst.engines.cloud import CLOUD
+from sst.engines.cloud import CLOUD, REMOTE
 
 
 def _load(engine_name: str):
@@ -32,16 +32,21 @@ def _load(engine_name: str):
 
 
 def _cloud_options(name: str) -> dict:
-    """A cloud model's key, model and language, from the profile in use in the app (the key is AI cleanup's too).
-    Without Parakeet to fall back on: a provider's failure is reported, not hidden."""
-    if name not in CLOUD:
+    """A cloud model's key and model, or an own server's address, key and model, and the language: from the profile in
+    use in the app. Without Parakeet to fall back on: a provider's failure is reported, not hidden."""
+    if name not in REMOTE:
         return {}
     from sst.gateway import GatewayConfig
     from sst.settings import Profiles, Settings
 
     profile = Profiles.load().current
-    settings, key = Settings.load(profile.settings_file), GatewayConfig.load(profile.gateway_file).key_for(name)
-    if not key:
+    settings, gateway = Settings.load(profile.settings_file), GatewayConfig.load(profile.gateway_file)
+    if name not in CLOUD:
+        address, key = gateway.speech_server()
+        if not address:
+            raise SystemExit("No speech server: set it up on Rflow's Speech recognition page first.")
+        return {"language": settings.speech_language, "api_key": key, "model": settings.speech_server_model, "url": address}
+    if not (key := gateway.key_for(name)):
         raise SystemExit(f"No {CLOUD[name].name} key: enter it on Rflow's Speech recognition page first.")
     return {"language": settings.speech_language, "api_key": key, "model": settings.speech_cloud_models.get(name, "")}
 

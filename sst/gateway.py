@@ -26,6 +26,9 @@ from sst.settings import CONFIG_DIR
 
 GATEWAY_FILE = CONFIG_DIR / "gateway.json"  # the API keys, encrypted for the Windows user; never in git
 DEFAULT_URL = ""  # the user chooses a provider, or enters their own server's address
+# The speech model on the user's own server (sst.engines.cloud.SERVER) keeps its address and key under this name,
+# apart from AI cleanup's own server: the two may differ, and changing one must never break the other.
+SPEECH_SERVER = "speech-server"
 ANTHROPIC_VERSION = "2023-06-01"  # the Messages API version header Anthropic requires
 
 CONNECT_TIMEOUT = 1.5    # a first connect sometimes stalls (seen from Python); a retry gets through in milliseconds
@@ -136,11 +139,20 @@ class GatewayConfig:
         """A copy with this provider's key changed (the Speech recognition page); AI cleanup's choice stays as it is."""
         if provider == self.service.key:
             return dataclasses.replace(self, api_key=key)
-        others = dict(self.others)
-        url = others.pop(provider, ("", ""))[0]
+        return self.with_entry(provider, self.others.get(provider, ("", ""))[0], key)
+
+    def with_entry(self, provider: str, url: str, key: str) -> "GatewayConfig":
+        """A copy with this provider's address and key changed (or the speech server's: SPEECH_SERVER)."""
+        if provider == self.service.key:
+            return dataclasses.replace(self, base_url=url, api_key=key)
+        others = {name: entry for name, entry in self.others.items() if name != provider}
         if url or key:
             others[provider] = (url, key)
         return dataclasses.replace(self, others=others)
+
+    def speech_server(self) -> tuple[str, str]:
+        """The address and key of the speech model on the user's own server ("" when none is set up)."""
+        return self.others.get(SPEECH_SERVER, ("", ""))
 
     @classmethod
     def load(cls, path: Path = GATEWAY_FILE) -> "GatewayConfig":
@@ -155,7 +167,7 @@ class GatewayConfig:
         provider = data.get("provider") if data.get("provider") in PROVIDERS else ""
         others = {}
         for key, saved in (data.get("others") or {}).items():
-            if key in PROVIDERS and isinstance(saved, dict):
+            if (key in PROVIDERS or key == SPEECH_SERVER) and isinstance(saved, dict):
                 others[key] = (str(saved.get("base_url") or ""), _read_key(saved, path))
         key = _read_key(data, path)
         config = cls(base_url, key, provider, others)

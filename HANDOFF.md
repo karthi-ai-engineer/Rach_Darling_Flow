@@ -91,6 +91,7 @@ _Last updated: 2026-10-01_
 | 14 | **Whisper large-v3 turbo on this computer** (faster-whisper), downloaded when chosen, language choice | PR #35, waiting for the owner's test + merge |
 | 15 | **Scan my computer**: hardware, a benchmark, the downloaded models timed, a verdict per model | PR #37 (stacked on #35), waiting for the owner's test + merge |
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | PR #39 (stacked on #37), waiting for the owner's test + merge |
+| 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | PR #41 (stacked on #39), waiting for the owner's test + merge |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0 and v1.4.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -617,8 +618,8 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
   - Switching profiles loads the other profile's model.
 - **The Speech recognition page** (`SpeechPage`) sits in the sidebar between Dictionary and AI cleanup. Its tabs are
   On this computer / Cloud / Your own server. Each model has a card with an "In use" or "Use this model" button. The
-  "Scan my computer" card and the Cloud and server tabs say "Coming in the next update". The tray menu has
-  "Speech recognition" too.
+  "Scan my computer" card and the Cloud and server tabs said "Coming in the next update" (filled in by phases
+  15-17). The tray menu has "Speech recognition" too.
 - `sst eval` (and the reading test) name the model in use ("Parakeet alone"). By default, `sst eval` uses the
   profile's own speech model; `--engine` picks another.
 - Tests: 254. Among them, the real TrayApp switching to a second model in the background (Your words carried over),
@@ -774,6 +775,36 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
   Test, keys never in `repr`, the signature, the catalog, key sharing and saving, the dictation's `typed_local`, the
   cards (the question, Save, Test), and the real TrayApp switching to a cloud model and back.
 
+## Your own server for speech (phase 17)
+
+- **The engine** is the cloud one (`CloudEngine`) with the provider `SERVER` (`sst/engines/cloud.py`): OpenAI's
+  multipart `/audio/transcriptions` at the user's address, with `Authorization: Bearer` only when a key is set (vLLM
+  often needs none). `REMOTE` = the cloud providers plus the server: everything that falls back on Parakeet.
+  - `models()` (GET `/models`) lists the speech models first (`SPEECH`: whisper, transcribe, asr, parakeet, canary,
+    voxtral...), then the rest, since a gateway lists its chat models too.
+  - `set_url()` takes a new address from the next request on, so the window never waits for a dictation.
+  - The signature includes a hash of the address: another server may give other text for the same model name.
+- **Storage:** the address and key are kept under `SPEECH_SERVER` (`"speech-server"`) in the profile's
+  `gateway.json`, encrypted like the others, **apart from AI cleanup's own server**. The two may differ (e.g. a
+  company gateway for cleanup and Speaches on this computer for speech), and changing one never breaks the other.
+  The model is `Settings.speech_server_model`. `usable()` needs an address.
+- **The page:** the "Your own server" tab has one card:
+  - Address, API key (optional), Load models, Model, Test, Language
+  - a new card starts from AI cleanup's own server ("vLLM or another OpenAI-compatible server", e.g. the company
+    gateway) and says so
+  - "Use this model" asks nothing (the owner counts their own and their company's server as their own); the card
+    says that the voice goes to the server, and Parakeet takes over when it can't be reached
+  - while in use, "Save" applies a changed address, key or model without a reload
+- **The company gateway:** its `whisper-1` transcribed on 2026-09-30 (see **Company AI gateway**). The owner tries it
+  from the card: Load models → whisper-1 → Test.
+- **Also:** the chosen segment tab (On this computer / Cloud / Your own server) is no longer bold, which clipped
+  "Your own server".
+- `sst eval --engine server` scores through the server, without the fallback.
+- **Tests: 317.** They cover the request without and with a key, the address required, Load models' order, a new
+  address used from the next request, the catalog, the separate storage, the TrayApp switching address without a
+  reload and back to Parakeet when the server is removed, and the card (prefilled from AI cleanup's server, Load
+  models, Test, Use, Save).
+
 ## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
 
 - **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
@@ -860,19 +891,21 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **Owner:** try PRs #35, #37 and #39 together (an installer built from the phase-16 branch has all
-   three):
+1. **Owner:** try PRs #35, #37, #39 and #41 together (an installer built from the newest branch has
+   them all):
    - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"
    - dictate in English, and in Tamil with the language set
    - switch back to Parakeet
    - press "Scan my computer"
    - Cloud → a provider you have a key for (Groq has a free tier) → paste the key → Test → Use this model → dictate;
      then turn Wi-Fi off and dictate: Parakeet should type it, and say so
+   - Your own server → it is filled in from AI cleanup's server, or enter the company gateway → Load models →
+     whisper-1 → Test → Use this model → dictate
 
-   Then merge #35; retarget #37 to `main` and merge it; retarget #39 to `main` and merge it.
+   Then merge them in order (#35, #37, #39, #41), retargeting each next one to `main` before deleting its base.
 2. **The owner's building-block plan, in this order** (2026-10-01; see **Speech recognition as a building block**):
    - 16: cloud speech models (PR #39)
-   - 17: your own server (vLLM, the company gateway: its `whisper-1` transcribed on 2026-09-30)
+   - 17: your own server (PR #41)
    - 18: Parakeet downloaded on demand, with a first-start choice of speech model. The installer drops from ~570 MB to
      ~90-100 MB (~270 MB installed). The website's "works offline, model included" changes.
    - then release. Whisper's runtime on demand too (installer ~50 MB) is possible later.

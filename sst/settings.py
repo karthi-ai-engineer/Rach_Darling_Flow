@@ -33,6 +33,7 @@ class Settings:
     speech_model: str = "parakeet"  # the speech recognition model, a key of sst.engines.SPEECH_MODELS
     speech_language: str = ""  # for models that know many languages (Whisper): "" = detected, or a code such as "ta"
     speech_cloud_models: dict[str, str] = field(default_factory=dict)  # cloud provider -> its model chosen for speech
+    speech_server_model: str = ""  # the model on the user's own server (its address and key: GatewayConfig.speech_server)
     cleanup: bool = False  # clean up the text with an AI model before typing it
     cleanup_model: str = ""  # a model id on the user's endpoint (sst.gateway)
     cleanup_fallback: str = ""  # optional backup model, tried when the first one fails

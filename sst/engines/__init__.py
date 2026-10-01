@@ -7,7 +7,8 @@ An engine has a `name` (its catalog key), a `title` (what reports call it), `tra
 and a `signature` (what its text depends on: sst.evaluate caches by it). Engines that can use the user's words have a
 `words` list, which the app keeps up to date. To add one, create engines/<name>.py and list it below.
 
-Cloud models (sst.engines.cloud) need the user's key for the provider, shared with AI cleanup (sst.gateway).
+Cloud models (sst.engines.cloud) need the user's key for the provider, shared with AI cleanup (sst.gateway). A model on
+the user's own server needs its address (GatewayConfig.speech_server).
 """
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ import numpy as np
 
 from sst.downloads import Download
 from sst.engines import whisper
-from sst.engines.cloud import CLOUD, CloudEngine
+from sst.engines.cloud import REMOTE, CloudEngine
 
 
 class Engine(Protocol):
@@ -70,6 +71,10 @@ SPEECH_MODELS = {m.key: m for m in [
                 "Gemini's Flash models listen to the recording and write it down; good with names and mixed "
                 "languages.",
                 "Many languages", "Nothing to download", language_choice=True),
+    SpeechModel("server", "Your own server", "server",
+                "Whisper or another speech model on a server you run or trust: vLLM, your company's AI gateway, or any "
+                "server with OpenAI's transcription API (Speaches, LocalAI...).",
+                "Depends on the model", "Nothing to download", language_choice=True),
 ]}
 DEFAULT_MODEL = "parakeet"
 ENGINES = [key for key, model in SPEECH_MODELS.items() if model.ready]
@@ -84,18 +89,21 @@ def usable(key: str, keys=None) -> str:
         return DEFAULT_MODEL
     if model.where == "cloud" and not (keys and keys.key_for(key)):
         return DEFAULT_MODEL
+    if model.where == "server" and not (keys and keys.speech_server()[0]):
+        return DEFAULT_MODEL
     return key
 
 
 def load_engine(name: str, language: str = "", api_key: str = "", model: str = "",
-                fallback: Callable[[], Engine] | None = None) -> Engine:
-    """`api_key` and `model` are a cloud model's; `fallback` loads the engine it uses when the provider fails."""
+                fallback: Callable[[], Engine] | None = None, url: str | None = None) -> Engine:
+    """`api_key`, `model` and `url` are a cloud model's or an own server's; `fallback` loads the engine used when the
+    provider fails."""
     if name == "parakeet":
         from .parakeet import ParakeetEngine
 
         return ParakeetEngine()
     if name == "whisper-turbo":
         return whisper.WhisperEngine(language=language)
-    if name in CLOUD:
-        return CloudEngine(name, api_key, model, language, fallback)
+    if name in REMOTE:
+        return CloudEngine(name, api_key, model, language, fallback, url)
     raise ValueError(f"Unknown engine '{name}'. Available: {', '.join(ENGINES)}")
