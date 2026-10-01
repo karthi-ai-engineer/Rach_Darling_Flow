@@ -2,7 +2,7 @@
 
 Rules for AI coding assistants (Claude Code) in this repository. Read `HANDOFF.md` first (its "Start here" section):
 it says where the work stands, how the owner likes to work, and what isn't in git (the model, the owner's recordings).
-The accuracy research behind phases 10-12 and 17 is in `docs/research/` (summary: `docs/accuracy.md`).
+The accuracy research behind phases 10-12 and the correction work to come is in `docs/research/` (summary: `docs/accuracy.md`).
 
 ## Authorship: karthi-ai-engineer only
 
