@@ -766,9 +766,9 @@ laptop (useful for phase 13's local AI cleanup); check with `ollama list` on the
 - **Scoring:** `sst eval --engine openai` (or groq, gemini) and the Reading test score through the provider, without
   the Parakeet fallback, so a failure shows. A rate limit (HTTP 429) is waited out (10, 20, 30, 60 s), and the cache
   is now saved even when a run stops halfway. `sst eval --engine whisper-turbo` no longer fails on `engine.biased`.
-- **Not yet tried against the real providers** (no key on this laptop): only against a local fake speaking both
-  formats. The company gateway answered `HTTP 404` on `/audio/transcriptions` for `whisper-1`: finding its speech
-  endpoint is part of phase 17.
+- **Not yet tried against the real providers:** only against a local fake speaking both formats. The owner presses
+  Test with their own key. (Google's OpenAI-compatible address, `.../v1beta/openai`, has no `/audio/transcriptions`:
+  it answers 404, which is why Gemini gets its native `generateContent` request.)
 - **Tests: 309.** They cover each provider's request (fields, headers, the WAV, the hints), errors, the fallback
   (loaded once, Your words passed on), the one-minute skip, a slow answer, the rate-limit wait, the kept connection,
   Test, keys never in `repr`, the signature, the catalog, key sharing and saving, the dictation's `typed_local`, the
@@ -872,7 +872,7 @@ These were scratch scripts, not in git. The findings:
    Then merge #35; retarget #37 to `main` and merge it; retarget #39 to `main` and merge it.
 2. **The owner's building-block plan, in this order** (2026-10-01; see **Speech recognition as a building block**):
    - 16: cloud speech models (PR #39)
-   - 17: your own server (vLLM, the company gateway: find its speech endpoint first; `/audio/transcriptions` gave 404)
+   - 17: your own server (vLLM, the company gateway: its `whisper-1` transcribed on 2026-09-30)
    - 18: Parakeet downloaded on demand, with a first-start choice of speech model. The installer drops from ~570 MB to
      ~90-100 MB (~270 MB installed). The website's "works offline, model included" changes.
    - then release. Whisper's runtime on demand too (installer ~50 MB) is possible later.
