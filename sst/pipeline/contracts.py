@@ -82,6 +82,7 @@ class AudioChunk:
     speech_seconds: float  # how much of it the VAD heard as speech
     boundary: str = "end"  # why it ends: "pause", "max" (the maximum length was reached) or "end" (key released)
     status: ChunkStatus = ChunkStatus.CREATED
+    replaces: int = 0  # the sequence of an earlier chunk this one repeats and supersedes (0: none); see Chunker.finish
 
     @property
     def chunk_id(self) -> str:
@@ -244,8 +245,12 @@ class ChunkingConfig:
     boundary_grace_ms: int = 2000  # at the maximum, the cut goes to the quietest point within this window before it
     boundary_lookahead_ms: int = 400  # ... or slightly after it (a chunk is never longer than max + this)
     min_speech_ms: int = 150  # a chunk with less speech than this is not sent (silence, a cough)
-    min_cut_speech_ms: int = 400  # a pause ends a chunk only after this much of its own speech: a breath or a word's
-    # tail alone made the speech model hear "Yeah." on the owner's recordings; it stays with its neighbour instead
+    min_alone_speech_ms: int = 2000  # a last part with less of its own speech than this isn't sent alone: on the
+    # owner's recordings every such part (1.4 s or less) came back from Gemini with text never said, often the Your-words
+    # list (5 of 5; none of 5 with 2.1 s or more, 2026-10-02). It goes again with the part before it, as one chunk.
+    min_cut_speech_ms: int = 4000  # a pause ends a part only after this much of its own speech. A 2.5 s fragment cut at
+    # a mid-sentence pause came back rewritten ("Under some protocol..."): a part needs enough words for its context.
+    # (Before: 400, which kept a breath alone, heard as "Yeah.", from making a part; this covers that too.)
     keep_silence_ms: int = 300  # silence kept at the end of a chunk cut at a pause
 
 

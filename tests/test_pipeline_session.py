@@ -72,7 +72,8 @@ def pipeline(backend, stages=None, **asr):
 
 
 def two_sentences():
-    return np.concatenate([silence(0.3), speech(2.0), silence(1.6), speech(1.8, seed=3), silence(0.5)])
+    # Each long enough to be a part of its own: a pause cuts after 4 s of speech, and a last part needs 2 s
+    return np.concatenate([silence(0.3), speech(5.0), silence(1.6), speech(3.0, seed=3), silence(0.5)])
 
 
 def test_a_pause_splits_the_dictation_and_the_parts_are_joined_in_order():
@@ -88,7 +89,7 @@ def test_chunks_go_to_the_engine_while_the_user_is_still_speaking():
     backend = ScriptedBackend(["first part", "second part"])
     session = pipeline(backend).start(RATE)
     audio = two_sentences()
-    first_half = int(4.2 * RATE)  # through the pause: the first chunk is cut here
+    first_half = int(7.2 * RATE)  # through the pause: the first chunk is cut here
     for i in range(0, first_half, 800):
         session.feed(audio[i:min(i + 800, first_half)])
     for _ in range(100):
@@ -254,6 +255,39 @@ def test_overlapping_dictations_never_mix():
 @pytest.mark.parametrize("pause, chunks", [(0.3, 1), (1.6, 2)])
 def test_only_a_real_pause_splits(pause, chunks):
     backend = ScriptedBackend(["a", "b"])
-    audio = np.concatenate([speech(1.5), silence(pause), speech(1.5, seed=7), silence(0.5)])
+    audio = np.concatenate([speech(5.0), silence(pause), speech(3.0, seed=7), silence(0.5)])
     final = pipeline(backend).process_audio(audio, RATE)
     assert final.metrics["chunks"] == chunks
+
+
+
+# ---- what the owner's log showed (2026-10-02): a short last part, a fragment, Rflow's own beep
+
+def test_a_short_last_part_is_sent_again_with_the_part_before_it():
+    backend = ScriptedBackend(["one two three four five six", "never said: version installer commit",
+                               "one two three four five six seven"])
+    audio = np.concatenate([silence(0.3), speech(6.0), silence(1.6), speech(0.5, seed=4), silence(0.4)])
+    final = pipeline(backend).process_audio(audio, RATE)
+    assert sorted(backend.calls) == [1, 2]  # the short rest went only as part of chunk 2, which replaces chunk 1
+    assert final.text == "never said: version installer commit" and final.stages["merged"] == final.text
+
+
+def test_a_superseded_part_that_failed_doesnt_fail_the_dictation():
+    backend = ScriptedBackend(["", "hello there and more words"], fail={1})
+    audio = np.concatenate([silence(0.3), speech(6.0), silence(1.6), speech(0.5, seed=4), silence(0.4)])
+    final = pipeline(backend).process_audio(audio, RATE)
+    assert final.provenance is not Provenance.FAILED and final.text == "hello there and more words"
+
+
+def test_rflows_start_beep_is_filtered_out_of_the_recording():
+    from sst.pipeline.session import _ToneNotch
+    t = np.arange(int(0.6 * RATE)) / RATE
+    beep = (0.3 * np.sin(2 * np.pi * 880 * t)).astype(np.float32)
+    notch = _ToneNotch(RATE, 880, 0, len(beep))
+    out = np.concatenate([notch(beep[i:i + 700], i) for i in range(0, len(beep), 700)])  # across blocks
+    assert np.sqrt(np.mean(out[RATE // 10:] ** 2)) < 0.01 * np.sqrt(np.mean(beep ** 2))  # 40 dB down after it settles
+    voice = speech(0.6)
+    kept = _ToneNotch(RATE, 880, 0, len(voice))(voice, 0)
+    assert np.sqrt(np.mean(kept ** 2)) > 0.9 * np.sqrt(np.mean(voice ** 2))  # the voice stays
+    after = _ToneNotch(RATE, 880, 0, 100)(beep[:500], 1000)
+    assert np.array_equal(after, beep[:500])  # outside its span nothing changes

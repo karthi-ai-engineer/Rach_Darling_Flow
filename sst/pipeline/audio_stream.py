@@ -310,6 +310,9 @@ class Chunker:
         self._start = 0  # the current chunk's first sample
         self._own = 0  # its own audio starts here (after the previous cut): speech before it belongs to the last chunk
         self._prev_end: int | None = None  # the last emitted chunk's end
+        self._held: AudioChunk | None = None  # the last chunk sent: a short rest at the release joins it
+        self._held_audio: np.ndarray | None = None  # its audio (the scheduler releases the chunk's own once accepted)
+        self._min_alone = n(getattr(config, "min_alone_speech_ms", 0))
         self._sequence = 0
         self._segments: list[list[int]] = []  # voiced speech spans that may still fall in a chunk
         self._last_voiced: int | None = None
@@ -350,7 +353,8 @@ class Chunker:
         while self._seen - self._start > self._max + self._lookahead:  # the last partial frame went past the maximum
             out += self._cut(self._quietest(), "max")
         if self._seen > self._start:
-            out += self._cut(self._seen, "end")
+            joined = self._join_rest()
+            out += [joined] if joined is not None else self._cut(self._seen, "end")
         self._buf, self._segments = np.zeros(0, dtype=np.float32), []
         return out
 
@@ -410,13 +414,34 @@ class Chunker:
         energy = np.concatenate(([0.0], np.cumsum(x * x)))
         return lo + int(np.argmin(energy[w:] - energy[:-w])) + w // 2
 
+    def _join_rest(self) -> AudioChunk | None:
+        """The rest at the key release with little speech of its own (min_alone_speech_ms) isn't sent alone: after a
+        cut at the maximum it is mostly the repeated overlap, after a pause often only the release click, and a cloud
+        model given that wrote text never said. The part before it goes again with the rest, as one chunk that replaces
+        it; the session merges that chunk instead of the two. None: send the rest as usual."""
+        held, audio, end = self._held, self._held_audio, self._seen
+        if held is None or audio is None or not self._worth(self._own, end):
+            return None
+        if self._speech(self._own, end) >= self._min_alone or end - held.start_sample > 2 * self._max:
+            return None  # enough speech of its own, or a long wait before the release: the rest is sent as it is
+        self._sequence += 1
+        speech = held.speech_seconds + self._speech(held.end_sample, end) / self.rate
+        # Silence after a pause cut may already be dropped (the next part's start follows the present): it goes back as
+        # zeros, so the chunk's audio still spans its samples.
+        kept = max(held.end_sample, self._buf_start)
+        audio = np.concatenate([audio, np.zeros(kept - held.end_sample, dtype=np.float32), self._audio(kept, end)])
+        return AudioChunk(self.session_id, self._sequence, audio, self.rate, held.start_sample, end,
+                          held.overlap_end_sample, speech, "end", replaces=held.sequence)
+
     def _cut(self, cut: int, boundary: str) -> list[AudioChunk]:
         out = []
         if self._worth(self._own, cut):
             self._sequence += 1
             overlap_end = self._start if self._prev_end is None else min(max(self._prev_end, self._start), cut)
-            out.append(AudioChunk(self.session_id, self._sequence, self._audio(self._start, cut).copy(), self.rate,
-                                  self._start, cut, overlap_end, self._speech(self._start, cut) / self.rate, boundary))
+            chunk = AudioChunk(self.session_id, self._sequence, self._audio(self._start, cut).copy(), self.rate,
+                               self._start, cut, overlap_end, self._speech(self._start, cut) / self.rate, boundary)
+            out.append(chunk)
+            self._held, self._held_audio = chunk, chunk.audio
             self._prev_end = cut
         # The overlap protects words cut at the maximum length. A pause cut sits after the last word plus keep_silence_ms,
         # so a 1 s overlap would reach back into that word: on the owner's recordings Parakeet then decoded the next part
