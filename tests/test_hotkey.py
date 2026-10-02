@@ -3,10 +3,10 @@ import struct
 
 import pytest
 
-from sst.hotkey import INPUT, VK_ESCAPE, HotkeyListener, Matcher, parse_hotkey
+from sst.hotkey import INPUT, VK_ESCAPE, Hotkey, HotkeyListener, Matcher, parse_hotkey
 
 LCTRL, RCTRL, LWIN, RWIN, LALT, LSHIFT, MENU, D, LEFT, SPACE = 0xA2, 0xA3, 0x5B, 0x5C, 0xA4, 0xA0, 0x5D, 0x44, 0x25, 0x20
-ONE, NUM1, UP, DOWN, ENTER, U, T = 0x31, 0x61, 0x26, 0x28, 0x0D, 0x55, 0x54
+ONE, NUM1, UP, DOWN, ENTER, U, T, C, RSHIFT = 0x31, 0x61, 0x26, 0x28, 0x0D, 0x55, 0x54, 0x43, 0xA1
 # What Text Transform's menu takes: 1-9 on both rows, Up, Down, Enter, Esc and U (undo).
 MENU_KEYS = frozenset({*range(0x31, 0x3A), *range(0x61, 0x6A), UP, DOWN, ENTER, VK_ESCAPE, U})
 
@@ -47,6 +47,30 @@ def test_a_single_modifier_is_refused(text):
 def test_labels():
     assert parse_hotkey("ctrl+win").label == "Ctrl+Win"
     assert parse_hotkey("menu").label == "Menu key"
+    assert parse_hotkey("double ctrl").label == "Double-tap Ctrl"
+    assert parse_hotkey("double shift").label == "Double-tap Shift"
+
+
+@pytest.mark.parametrize("text, modifier", [
+    ("double ctrl", "ctrl"),
+    ("Double Shift", "shift"),
+    ("double-ctrl", "ctrl"),
+    ("  DOUBLE   control ", "ctrl"),
+])
+def test_parse_double_tap(text, modifier):
+    hotkey = parse_hotkey(text)
+    assert hotkey == Hotkey(f"double {modifier}", frozenset({modifier}), None, double=True)
+
+
+@pytest.mark.parametrize("text", ["double alt", "double win", "double d", "double ctrl+alt", "double-"])
+def test_only_ctrl_and_shift_can_be_double_tapped(text):
+    with pytest.raises(ValueError):
+        parse_hotkey(text)
+
+
+def test_other_hotkeys_are_not_double_taps():
+    assert not parse_hotkey("ctrl+win").double and not parse_hotkey("menu").double
+    assert Hotkey("ctrl+win", frozenset({"ctrl", "win"}), None).double is False  # positional construction still works
 
 
 def test_input_struct_has_the_size_sendinput_expects():
@@ -258,3 +282,137 @@ def test_the_listener_hands_the_capture_to_its_matcher():
     assert listener._matcher.capture == frozenset({ONE, ENTER})
     listener.capture(None)
     assert listener._matcher.capture == frozenset()
+
+
+# ---------------------------------------------------------------- double tap (Text Transform's double ctrl)
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def tapping(hotkey="double ctrl", **kwargs):
+    clock = Clock()
+    return Matcher(parse_hotkey(hotkey), clock=clock, **kwargs), clock
+
+
+def play(m, clock, *steps):
+    """steps like ('down', LCTRL), or a number: that many seconds pass. Returns the (hidden, event) results."""
+    results = []
+    for step in steps:
+        if isinstance(step, tuple):
+            results.append(m.feed(step[1], step[0] == "down"))
+        else:
+            clock.now += step
+    return results
+
+
+def tap(vk=LCTRL, hold=0.1):
+    return ("down", vk), hold, ("up", vk)
+
+
+def events(results):
+    return [event for _, event in results if event]
+
+
+def test_a_double_tap_fires_once_on_the_second_release_and_hides_nothing():
+    m, clock = tapping()
+    assert play(m, clock, *tap(), 0.2, *tap()) == [(False, None), (False, None), (False, None), (False, "release")]
+
+
+def test_slow_taps_are_not_a_double_tap():
+    m, clock = tapping()
+    assert events(play(m, clock, *tap(), 0.45, *tap())) == []
+    assert events(play(m, clock, 0.1, *tap())) == ["release"]  # the slow second tap was the first of a new pair
+
+
+def test_a_long_hold_is_not_a_tap():
+    m, clock = tapping()
+    assert events(play(m, clock, *tap(hold=0.4), 0.1, *tap())) == []
+    m, clock = tapping()
+    assert events(play(m, clock, *tap(), 0.1, *tap(hold=0.4))) == []
+
+
+def test_a_shortcut_then_ctrl_is_not_a_double_tap():
+    m, clock = tapping()
+    copy = [("down", LCTRL), 0.05, ("down", C), ("up", C), 0.05, ("up", LCTRL)]
+    assert events(play(m, clock, *copy, 0.1, *tap())) == []
+    assert events(play(m, clock, 0.5, *tap(), 0.1, *copy)) == []  # Ctrl+C right after a tap neither
+
+
+def test_another_modifier_in_between_breaks_the_double_tap():
+    m, clock = tapping()
+    assert events(play(m, clock, *tap(), 0.05, *tap(LSHIFT), 0.05, *tap())) == []
+    assert events(play(m, clock, 0.5, ("down", LCTRL), ("down", RCTRL), ("up", RCTRL), ("up", LCTRL), 0.1, *tap())) == []
+
+
+def test_a_key_held_meanwhile_breaks_the_double_tap():
+    m, clock = tapping()
+    assert events(play(m, clock, ("down", D), *tap(), 0.1, *tap(), ("up", D))) == []
+
+
+def test_a_triple_tap_fires_once_and_a_fourth_tap_starts_a_new_pair():
+    m, clock = tapping()
+    assert events(play(m, clock, *tap(), 0.1, *tap(), 0.1, *tap())) == ["release"]
+    assert events(play(m, clock, 0.1, *tap())) == ["release"]
+
+
+def test_left_and_right_ctrl_mix():
+    m, clock = tapping()
+    assert events(play(m, clock, *tap(LCTRL), 0.1, *tap(RCTRL))) == ["release"]
+
+
+def test_double_shift():
+    m, clock = tapping("double shift")
+    assert events(play(m, clock, *tap(LSHIFT), 0.1, *tap(RSHIFT))) == ["release"]
+    assert events(play(m, clock, 0.5, *tap(LCTRL), 0.1, *tap(LCTRL))) == []
+
+
+def test_ctrl_win_dictation_never_fires_a_double_ctrl():
+    m, clock = tapping()
+    ctrl_win = [("down", LCTRL), ("down", LWIN), 0.1, ("up", LWIN), ("up", LCTRL)]
+    results = play(m, clock, *ctrl_win, 0.1, *ctrl_win, 0.1, *tap(), 0.1, *ctrl_win)
+    assert events(results) == [] and not any(hidden for hidden, _ in results)
+
+
+def test_repeats_while_held_are_not_taps():
+    m, clock = tapping()
+    assert events(play(m, clock, ("down", LCTRL), 0.05, ("down", LCTRL), 0.05, ("down", LCTRL), ("up", LCTRL),
+                       0.1, *tap())) == []
+    assert events(play(m, clock, 0.5, *tap(), 0.1, ("down", LCTRL), 0.05, ("down", LCTRL), 0.05, ("up", LCTRL))) == []
+
+
+def test_the_menu_opened_by_a_double_tap_captures_keys():
+    m, clock = tapping()
+    assert events(play(m, clock, *tap(), 0.1, *tap())) == ["release"]
+    m.capture = MENU_KEYS  # Text Transform's menu is open
+    assert play(m, clock, 0.5, ("down", DOWN), ("up", DOWN), ("down", ONE), ("up", ONE)) == [
+        (True, "key:40"), (True, None), (True, "key:49"), (True, None)]
+    assert play(m, clock, ("down", VK_ESCAPE), ("up", VK_ESCAPE)) == [(True, "key:27"), (True, None)]
+    assert events(play(m, clock, 0.5, *tap(), 0.1, *tap())) == ["release"]  # the double tap again closes the menu
+
+
+def test_a_captured_key_breaks_the_double_tap():
+    m, clock = tapping()
+    m.capture = MENU_KEYS
+    assert events(play(m, clock, *tap(), 0.05, ("down", ONE), ("up", ONE), 0.05, *tap())) == ["key:49"]
+
+
+def test_a_double_tap_needs_no_mask():
+    # Ctrl or Shift tapped alone opens no menu, so the listener presses nothing of its own.
+    assert not HotkeyListener(parse_hotkey("double ctrl"))._mask
+
+
+def test_ctrl_clicks_that_move_the_pointer_are_not_a_double_tap():
+    at = [(100, 100)]
+    m, clock = tapping(pointer=lambda: at[0])
+    first = play(m, clock, *tap(), 0.1)
+    at[0] = (100, 140)  # the mouse went to the next file and Ctrl+clicked it
+    assert events(first + play(m, clock, *tap())) == []
+    assert events(play(m, clock, 0.1, *tap())) == ["release"]  # still there: the last tap and this one are a double tap
+    first = play(m, clock, 0.5, *tap(), 0.1)
+    at[0] = (108, 146)  # a hand resting on the mouse nudges it a little: still a double tap
+    assert events(first + play(m, clock, *tap())) == ["release"]
