@@ -3,9 +3,12 @@ import struct
 
 import pytest
 
-from sst.hotkey import INPUT, VK_ESCAPE, Matcher, parse_hotkey
+from sst.hotkey import INPUT, VK_ESCAPE, HotkeyListener, Matcher, parse_hotkey
 
 LCTRL, RCTRL, LWIN, RWIN, LALT, LSHIFT, MENU, D, LEFT, SPACE = 0xA2, 0xA3, 0x5B, 0x5C, 0xA4, 0xA0, 0x5D, 0x44, 0x25, 0x20
+ONE, NUM1, UP, DOWN, ENTER, U, T = 0x31, 0x61, 0x26, 0x28, 0x0D, 0x55, 0x54
+# What Text Transform's menu takes: 1-9 on both rows, Up, Down, Enter, Esc and U (undo).
+MENU_KEYS = frozenset({*range(0x31, 0x3A), *range(0x61, 0x6A), UP, DOWN, ENTER, VK_ESCAPE, U})
 
 
 def feed(matcher, *steps):
@@ -152,3 +155,106 @@ def test_keys_released_while_the_hook_was_blind_are_forgotten():
     feed(m, ("down", LWIN))
     held.clear()  # back from the lock screen, Win is no longer down
     assert feed(m, ("down", LCTRL))[-1] == (False, None)  # Ctrl alone must not look like Ctrl+Win
+
+
+# ---------------------------------------------------------------- capture (a menu that leaves the focus with the app)
+
+def capturing(hotkey="ctrl+alt+t", **kwargs):
+    m = Matcher(parse_hotkey(hotkey), **kwargs)
+    m.capture = MENU_KEYS
+    return m
+
+
+def test_nothing_is_captured_by_default():
+    m = Matcher(parse_hotkey("ctrl+alt+t"))
+    assert feed(m, ("down", ONE), ("up", ONE), ("down", ENTER), ("up", ENTER)) == [(False, None)] * 4
+
+
+def test_captured_presses_are_hidden_and_reported_and_their_releases_hidden():
+    m = capturing()
+    assert feed(m, ("down", ONE), ("up", ONE), ("down", NUM1), ("up", NUM1), ("down", ENTER), ("up", ENTER),
+                ("down", VK_ESCAPE), ("up", VK_ESCAPE), ("down", U), ("up", U)) == [
+        (True, "key:49"), (True, None), (True, "key:97"), (True, None), (True, "key:13"), (True, None),
+        (True, "key:27"), (True, None), (True, "key:85"), (True, None)]
+
+
+def test_holding_a_captured_arrow_repeats_it():
+    m = capturing()
+    assert feed(m, ("down", DOWN), ("down", DOWN), ("down", DOWN), ("up", DOWN)) == [
+        (True, "key:40"), (True, "key:40"), (True, "key:40"), (True, None)]
+
+
+def test_keys_outside_the_capture_reach_the_app():
+    m = capturing()
+    assert feed(m, ("down", D), ("up", D), ("down", LEFT), ("up", LEFT), ("down", SPACE), ("up", SPACE)) == [(False, None)] * 6
+
+
+def test_a_key_held_when_the_capture_starts_is_left_to_the_app():
+    # Its press reached the app; hiding its repeats or release would leave it stuck down there.
+    m = Matcher(parse_hotkey("ctrl+alt+t"))
+    assert feed(m, ("down", ENTER)) == [(False, None)]
+    m.capture = MENU_KEYS
+    assert feed(m, ("down", ENTER), ("up", ENTER)) == [(False, None), (False, None)]
+    assert feed(m, ("down", ENTER), ("up", ENTER)) == [(True, "key:13"), (True, None)]  # the next press is the menu's
+
+
+def test_a_captured_key_still_held_when_the_capture_ends_stays_hidden_without_events():
+    # The app never saw it go down, so it mustn't see its repeats or release either; the menu has closed.
+    m = capturing()
+    assert feed(m, ("down", ENTER)) == [(True, "key:13")]
+    m.capture = frozenset()
+    assert feed(m, ("down", ENTER), ("up", ENTER)) == [(True, None), (True, None)]
+    assert feed(m, ("down", ENTER), ("up", ENTER)) == [(False, None), (False, None)]  # typed normally again
+
+
+def test_a_captured_key_released_while_the_hook_was_blind_is_forgotten():
+    held = {ENTER}
+    m = capturing(is_held=lambda vk: vk in held)
+    assert feed(m, ("down", ENTER)) == [(True, "key:13")]
+    held.clear()  # its release went missing (lock screen, admin window)
+    m.capture = frozenset()
+    assert feed(m, ("down", D), ("up", D), ("down", ENTER), ("up", ENTER)) == [(False, None)] * 4
+
+
+def test_the_hotkey_still_works_while_capturing():
+    m = capturing("ctrl+alt+t")
+    assert feed(m, ("down", LCTRL), ("down", LALT), ("down", T), ("up", T), ("up", LALT), ("up", LCTRL)) == [
+        (False, None), (False, None), (True, "press"), (True, "release"), (False, None), (False, None)]
+
+
+def test_the_hotkey_wins_when_its_key_is_captured_too():
+    m = capturing("ctrl+alt+1")
+    assert feed(m, ("down", LCTRL), ("down", LALT), ("down", ONE), ("up", ONE), ("up", LALT), ("up", LCTRL)) == [
+        (False, None), (False, None), (True, "press"), (True, "release"), (False, None), (False, None)]
+    assert feed(m, ("down", ONE), ("up", ONE)) == [(True, "key:49"), (True, None)]  # plain 1 is the menu's
+
+
+def test_ctrl_win_dictation_still_works_while_capturing():
+    m = capturing("ctrl+win")
+    assert feed(m, ("down", LCTRL), ("down", LWIN), ("up", LWIN), ("up", LCTRL)) == [
+        (False, None), (False, "press"), (False, "release"), (False, None)]
+
+
+def test_esc_cancels_a_recording_even_while_the_menu_takes_esc():
+    m = capturing("ctrl+win")
+    m.recording = True
+    assert feed(m, ("down", VK_ESCAPE), ("down", VK_ESCAPE), ("up", VK_ESCAPE)) == [
+        (True, "cancel"), (True, None), (True, None)]
+    m.recording = False
+    assert feed(m, ("down", VK_ESCAPE), ("up", VK_ESCAPE)) == [(True, "key:27"), (True, None)]
+
+
+def test_capturing_other_keys_leaves_esc_as_it_was():
+    m = Matcher(parse_hotkey("ctrl+win"))
+    m.capture = frozenset({ONE, ENTER})
+    assert feed(m, ("down", VK_ESCAPE), ("up", VK_ESCAPE)) == [(False, None), (False, None)]
+    m.recording = True
+    assert feed(m, ("down", VK_ESCAPE), ("up", VK_ESCAPE)) == [(True, "cancel"), (True, None)]
+
+
+def test_the_listener_hands_the_capture_to_its_matcher():
+    listener = HotkeyListener(parse_hotkey("ctrl+alt+t"))  # not started: no hook is installed
+    listener.capture({ONE, ENTER})
+    assert listener._matcher.capture == frozenset({ONE, ENTER})
+    listener.capture(None)
+    assert listener._matcher.capture == frozenset()

@@ -8,6 +8,9 @@ A hotkey is modifiers plus an optional key:
 The hook runs on its own thread and reports "press", "release", "cancel" (Esc while recording),
 "handsfree" (Space added to a modifier-only hotkey: Ctrl+Win+Space, as in Wispr Flow) and "interrupt"
 (any other key added, e.g. Ctrl+Win+D: a Windows shortcut, not dictation) on a queue.
+
+While a menu that must not take the keyboard focus is open (Text Transform's, so the app keeps its selection), the
+listener can capture keys: their presses are hidden from every app and reported as "key:<virtual-key code>".
 """
 import ctypes
 import logging
@@ -126,6 +129,8 @@ class Matcher:
         self._down: set[int] = set()  # keys physically held now
         self._blocked: set[int] = set()  # keys whose repeats and release must stay hidden too
         self._active = False  # the hotkey is held
+        self.capture: frozenset[int] = frozenset()  # keys a menu takes while it is open (HotkeyListener.capture)
+        self._captured: set[int] = set()  # keys whose press went to the menu: their repeats and release are hidden too
 
     def feed(self, vk: int, is_down: bool) -> tuple[bool, str | None]:
         """Returns (hide the event from other apps, event or None)."""
@@ -133,11 +138,20 @@ class Matcher:
             # The hook misses releases on the lock screen (Win+L) and in admin windows; drop keys that were let go.
             self._down = {k for k in self._down if k == vk or self._is_held(k)}
             self._blocked &= self._down
+            self._captured &= self._down
             if self._active and not (self.hotkey.key in self._down if self.hotkey.key else self._hotkey_held()):
                 self._active = False
         repeat = is_down and vk in self._down
         (self._down.add if is_down else self._down.discard)(vk)
 
+        # The app never saw a captured key go down, so its repeats and release stay hidden even after the capture ends;
+        # a key already held when the capture began is left to the app, so it can't get stuck there.
+        if vk in self._captured or (is_down and not repeat and self._captures(vk)):
+            if not is_down:
+                self._captured.discard(vk)
+                return True, None
+            self._captured.add(vk)
+            return True, f"key:{vk}" if vk in self.capture else None  # repeats too: holding Down walks the menu
         if vk in self._blocked:
             if is_down:
                 return True, None
@@ -177,6 +191,12 @@ class Matcher:
             return False, "release"
         return False, None
 
+    def _captures(self, vk: int) -> bool:
+        if vk not in self.capture or (vk == VK_ESCAPE and self.recording):
+            return False  # Esc cancels a recording first, the innermost thing going on; the next Esc reaches the menu
+        # The hotkey keeps working while a menu is open, even when its key is one the menu takes.
+        return not (vk == self.hotkey.key and self._held_modifiers() == self.hotkey.modifiers)
+
     def _held_modifiers(self) -> frozenset[str]:
         return frozenset(MODIFIER_OF[vk] for vk in self._down if vk in MODIFIER_OF)
 
@@ -205,6 +225,11 @@ class HotkeyListener:
     @recording.setter
     def recording(self, value: bool) -> None:
         self._matcher.recording = value
+
+    def capture(self, keys: set[int] | None) -> None:
+        """Take these keys (virtual-key codes) from every app and report their presses as "key:<code>" events, for a
+        menu that leaves the keyboard focus with the app; None gives them back."""
+        self._matcher.capture = frozenset(keys or ())
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="keyboard-hook", daemon=True).start()
@@ -238,7 +263,9 @@ class HotkeyListener:
                 if info.dwExtraInfo != OUR_INPUT:
                     hide, event = self._matcher.feed(info.vkCode, wparam in (WM_KEYDOWN, WM_SYSKEYDOWN))
                     if event:
-                        if event == "press" and self._mask:
+                        # A captured key is hidden, so a Win or Alt held with it would look pressed alone on release.
+                        if (event == "press" and self._mask) or (
+                                event.startswith("key:") and self._matcher._held_modifiers() & {"win", "alt"}):
                             send_keys([(VK_MASK, False), (VK_MASK, True)])
                         self.events.put((event, time.monotonic()))
                     if hide:

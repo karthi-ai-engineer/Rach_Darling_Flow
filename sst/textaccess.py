@@ -1,0 +1,234 @@
+"""Read and replace the text selected in whichever app has keyboard focus (Text Transform).
+
+Apps don't share their text with other programs in one common way, so this does what the user would do: Ctrl+C copies
+the selection, Shift+Left selects what Rflow has just typed, and Ctrl+V pastes the result over the selection, as
+formatted HTML too for the editors that take it. The user's clipboard is put back every time.
+
+Every Windows call sits behind a small module-level function, so the tests replace them with fakes.
+"""
+import ctypes
+import logging
+import time
+import unicodedata
+from ctypes import wintypes
+
+from sst.hotkey import send_keys
+from sst.paste import (
+    CF_EXCLUDE_FROM_HISTORY,
+    CF_UNICODETEXT,
+    RESTORE_DELAY,
+    VK_CONTROL,
+    VK_SHIFT,
+    VK_V,
+    _clipboard,
+    _put,
+    _snapshot,
+    _wait_for_modifiers_released,
+)
+
+log = logging.getLogger(__name__)
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
+user32.GetClipboardData.argtypes = [wintypes.UINT]
+user32.GetClipboardData.restype = wintypes.HANDLE
+user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+user32.RegisterClipboardFormatW.restype = wintypes.UINT
+kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalLock.restype = wintypes.LPVOID
+kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalSize.restype = ctypes.c_size_t
+
+VK_C, VK_LEFT, VK_RIGHT = 0x43, 0x25, 0x27
+CF_HTML = user32.RegisterClipboardFormatW("HTML Format")  # where browsers, Office, Teams and Slack look for formatted text
+_NO_HISTORY = (CF_EXCLUDE_FROM_HISTORY, b"\0" * 4)
+_CTRL_C = [(VK_CONTROL, False), (VK_C, False), (VK_C, True), (VK_CONTROL, True)]
+_CTRL_V = [(VK_CONTROL, False), (VK_V, False), (VK_V, True), (VK_CONTROL, True)]
+_BATCH = 50  # Shift+Left presses per SendInput call: a long dictation would otherwise be one array of thousands of events
+_QUOTES = str.maketrans("\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f", "''''\"\"\"\"")
+_HTML_HEADER = "Version:0.9\r\nStartHTML:{:010d}\r\nEndHTML:{:010d}\r\nStartFragment:{:010d}\r\nEndFragment:{:010d}\r\n"
+
+
+# ---------------------------------------------------------------- the focused window
+
+def foreground_window() -> int:
+    """The top-level window the user is working in (0 while none is, e.g. as the desktop switches)."""
+    return user32.GetForegroundWindow() or 0
+
+
+def window_title(hwnd: int) -> str:
+    """The window's caption, for logs. Windows reads another process's caption without asking it, so a hung app can't
+    block this."""
+    buffer = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(hwnd, buffer, len(buffer))
+    return buffer.value
+
+
+def window_class(hwnd: int) -> str:
+    """The window's class name. Terminals (ConsoleWindowClass, CASCADIA_HOSTING_WINDOW_CLASS) are worth recognising: there
+    Ctrl+C with nothing selected stops the running program instead of copying."""
+    buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buffer, len(buffer))
+    return buffer.value
+
+
+# ---------------------------------------------------------------- reading the selection
+
+def copy_selection(timeout: float = 0.6) -> str | None:
+    """The text selected in the focused app, copied with Ctrl+C ("\\r\\n" becomes "\\n"). None when nothing was copied:
+    with no selection most apps leave the clipboard alone. Only whitespace counts as nothing too. Never raises for
+    clipboard trouble, and the user's clipboard is put back unless they copied something new meanwhile."""
+    _wait_for_modifiers_released()  # Ctrl+C pressed while the user still holds Alt from the shortcut would be Ctrl+Alt+C
+    try:
+        with _clipboard():
+            saved, before = _snapshot(), _sequence()
+    except OSError as error:  # without a copy of the user's clipboard, Ctrl+C would lose it
+        log.warning("Could not read the selection: %s", error)
+        return None
+    send_keys(_CTRL_C)
+    deadline = time.monotonic() + timeout
+    while _sequence() == before:
+        if time.monotonic() >= deadline:
+            return None  # nothing copied, so the user's clipboard was never touched: no need to rewrite it
+        time.sleep(0.01)
+    text = ours = None
+    try:
+        with _clipboard():  # waits while the app still holds the clipboard open to write it
+            ours = _sequence()
+            text = _read_text()
+    except Exception:  # whatever went wrong, the user's clipboard must come back
+        log.exception("Could not read the copied selection")
+    finally:
+        _restore(saved, ours)
+    text = text.replace("\r\n", "\n") if text else ""
+    return text if text.strip() else None
+
+
+# ---------------------------------------------------------------- selecting what was just typed
+
+def select_back(chars: int) -> None:
+    """Select the `chars` caret steps before the caret (Shift+Left that many times)."""
+    _wait_for_modifiers_released()  # Ctrl still held from the shortcut would make it Ctrl+Shift+Left: whole words
+    if chars <= 0:
+        return
+    send_keys([(VK_SHIFT, False)])
+    try:
+        for done in range(0, chars, _BATCH):
+            send_keys([(VK_LEFT, False), (VK_LEFT, True)] * min(_BATCH, chars - done))
+    finally:
+        send_keys([(VK_SHIFT, True)])  # never leave Shift held down
+
+
+def collapse_selection() -> None:
+    """Press Right once: standard text boxes, browsers and Word collapse a selection to its end, where the caret was."""
+    _wait_for_modifiers_released()
+    send_keys([(VK_RIGHT, False), (VK_RIGHT, True)])
+
+
+def select_last(text: str) -> bool:
+    """Select `text`, which Rflow has just typed before the caret, and check with a copy that exactly it is selected.
+    Never leaves a wrong selection behind: on a mismatch the selection is collapsed again and False returned."""
+    plain = text.replace("\r\n", "\n")  # a line break is one caret step
+    if not plain.strip():
+        return False
+    want = _loose(plain)
+    # Most editors step over a whole cluster (a Tamil letter with its vowel sign, an emoji with its skin tone), a few over
+    # each code point; the second count is tried only when they differ and the first selected the wrong text.
+    for steps in dict.fromkeys((_clusters(plain), len(plain))):
+        select_back(steps)
+        copied = copy_selection(timeout=0.6 + steps / 500)  # the app first works through every Shift+Left
+        if copied is not None and _loose(copied) == want:
+            return True
+        collapse_selection()
+        if copied is None:
+            break  # nothing copied: this app doesn't select or copy this way, and another count won't change that
+    return False
+
+
+def _loose(text: str) -> str:
+    # Word's AutoCorrect changes quotes and capitals as Rflow types, without changing how many characters there are.
+    return " ".join(text.translate(_QUOTES).casefold().split())
+
+
+def _clusters(text: str) -> int:
+    """How many user-perceived characters `text` has, close to Unicode's grapheme clusters: combining marks (accents,
+    vowel signs, viramas, variation selectors), skin tones and zero-width-joined emoji join the character before them,
+    and two regional indicators make one flag."""
+    count, joining, flag = 0, False, False
+    for char in text:
+        code = ord(char)
+        regional = 0x1F1E6 <= code <= 0x1F1FF
+        extends = count and (joining or code == 0x200D or (regional and flag) or 0x1F3FB <= code <= 0x1F3FF
+                             or unicodedata.category(char) in ("Mn", "Mc", "Me"))
+        count += not extends
+        flag = regional and not (flag and extends)
+        joining = code == 0x200D
+    return count
+
+
+# ---------------------------------------------------------------- pasting the result
+
+def paste_rich(text: str, html: str | None = None) -> None:
+    """Paste over the selection in the focused app: `text` for plain editors and, when given, the HTML fragment `html`
+    for rich ones (Word, Outlook, Teams, Slack, browsers), so headings and lists arrive formatted. The user's clipboard
+    comes back after RESTORE_DELAY, unless they copied something new meanwhile."""
+    # Windows text on the clipboard has "\r\n" line breaks; the classic edit box shows a bare "\n" as nothing.
+    items = [(CF_UNICODETEXT, (text.replace("\r\n", "\n").replace("\n", "\r\n") + "\0").encode("utf-16-le"))]
+    if html is not None:
+        items.append((CF_HTML, cf_html(html) + b"\0"))
+    _wait_for_modifiers_released()  # Ctrl+V pressed while the user still holds Alt would arrive as Ctrl+Alt+V
+    with _clipboard():
+        saved = _snapshot()
+        _put(items + [_NO_HISTORY])
+    ours = _sequence()
+    try:
+        send_keys(_CTRL_V)
+        time.sleep(RESTORE_DELAY)  # the app reads the clipboard when it handles Ctrl+V, a moment later
+    finally:
+        _restore(saved, ours)
+
+
+def cf_html(fragment: str) -> bytes:
+    """The clipboard's "HTML Format" for an HTML fragment: a header with the byte offsets (in the UTF-8 encoding) of the
+    whole document and of the fragment, which is what the app pastes."""
+    head, body, tail = b"<html><body>\r\n<!--StartFragment-->", fragment.encode("utf-8"), b"<!--EndFragment-->\r\n</body></html>"
+    start = len(_HTML_HEADER.format(0, 0, 0, 0))  # the numbers have a fixed width, so the header's length is known
+    fragment_start = start + len(head)
+    fragment_end = fragment_start + len(body)
+    header = _HTML_HEADER.format(start, fragment_end + len(tail), fragment_start, fragment_end)
+    return header.encode("ascii") + head + body + tail
+
+
+# ---------------------------------------------------------------- the clipboard
+
+def _restore(saved: list[tuple[int, bytes]], ours: int | None) -> None:
+    """Put the user's clipboard back, unless it changed since `ours` (the user copied something new)."""
+    try:
+        with _clipboard():
+            if ours is None or _sequence() == ours:
+                _put([item for item in saved if item[0] != CF_EXCLUDE_FROM_HISTORY] + [_NO_HISTORY] if saved else [])
+    except OSError as error:
+        log.warning("Could not put the clipboard back: %s", error)
+
+
+def _sequence() -> int:
+    """Windows counts every change to the clipboard; a new number means someone copied."""
+    return user32.GetClipboardSequenceNumber()
+
+
+def _read_text() -> str | None:
+    """The clipboard's text (the clipboard must be open)."""
+    handle = user32.GetClipboardData(CF_UNICODETEXT)
+    size = kernel32.GlobalSize(handle) if handle else 0
+    pointer = kernel32.GlobalLock(handle) if size else None
+    if not pointer:
+        return None
+    try:
+        return ctypes.wstring_at(pointer, size // 2).split("\0", 1)[0]  # the block can be longer than the text
+    finally:
+        kernel32.GlobalUnlock(handle)
