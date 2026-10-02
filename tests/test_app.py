@@ -104,6 +104,9 @@ class FakeListener:
     def stop(self):
         self.running = False
 
+    def capture(self, keys):  # Text Transform's menu takes keys while it is open
+        self.captured = keys
+
 
 class FakeEngine:
     """Named after the model it was loaded as, like the real engines."""
@@ -456,3 +459,19 @@ def test_the_tray_app_dictates_through_the_voice_pipeline(tray_app):
     assert app.dictation.pipeline.stages.formatter is None
     app.apply_settings(dataclasses.replace(app.settings, voice_pipeline=False, always_on_mic=False))
     assert app.dictation.pipeline is None and app.recorder.warm_seconds == sst_app.WARM_SECONDS  # the classic way
+
+
+
+def test_text_transform_starts_with_its_shortcut_and_uses_the_cleanup_model(tray_app):
+    app, saved, history = tray_app
+    controller = app.transforms
+    assert controller.listener is not None and controller.listener.hotkey.text == "ctrl+alt+t"
+    assert not app.transform_ready()  # no AI model yet
+    app.apply_settings(dataclasses.replace(app.settings, transform_hotkey=""))
+    assert controller.listener is None  # off
+    app.apply_settings(dataclasses.replace(app.settings, transform_hotkey="ctrl+alt+y"))
+    assert controller.listener.hotkey.text == "ctrl+alt+y"
+    app._on_result("hello there", "Hello there.", 1.0)
+    assert controller.last_typed[0] == "Hello there. "  # as typed: the shortcut takes it when nothing is selected
+    app.remember("Short.", "A longer original.")
+    assert history[0]["text"] == "Short."

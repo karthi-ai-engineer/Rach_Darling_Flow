@@ -1,0 +1,377 @@
+"""Text Transform (the owner's idea, 2026-10-02): speak normally first, transform the text afterwards, only on request.
+
+  the shortcut (Ctrl+Alt+T)   the text selected in the focused app, or else the last dictation (or transform) typed there
+  1-9 or a click              the transform (Concise, Professional, Bullet points, Action items...)
+  U                           undo: the last transform's original comes back (Ctrl+Z in the app works too)
+  Esc                         close the menu; nothing changes
+
+The menu takes no keyboard focus, so the app keeps its selection; the keys the menu needs are taken from the keyboard
+hook while it is open. The text is transformed by the AI cleanup's model under a strict prompt and checked by
+sst.transform.TransformGuard: a result that loses or invents anything isn't typed, and the user is told why. The user's
+clipboard is left as it was (sst.textaccess).
+"""
+import logging
+import threading
+import time
+from dataclasses import dataclass
+
+from PySide6.QtCore import QObject, QPoint, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QPainter
+from PySide6.QtWidgets import QWidget
+
+from sst.hotkey import HotkeyListener, parse_hotkey
+from sst.transform import TRANSFORMS
+
+LAST_TEXT_SECONDS = 15 * 60  # the last dictation counts as "the text" this long, in the window it was typed into
+# Keys the open menu takes from the keyboard: 1-9, numpad 1-9, Up, Down, Enter, Esc, U.
+MENU_KEYS = frozenset([*range(0x31, 0x3A), *range(0x61, 0x6A), 0x26, 0x28, 0x0D, 0x1B, 0x55])
+UNDO = "undo"
+# Console windows: Ctrl+C there stops the running program instead of copying, so Text Transform never presses it there.
+TERMINALS = frozenset({"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "mintty", "VirtualConsoleClass",
+                       "PuTTY", "KiTTY"})
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class Target:
+    text: str  # exactly as selected (or as typed), with its surrounding whitespace
+    source: str  # "selection" or "last" (the last dictation or transform, selected by Rflow)
+    hwnd: int  # the window it is in: the result is only pasted there
+
+
+@dataclass
+class Done:
+    original: str
+    pasted: str
+    hwnd: int
+    transform: str
+
+
+def edges(text: str) -> tuple[str, str]:
+    """The whitespace around a text: kept around its replacement, so a transform doesn't join it to its neighbours."""
+    core = text.strip()
+    if not core:
+        return text, ""
+    start = text.index(core[0])
+    return text[:start], text[start + len(core):]
+
+
+def same_text(a: str, b: str) -> bool:
+    return " ".join(a.split()) == " ".join(b.split())
+
+
+class TransformMenu(QWidget):
+    """A small panel at the mouse pointer: the source of the text, then one row per transform. It never takes focus."""
+
+    chosen = Signal(str)  # a transform key, or UNDO
+    closed = Signal()
+
+    ROW = 30
+    WIDTH = 300
+
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+                         | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setMouseTracking(True)
+        self.items: list[tuple[str, str, str]] = []  # (key, hint, label)
+        self.source = ""
+        self.current = 0
+        self._font, self._small = QFont("Segoe UI", 10), QFont("Segoe UI", 9)
+
+    def open_at(self, pos: QPoint, items: list[tuple[str, str, str]], source: str) -> None:
+        self.items, self.source, self.current = items, source, 0
+        self.resize(self.WIDTH, 58 + self.ROW * len(items) + 26)
+        screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry()
+        x = min(max(area.left(), pos.x() + 12), area.right() - self.width())
+        y = pos.y() + 16 if pos.y() + 16 + self.height() <= area.bottom() else pos.y() - self.height() - 8
+        self.move(x, max(area.top(), y))
+        self.show()
+        try:
+            from sst.app import _no_activate  # the same window flags as the pill: clicks never take the app's focus
+            _no_activate(int(self.winId()))
+        except Exception:  # the off-screen test platform has no real window
+            pass
+        self.update()
+
+    def key(self, vk: int) -> None:
+        """A key taken from the keyboard while the menu is open."""
+        if not self.isVisible() or not self.items:
+            return
+        if vk == 0x1B:
+            self.close_menu()
+        elif vk in (0x26, 0x28):
+            self.current = (self.current + (1 if vk == 0x28 else -1)) % len(self.items)
+            self.update()
+        elif vk == 0x0D:
+            self._choose(self.current)
+        else:
+            digit = chr(vk) if 0x31 <= vk <= 0x39 else chr(vk - 0x30) if 0x61 <= vk <= 0x69 else ""  # top row, numpad
+            hint = "U" if vk == 0x55 else digit
+            for i, (_, item_hint, _) in enumerate(self.items):
+                if item_hint == hint:
+                    self._choose(i)
+                    return
+
+    def close_menu(self) -> None:
+        if self.isVisible():
+            self.hide()
+            self.closed.emit()
+
+    def _choose(self, i: int) -> None:
+        self.hide()
+        self.chosen.emit(self.items[i][0])
+
+    def _row_at(self, y: float) -> int | None:
+        i = int((y - 52) // self.ROW)
+        return i if 0 <= i < len(self.items) and y >= 52 else None
+
+    def mouseMoveEvent(self, event):
+        i = self._row_at(event.position().y())
+        if i is not None and i != self.current:
+            self.current = i
+            self.update()
+
+    def mousePressEvent(self, event):
+        i = self._row_at(event.position().y())
+        if i is not None:
+            self._choose(i)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QColor(255, 255, 255, 40))
+        p.setBrush(QColor(24, 24, 32, 242))
+        p.drawRoundedRect(rect, 12, 12)
+        p.setPen(QColor(245, 245, 250))
+        p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
+        p.drawText(QRectF(16, 10, rect.width() - 32, 20), Qt.AlignmentFlag.AlignVCenter, "Text Transform")
+        p.setFont(self._small)
+        p.setPen(QColor(170, 170, 185))
+        p.drawText(QRectF(16, 30, rect.width() - 32, 18), Qt.AlignmentFlag.AlignVCenter,
+                   QFontMetrics(self._small).elidedText(self.source, Qt.TextElideMode.ElideRight, int(rect.width()) - 32))
+        for i, (_, hint, label) in enumerate(self.items):
+            row = QRectF(8, 52 + i * self.ROW, rect.width() - 16, self.ROW - 2)
+            if i == self.current:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(59, 130, 246, 200))
+                p.drawRoundedRect(row, 8, 8)
+            p.setPen(QColor(200, 210, 255) if i != self.current else QColor(255, 255, 255))
+            p.setFont(QFont("Segoe UI", 10, QFont.Weight.DemiBold))
+            p.drawText(row.adjusted(10, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, hint)
+            p.setPen(QColor(240, 240, 245))
+            p.setFont(self._font)
+            p.drawText(row.adjusted(38, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, label)
+        p.setFont(self._small)
+        p.setPen(QColor(150, 150, 165))
+        p.drawText(QRectF(16, 52 + len(self.items) * self.ROW, rect.width() - 32, 22), Qt.AlignmentFlag.AlignVCenter,
+                   "Esc to close")
+        p.end()
+
+
+class TransformController(QObject):
+    """The shortcut, the text, the menu, the transform and the replacement. `app` is the TrayApp (or a stand-in in the
+    tests): it gives settings, `run_transform(text, key)`, `transform_ready()`, `say(state, message)` (the pill) and
+    `remember(text, original)` (Home's history). `access` is sst.textaccess (fakes in the tests: nothing here presses a
+    key or touches the clipboard by itself)."""
+
+    _ready = Signal(object)  # a Target, or why there is no text (str), from the capture thread
+    _done = Signal(object)  # (Target, TransformResult or error str), from the transform thread
+    _restored = Signal(object)  # (Done, error str or ""), from the undo thread
+
+    def __init__(self, app, access=None, listener_factory=HotkeyListener):
+        super().__init__()
+        if access is None:
+            from sst import textaccess as access
+        self.app, self.access, self._listener_factory = app, access, listener_factory
+        self.listener: HotkeyListener | None = None
+        self.menu = TransformMenu()
+        self.menu.chosen.connect(self._chosen)
+        self.menu.closed.connect(self._menu_closed)
+        self._ready.connect(self._show_menu)
+        self._done.connect(self._finish)
+        self._restored.connect(self._after_undo)
+        self.pump = QTimer(self)
+        self.pump.setInterval(15)
+        self.pump.timeout.connect(self._pump)
+        self.busy = False  # reading the text, transforming or pasting: the shortcut waits
+        self.pending: Target | None = None  # the text the open menu is for
+        self.last: Done | None = None  # the last transform, for undo
+        self.last_typed: tuple[str, float, int] | None = None  # (text as typed, when, window): the "no selection" text
+
+    # -- the shortcut
+
+    def start(self, hotkey: str) -> None:
+        """Listen for the shortcut ("" = Text Transform off)."""
+        self.stop()
+        if not hotkey:
+            return
+        try:
+            self.listener = self._listener_factory(parse_hotkey(hotkey))
+            self.listener.start()
+        except (ValueError, OSError) as e:
+            log.warning("Text Transform's shortcut %r doesn't work: %s", hotkey, e)
+            self.listener = None
+            return
+        self.pump.start()
+        log.info("Text Transform on %s", hotkey)
+
+    def stop(self) -> None:
+        self.pump.stop()
+        self.menu.close_menu()
+        if self.listener is not None:
+            self.listener.stop()
+            self.listener = None
+
+    def note_typed(self, text: str, hwnd: int | None = None) -> None:
+        """A dictation (or a transform) was just typed: with nothing selected, the shortcut takes it."""
+        self.last_typed = (text, time.monotonic(), self.access.foreground_window() if hwnd is None else hwnd)
+
+    def _pump(self) -> None:
+        listener = self.listener
+        if listener is None:
+            return
+        while not listener.events.empty():
+            event, _ = listener.events.get_nowait()
+            if event == "release":
+                self.trigger()
+            elif event.startswith("key:"):
+                self.menu.key(int(event[4:]))
+
+    def trigger(self) -> None:
+        if self.menu.isVisible():  # the shortcut again closes the menu
+            self.menu.close_menu()
+            return
+        if self.busy:
+            return
+        if not self.app.transform_ready():
+            self.app.say("warning", "Text Transform needs an AI model: choose one in AI cleanup.")
+            return
+        self.busy = True
+        threading.Thread(target=self._capture, name="transform-capture", daemon=True).start()
+
+    def _capture(self) -> None:
+        try:
+            hwnd = self.access.foreground_window()
+            if self.access.window_class(hwnd) in TERMINALS:
+                self._ready.emit("Text Transform doesn't work in a terminal: Ctrl+C there would stop the running program.")
+                return
+            text = self.access.copy_selection()
+            if text and text.strip():
+                self._ready.emit(Target(text, "selection", hwnd))
+                return
+            last = self.last_typed
+            if last and last[2] == hwnd and time.monotonic() - last[1] < LAST_TEXT_SECONDS and self.access.select_last(last[0]):
+                self._ready.emit(Target(last[0], "last", hwnd))
+                return
+            self._ready.emit("Select some text first, then press the shortcut again.")
+        except Exception as e:  # the clipboard was busy, a window closed...: say so, never leave the shortcut stuck
+            log.exception("Reading the text to transform failed")
+            self._ready.emit(f"Couldn't read the text ({e})")
+
+    # -- the menu
+
+    def _show_menu(self, target) -> None:
+        self.busy = False
+        if isinstance(target, str):
+            self.app.say("warning", target)
+            return
+        self.pending = target
+        items = [(key, str(n), TRANSFORMS[key].name)
+                 for n, key in enumerate((k for k in self.app.settings.transforms if k in TRANSFORMS), 1) if n <= 9]
+        if self.last and self.last.hwnd == target.hwnd and same_text(target.text, self.last.pasted):
+            items.append((UNDO, "U", "Undo: restore the original"))
+        if not items:
+            self.app.say("warning", "No transforms are chosen: pick some on the Text Transform page.")
+            return
+        words = len(target.text.split())
+        source = (f"Selected text · {words} word{'s' if words != 1 else ''}" if target.source == "selection"
+                  else f"Your last {'transform' if self.last and same_text(target.text, self.last.pasted) else 'dictation'}"
+                       f" · {words} word{'s' if words != 1 else ''}")
+        self.menu.open_at(QCursor.pos(), items, source)
+        if self.listener is not None:
+            self.listener.capture(MENU_KEYS)
+
+    def _menu_closed(self) -> None:
+        if self.listener is not None:
+            self.listener.capture(None)
+        self.pending = None  # the text stays as it was (and selected)
+
+    def _chosen(self, key: str) -> None:
+        if self.listener is not None:
+            self.listener.capture(None)
+        target, self.pending = self.pending, None
+        if target is None:
+            return
+        self.busy = True
+        if key == UNDO:
+            threading.Thread(target=self._undo, args=(target,), name="transform-undo", daemon=True).start()
+            return
+        self.app.say("transforming", TRANSFORMS[key].name)
+        threading.Thread(target=self._run, args=(target, key), name="transform", daemon=True).start()
+
+    # -- the transform and the replacement
+
+    def _run(self, target: Target, key: str) -> None:
+        try:
+            self._done.emit((target, self.app.run_transform(target.text.strip(), key)))
+        except Exception as e:  # no answer, no model, an error from the provider: the text stays as it was
+            log.warning("Text Transform failed: %s", e)
+            self._done.emit((target, str(e) or type(e).__name__))
+
+    def _finish(self, payload) -> None:
+        target, result = payload
+        if isinstance(result, str):
+            self.busy = False
+            self.app.say("warning", f"Text Transform didn't work: {result}")
+            return
+        if not result.accepted:
+            self.busy = False
+            reason = result.reasons[0] if result.reasons else "the result changed the meaning"
+            log.info("Text Transform %s kept the text: %s", result.transform, "; ".join(result.reasons))
+            self.app.say("warning", f"Kept your text: {reason}")
+            return
+        lead, trail = edges(target.text)
+        pasted = lead + result.plain + trail
+        self.app.remember(pasted.strip(), target.text.strip())
+        if self.access.foreground_window() != target.hwnd:  # another window is in front: its text isn't the one read
+            self.busy = False
+            self.app.say("warning", "You switched windows, so nothing was replaced. The result is on Rflow's Home page.")
+            return
+        threading.Thread(target=self._paste, args=(target, result, pasted), name="transform-paste", daemon=True).start()
+
+    def _paste(self, target: Target, result, pasted: str) -> None:
+        try:
+            self.access.paste_rich(pasted, result.html or None)
+            self.last = Done(target.text, pasted, target.hwnd, result.transform)
+            self.last_typed = (pasted, time.monotonic(), target.hwnd)  # press the shortcut again: another transform, or undo
+            self._restored.emit((None, f"transformed:{TRANSFORMS[result.transform].name}"))
+        except Exception as e:
+            log.exception("Pasting the transform failed")
+            self._restored.emit((None, f"Couldn't type the result ({e}); it is on Rflow's Home page."))
+
+    def _undo(self, target: Target) -> None:
+        last = self.last
+        try:
+            if last is None or not same_text(target.text, last.pasted):
+                raise RuntimeError("undo works on the text a transform just typed; Ctrl+Z in the app works too")
+            self.access.paste_rich(last.original)
+            self.last = None
+            self.last_typed = (last.original, time.monotonic(), target.hwnd)
+            self._restored.emit((last, ""))
+        except Exception as e:
+            self._restored.emit((None, str(e)))
+
+    def _after_undo(self, payload) -> None:
+        self.busy = False
+        last, message = payload
+        if message.startswith("transformed:"):
+            self.app.say("transformed", f"Transformed: {message.split(':', 1)[1]}")
+        elif last is not None:
+            self.app.say("transformed", "Original restored")
+        else:
+            self.app.say("warning", message)

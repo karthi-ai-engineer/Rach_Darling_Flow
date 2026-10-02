@@ -722,3 +722,41 @@ def test_everyday_words_in_the_dictionary_are_marked():
     window.show_page("dictionary")
     labels = _labels(window.pages["dictionary"])
     assert labels.count("everyday word: not given to speech recognition") == 1
+
+
+
+# ---- Text Transform
+
+def test_the_text_transform_page_sets_the_shortcut_and_the_menu():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk"),
+                          settings=Settings(welcomed=True, cleanup_model="gpt-4o-mini"))
+    window.show_page("transform")
+    page = window.pages["transform"]
+    assert "Uses your AI cleanup model: gpt-4o-mini" in page.model.text() and page.setup.isHidden()
+    assert "Ctrl+Alt+T" in page.how.text()
+    page.choices["rewrite"].setChecked(True)
+    page.choices["professional"].setChecked(False)
+    assert app.settings.transforms == ["concise", "bullets", "actions", "rewrite"]
+    page.hotkey.setCurrentIndex(page.hotkey.findData(""))
+    assert app.settings.transform_hotkey == "" and "off" in page.how.text()
+
+
+def test_text_transform_can_be_tried_on_the_page():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk"),
+                          settings=Settings(welcomed=True, cleanup_model="gpt-4o-mini"))
+    page = window.pages["transform"]
+    page.refresh()
+    page.try_buttons["concise"].click()
+    for _ in range(200):
+        QApplication.processEvents()
+        if not page.result.isHidden():
+            break
+        time.sleep(0.01)
+    assert "database migration issue" in page.result.toPlainText() and ("run_transform", "concise") in app.calls
+
+
+def test_text_transform_without_an_ai_model_points_to_the_setup():
+    window, _ = _window()
+    window.show_page("transform")
+    page = window.pages["transform"]
+    assert not page.setup.isHidden() and not page.try_buttons["concise"].isEnabled()

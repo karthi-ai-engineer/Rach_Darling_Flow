@@ -9,6 +9,7 @@ applies a change at once (hotkey, microphone, cleanup model...), or PreviewApp b
 the website's screenshots.
 """
 import dataclasses
+import html
 import logging
 import math
 import os
@@ -63,6 +64,7 @@ from sst.settings import (
     set_start_with_windows,
     starts_with_windows,
 )
+from sst.transform import TRANSFORMS
 
 APP_NAME = "Rflow"
 ICON_FILE = Path(__file__).parent / "static" / "sst.ico"
@@ -71,6 +73,9 @@ LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "sst" / "logs"
 WEBSITE = "https://rachdarlingflow-site.vercel.app"
 REPO = "https://github.com/karthi-ai-engineer/Rach_Darling_Flow"
 HOTKEY_CHOICES = [("Ctrl+Win (like Wispr Flow)", "ctrl+win"), ("Menu key", "menu"), ("Ctrl+Alt+D", "ctrl+alt+d")]
+# Text Transform's shortcut: not Ctrl+Win+... (that starts a dictation) and not a plain Ctrl+letter (apps use those).
+TRANSFORM_HOTKEYS = [("Ctrl+Alt+T", "ctrl+alt+t"), ("Ctrl+Alt+Y", "ctrl+alt+y"), ("Ctrl+Shift+Space", "ctrl+shift+space"),
+                     ("Off", "")]
 
 log = logging.getLogger("sst.window")
 
@@ -79,7 +84,8 @@ ICON_FONTS = ["Segoe Fluent Icons", "Segoe MDL2 Assets"]
 GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanup": "\ue99a", "settings": "\ue713",
           "copy": "\ue8c8", "edit": "\ue70f", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
           "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
-          "profile": "\ue77b", "speech": "\ue720", "warning": "\ue7ba", "cancel": "\ue711", "dot": "\ue915"}
+          "profile": "\ue77b", "speech": "\ue720", "warning": "\ue7ba", "cancel": "\ue711", "dot": "\ue915",
+          "transform": "\ue8ac"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
@@ -1547,6 +1553,117 @@ class CleanupPage(Page):
         run_in_background(self, lambda: Polisher(gateway, model, words).check(), done)
 
 
+# ---------------------------------------------------------------- Text Transform
+
+class TransformPage(Page):
+    """Text Transform (sst.transformui): the shortcut, the transforms in its menu, and a box to try them in."""
+
+    def __init__(self, app, go_to):
+        super().__init__("Text Transform", "Speak normally first; transform the text afterwards, only when you want to. "
+                                           "Select text in any app, or just finish a dictation, press the shortcut, "
+                                           "then a number. The result replaces the text, and nothing is added, "
+                                           "dropped or decided for you: numbers, names, dates and your \"maybe\" stay.")
+        self.app = app
+        frame, layout = card(10)
+        self.hotkey = QComboBox()
+        for label, value in TRANSFORM_HOTKEYS:
+            self.hotkey.addItem(label, value)
+        self.hotkey.setCurrentIndex(max(0, self.hotkey.findData(app.settings.transform_hotkey)))
+        self.hotkey.currentIndexChanged.connect(self._apply)
+        layout.addLayout(row(text("Shortcut", wrap=False), self.hotkey, stretch_at=2))
+        self.how = text("", muted=True)
+        layout.addWidget(self.how)
+        layout.addWidget(text("In the menu", "h2"))
+        self.choices: dict[str, QCheckBox] = {}
+        for key, transform in TRANSFORMS.items():
+            box = QCheckBox(f"{transform.name}: {transform.description}")
+            box.setChecked(key in app.settings.transforms)
+            box.toggled.connect(self._apply)
+            self.choices[key] = box
+            layout.addWidget(box)
+        self.add(frame)
+
+        model, layout = card(8)
+        layout.addWidget(text("AI model", "h2"))
+        self.model = text("", muted=True)
+        self.setup = button("Set up AI cleanup", lambda: go_to("cleanup"), link=True)
+        model_row = row(self.model, self.setup)
+        model_row.setStretch(0, 1)  # the line takes the width: a model's name never breaks in the middle
+        layout.addLayout(model_row)
+        self.add(model)
+
+        trial, layout = card(8)
+        layout.addWidget(text("Try it", "h2"))
+        self.sample = QPlainTextEdit()
+        self.sample.setPlainText("I checked the deployment and everything looks good, but we still have one issue with the "
+                                 "database migration, and I think we should fix that before production.")
+        self.sample.setFixedHeight(84)
+        layout.addWidget(self.sample)
+        self.try_buttons: dict[str, QPushButton] = {}
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        for key, transform in TRANSFORMS.items():
+            b = button(transform.name, lambda _=False, k=key: self._try(k))
+            self.try_buttons[key] = b
+            buttons.addWidget(b)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        self.result = QTextBrowser()
+        self.result.setFixedHeight(120)
+        self.result.hide()
+        layout.addWidget(self.result)
+        self.note = text("", muted=True)
+        self.note.hide()
+        layout.addWidget(self.note)
+        self.add(trial)
+        self.body.addStretch()
+
+    def refresh(self) -> None:
+        s, model = self.app.settings, self.app.transform_model()
+        label = self.hotkey.currentText()
+        self.how.setText("Text Transform is off." if not s.transform_hotkey else
+                         f"Select text, or don't (then your last dictation is used), press {label}, then 1-"
+                         f"{max(1, len(s.transforms))} or a click. U undoes the last transform; Esc closes the menu.")
+        self.model.setText(f"Uses your AI cleanup model: {model}" if model else
+                           "Text Transform needs an AI model: choose a provider and a model in AI cleanup.")
+        self.setup.setVisible(not model)
+        for b in self.try_buttons.values():
+            b.setEnabled(bool(model))
+
+    def _apply(self, *_) -> None:
+        chosen = [key for key, box in self.choices.items() if box.isChecked()]
+        self.app.apply_settings(dataclasses.replace(self.app.settings, transform_hotkey=self.hotkey.currentData(),
+                                                    transforms=chosen))
+        self.refresh()
+
+    def _say(self, message: str) -> None:
+        self.note.setText(message)
+        self.note.setVisible(bool(message))
+
+    def _try(self, key: str) -> None:
+        sample = self.sample.toPlainText().strip()
+        if not sample:
+            self._say("Type or paste some text first.")
+            return
+        for b in self.try_buttons.values():
+            b.setEnabled(False)
+        self._say(f"{TRANSFORMS[key].name}...")
+
+        def done(result, error) -> None:
+            self.refresh()
+            if error:
+                self._say(f"Didn't work: {error}")
+            elif not result.accepted:
+                self.result.hide()
+                self._say("Kept the text: " + "; ".join(result.reasons))
+            else:
+                self.result.setHtml(result.html or html.escape(result.plain))
+                self.result.show()
+                self._say(f"{TRANSFORMS[key].name} in {result.seconds:.1f} s" +
+                          (f" (checked and fixed once: {result.attempts} answers)" if result.attempts > 1 else ""))
+        run_in_background(self, lambda: self.app.run_transform(sample, key), done)
+
+
 # ---------------------------------------------------------------- Settings
 
 class SettingsPage(Page):
@@ -1854,6 +1971,7 @@ class ProfilesPage(Page):
 # ---------------------------------------------------------------- the window
 
 NAV = [("home", "Home"), ("dictionary", "Dictionary"), ("speech", "Speech recognition"), ("cleanup", "AI cleanup"),
+       ("transform", "Text Transform"),
        ("reading", "Reading test"), ("settings", "Settings"), ("profiles", "Profiles")]
 
 
@@ -1919,6 +2037,7 @@ class MainWindow(QWidget):
 
         self.pages = {"home": HomePage(app), "dictionary": DictionaryPage(app, self.show_page),
                       "speech": SpeechPage(app), "reading": ReadingTestPage(app), "cleanup": CleanupPage(app),
+                      "transform": TransformPage(app, self.show_page),
                       "settings": SettingsPage(app),
                       "profiles": ProfilesPage(app), "welcome": WelcomePage(app, self.show_page)}
         self.stack = QStackedWidget()
@@ -1957,7 +2076,7 @@ class MainWindow(QWidget):
     def show_page(self, key: str) -> None:
         page = self.pages[key]
         self._show_profile()
-        if key in ("home", "dictionary", "profiles", "speech", "cleanup"):
+        if key in ("home", "dictionary", "profiles", "speech", "cleanup", "transform"):
             page.refresh()
         elif key == "welcome":
             page.refresh(self.ready)
@@ -2006,7 +2125,7 @@ class MainWindow(QWidget):
         """New dictation, words, settings or profile name: update what is on screen."""
         self._show_profile()
         current = self.current_page()
-        if current in ("home", "dictionary", "profiles", "speech", "cleanup"):
+        if current in ("home", "dictionary", "profiles", "speech", "cleanup", "transform"):
             self.pages[current].refresh()
         elif current == "welcome":
             self.pages[current].refresh(self.ready)
@@ -2169,6 +2288,15 @@ class PreviewApp:
     def reject_suggestion(self, suggestion) -> None:
         from sst.pipeline.learning import Learner
         Learner(self.dictionary).reject(suggestion)
+
+    def transform_model(self) -> str:
+        return self.settings.cleanup_model if self.gateway.address else ""
+
+    def run_transform(self, text: str, key: str):
+        from sst.transform import TransformResult
+        self.calls.append(("run_transform", key))
+        plain = "Deployment looks good, but the database migration issue needs to be fixed before production."
+        return TransformResult(key, text, plain, plain, f"<p>{plain}</p>", True, [], 1, 0.8)
 
     def add_sound_alike(self, heard: str, meant: str) -> None:
         from sst.pipeline.dictionary import TermMode

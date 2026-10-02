@@ -44,6 +44,8 @@ from sst.pipeline.learning import CorrectionEvent, Learner
 from sst.pipeline.polish import GatewayLLM
 from sst.pipeline.session import LazyBackend, Stages, VoicePipeline
 from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
+from sst.transform import Transformer
+from sst.transformui import TransformController
 from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
 
 UPDATE_DIR = Path(os.environ.get("TEMP", Path.home())) / "Rflow-update"  # downloaded installers
@@ -108,6 +110,8 @@ class Pill(QWidget):
         self._animation.start()
         if state in ("typed", "cancelled", "ignored"):
             self._hide_timer.start(900)
+        elif state == "transformed":
+            self._hide_timer.start(1500)
         elif state in ("typed_raw", "typed_local"):
             self._hide_timer.start(1800)
         elif state in ("warning", "error"):
@@ -121,7 +125,7 @@ class Pill(QWidget):
     def _width(self) -> int:
         if self.state == "recording":
             return 40 + self.BARS * 5 + 16
-        if self.state == "transcribing":
+        if self.state in ("transcribing", "transforming"):
             return 84
         text = self._text()
         return 44 + QFontMetrics(self._font).horizontalAdvance(text) + 18
@@ -161,14 +165,14 @@ class Pill(QWidget):
             for i, level in enumerate(self._levels):
                 h = 3 + level * 24
                 p.drawRoundedRect(QRectF(40 + i * 5, cy - h / 2, 3, h), 1.5, 1.5)
-        elif self.state == "transcribing":
+        elif self.state in ("transcribing", "transforming"):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(255, 255, 255, 230))
             for i in range(3):
                 lift = max(0.0, math.sin(self._phase * 7 - i * 0.9)) * 5
                 p.drawEllipse(QPointF(rect.center().x() - 14 + i * 14, cy - lift), 3.5, 3.5)
         else:
-            colour = {"typed": QColor(34, 197, 94), "typed_raw": QColor(245, 158, 11),
+            colour = {"typed": QColor(34, 197, 94), "transformed": QColor(34, 197, 94), "typed_raw": QColor(245, 158, 11),
                       "typed_local": QColor(245, 158, 11), "warning": QColor(245, 158, 11),
                       "error": QColor(239, 68, 68)}.get(
                 self.state, QColor(160, 160, 170))
@@ -288,6 +292,9 @@ class TrayApp:
         self.icon = QIcon(str(ICON_FILE))
         self.recording_icon = _with_red_dot(self.icon)
         self.pill = Pill(level=lambda: self.recorder.level)
+        # Text Transform: its own shortcut and keyboard hook (HotkeyListener looked up when used: the tests replace it)
+        self.transforms = TransformController(self, listener_factory=lambda key: HotkeyListener(key))
+        self.transforms.start(self.settings.transform_hotkey)
         self.window = MainWindow(self)
 
         self.tray = QSystemTrayIcon(self.icon)
@@ -553,6 +560,7 @@ class TrayApp:
         self.dictation.tick(time.monotonic())
 
     def _on_result(self, heard: str, typed: str, seconds: float) -> None:
+        self.transforms.note_typed(typed + " ")  # as Dictation pasted it: with nothing selected, the shortcut takes it
         add_to_history(typed, heard, path=self.profile.history_file)
         self.stats.add(typed, seconds, date.today())
         try:
@@ -653,6 +661,8 @@ class TrayApp:
                 self._build_pipeline()
             if new.hotkey != old.hotkey:
                 self._start_listener()
+        if new.transform_hotkey != old.transform_hotkey and hasattr(self, "transforms"):
+            self.transforms.start(new.transform_hotkey)
         if new.speech_model != old.speech_model:
             self._load_speech()
         self.window.refresh()
@@ -684,6 +694,39 @@ class TrayApp:
                                                                                if w != word]))
         elif self.dictation:
             self._apply_speech()
+
+    # -- Text Transform (sst.transformui): the AI cleanup's model, under Text Transform's own prompt and checks
+
+    def transform_model(self) -> str:
+        return self.settings.cleanup_model if self.gateway.address else ""
+
+    def transform_ready(self) -> bool:
+        return bool(self.transform_model())
+
+    def run_transform(self, text: str, key: str):
+        """The transform of `text` (sst.transform.TransformResult); raises when the provider can't be asked."""
+        s = self.settings
+        terms = [t for t in speech_hints(self.dictionary.hint_terms()) if t.casefold() in text.casefold()]
+
+        def complete(prompt: str, message: str) -> str:
+            return Polisher(self.gateway, s.cleanup_model, [], fallback=s.cleanup_fallback or None,
+                            system_prompt=prompt).complete(message)
+        result = Transformer(complete).transform(text, key, terms)
+        log.info("Text Transform %s: %s in %.1f s after %d attempt(s)%s", key, "done" if result.accepted else "kept the text",
+                 result.seconds, result.attempts, f" ({'; '.join(result.reasons)})" if result.reasons else "")
+        return result
+
+    def say(self, state: str, message: str = "") -> None:
+        """A short word in the pill (and the log, for warnings)."""
+        if state == "warning":
+            log.info("Text Transform: %s", message)
+        self.pill.show_state(state, message)
+
+    def remember(self, text: str, original: str) -> None:
+        """A transform in Home's history, with the text it came from (its tooltip)."""
+        add_to_history(text, original, path=self.profile.history_file)
+        if self.window.isVisible():
+            self.window.refresh()
 
     def dictionary_terms(self) -> list:
         return self.dictionary.terms(enabled_only=False)
@@ -972,6 +1015,7 @@ class TrayApp:
             if self.settings.hotkey != old_hotkey:
                 self._start_listener()
             self._load_speech()  # the other profile may use another speech model
+        self.transforms.start(self.settings.transform_hotkey)
         # Every page shows the profile's own data: build the window again rather than update each field.
         old, self.window = self.window, MainWindow(self)
         self.window.set_status(*self._status)
@@ -1073,6 +1117,7 @@ class TrayApp:
             QDesktopServices.openUrl(QUrl(self.update.page))
 
     def quit(self) -> None:
+        self.transforms.stop()
         if self.listener:
             self.listener.stop()
         if self.dictation:
@@ -1124,7 +1169,7 @@ def self_test() -> int:
     preview = PreviewApp(history=[{"time": "2026-09-30 10:15:00", "text": "Self-test."}])
     window = MainWindow(preview)
     window.show_update("Rflow 9.9.9 is available (you have 1.0.0).", version="9.9.9")
-    for page in ("home", "dictionary", "speech", "reading", "cleanup", "settings", "welcome"):
+    for page in ("home", "dictionary", "speech", "reading", "cleanup", "transform", "settings", "welcome"):
         window.show_page(page)
         window.grab()
     window.pages["reading"].ensure_test().grab()
