@@ -84,6 +84,13 @@ def window_title(hwnd: int) -> str:
     return buffer.value
 
 
+def window_process(hwnd: int) -> int:
+    """The id of the process a window belongs to (0 for none): Rflow's own windows are told from the user's apps."""
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
 def window_class(hwnd: int) -> str:
     """The window's class name. Terminals (ConsoleWindowClass, CASCADIA_HOSTING_WINDOW_CLASS) are worth recognising: there
     Ctrl+C with nothing selected stops the running program instead of copying."""
@@ -272,6 +279,24 @@ def paste_rich(text: str, html: str | None = None) -> None:
         time.sleep(RESTORE_DELAY)  # the app reads the clipboard when it handles Ctrl+V, a moment later
     finally:
         _restore(saved, ours)
+
+
+def clipboard_sequence() -> int:
+    """Windows' count of clipboard changes: it moves when the user's app copies (Ctrl+C+C, the translator)."""
+    return _sequence()
+
+
+def clipboard_text() -> str | None:
+    """The text the user copied ("\\r\\n" as "\\n"), read without pressing anything; None when there is none, or the
+    clipboard stays busy."""
+    try:
+        with _clipboard():
+            text = _read_text()
+    except OSError as error:
+        log.warning("Could not read the clipboard: %s", error)
+        return None
+    text = text.replace("\r\n", "\n") if text else ""
+    return text if text.strip() else None
 
 
 def set_clipboard(text: str, html: str | None = None) -> None:
