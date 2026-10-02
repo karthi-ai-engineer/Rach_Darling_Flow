@@ -291,3 +291,25 @@ def test_rflows_start_beep_is_filtered_out_of_the_recording():
     assert np.sqrt(np.mean(kept ** 2)) > 0.9 * np.sqrt(np.mean(voice ** 2))  # the voice stays
     after = _ToneNotch(RATE, 880, 0, 100)(beep[:500], 1000)
     assert np.array_equal(after, beep[:500])  # outside its span nothing changes
+
+
+def test_a_voice_command_skips_the_text_stages_and_types_nothing():
+    llm = FakeLLM(lambda text: "Polished: " + text)
+    stages = Stages(llm=llm, guard=Guard(), command=lambda text: "concise" if "concise" in text.lower() else None)
+    backend = ScriptedBackend(["Make it concise."])
+    final = pipeline(backend, stages).process_audio(np.concatenate([speech(2.5), silence(0.4)]), RATE)
+    assert final.command == "concise" and final.text == "" and not llm.seen  # the LLM never saw it
+
+
+def test_dictation_hands_a_voice_command_to_the_app():
+    typed, states, commands = [], [], []
+    recorder = LiveRecorder(silence(0.2))
+    d = Dictation(None, recorder, paste=typed.append, sounds=False, save=False)
+    d.pipeline = pipeline(ScriptedBackend(["Undo that."]), Stages(command=lambda text: "undo"))
+    d.on_state = lambda state, message: states.append(state)
+    d.on_command = commands.append
+    d.handle("press", 0.0)
+    recorder.current_take.chunks += [speech(1.5, seed=5), silence(0.4)]
+    d.handle("release", 2.0)
+    d.wait()
+    assert commands == ["undo"] and typed == [] and states[-1] == "idle"

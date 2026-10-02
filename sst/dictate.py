@@ -66,6 +66,10 @@ class Dictation:
         self._session = None  # the pipeline session being recorded
         self.on_state: Callable[[str, str], None] = lambda state, message: None
         self.on_result: Callable[[str, str, float], None] = lambda heard, typed, seconds: None
+        # Voice commands ("make it concise", sst.commands): `command` finds one in the words heard, `on_command` carries
+        # it out (the app's Text Transform). None: every dictation is typed.
+        self.command: Callable[[str], str | None] | None = None
+        self.on_command: Callable[[str], None] = lambda command: None
         self.recording = False
         self._holding = False  # the press that started this recording has not been released yet
         self._started = 0.0
@@ -218,6 +222,10 @@ class Dictation:
                 fell_back = getattr(engine, "last_error", "")
                 took = time.perf_counter() - t0
                 log.info("%.1fs -> %.2fs  %s", len(audio) / rate, took, text or "(nothing recognised)")
+                if text and self.command is not None and (command := self.command(text)):
+                    self.on_state("idle", "")
+                    self.on_command(command)  # not typed, not in the history: a command, not a dictation
+                    continue
                 cleanup = self.cleanup  # read once: the app may swap it meanwhile
                 typed = cleanup.polish(text) if cleanup and text else text
                 if typed:
@@ -245,6 +253,10 @@ class Dictation:
         # the whole-recording last resort, a retry and the saved recording see what the session saw.
         audio, rate = take.audio()[getattr(session, "trimmed", 0):], take.rate
         final = session.result()
+        if final.command:
+            self.on_state("idle", "")
+            self.on_command(final.command)  # not typed, not saved, not in the history
+            return
         if final.provenance.value == "failed" and self.engine is not None and len(audio):
             try:  # the last resort before failing: the whole recording in one piece, as before the voice pipeline
                 text = self.engine.transcribe(audio, rate)

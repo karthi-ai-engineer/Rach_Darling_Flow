@@ -287,3 +287,16 @@ def test_a_failed_transcription_keeps_the_recording(monkeypatch):
     d.on_state = lambda state, message: seen.append((state, message))
     feed(d, (0, "press"), (0.7, "release"))
     assert kept == [(16_000, "")] and seen[-1][0] == "error" and "recording is kept" in seen[-1][1]
+
+
+def test_a_voice_command_is_carried_out_not_typed(make):
+    d, typed, states = make(text="Make it concise.")
+    commands, results = [], []
+    d.command = lambda text: "concise" if text == "Make it concise." else None
+    d.on_command = commands.append
+    d.on_result = lambda heard, text, seconds: results.append(text)
+    feed(d, (0, "press"), (0.7, "release"))
+    assert commands == ["concise"] and typed == [] and results == [] and states[-1] == "idle"
+    d.engine.text = "Make it concise and send it."
+    feed(d, (2, "press"), (2.7, "release"))
+    assert commands == ["concise"] and typed == ["Make it concise and send it. "]

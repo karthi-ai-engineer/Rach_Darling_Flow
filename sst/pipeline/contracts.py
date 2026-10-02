@@ -215,6 +215,7 @@ class FinalText:
     stages: dict[str, str] = field(default_factory=dict)  # raw, merged, dictionary, formatted, polished, final
     guard: GuardResult | None = None
     error: str = ""  # why the session failed, or why the LLM's text wasn't used
+    command: str = ""  # the dictation was a voice command (sst.commands): nothing is typed; the app carries it out
     notes: list[str] = field(default_factory=list)  # e.g. a chunk Parakeet transcribed instead of the cloud model
     metrics: dict = field(default_factory=dict)  # durations (ms) per stage, chunk counts, retries...
 
