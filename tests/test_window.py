@@ -714,3 +714,11 @@ def test_the_pipeline_switches_are_settings():
     page.voice_pipeline.setChecked(False)
     s = app.settings
     assert (s.format_text, s.debug_pipeline, s.voice_pipeline) == (False, True, False)
+
+
+
+def test_everyday_words_in_the_dictionary_are_marked():
+    window, _ = _window(settings=Settings(welcomed=True, vocabulary=["GitHub", "move"]))
+    window.show_page("dictionary")
+    labels = _labels(window.pages["dictionary"])
+    assert labels.count("everyday word: not given to speech recognition") == 1

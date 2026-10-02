@@ -29,7 +29,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
 from sst import __version__, bench, downloads, evaluate, scan, updates
-from sst.audio import TAIL_SECONDS, Recorder, input_device_names
+from sst.audio import PREROLL_SECONDS, TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, load_engine, usable
 from sst.engines.cloud import CLOUD, REMOTE, SERVER, CloudEngine
@@ -37,7 +37,7 @@ from sst.gateway import SPEECH_SERVER, GatewayConfig, Polisher
 from sst.hotkey import HotkeyListener, parse_hotkey
 from sst.pipeline.asr import ASRScheduler, EngineBackend
 from sst.pipeline.contracts import VoiceConfig
-from sst.pipeline.dictionary import DictionaryEngine, DictionaryStore, TermMode
+from sst.pipeline.dictionary import DictionaryEngine, DictionaryStore, TermMode, speech_hints
 from sst.pipeline.formatting import Formatter
 from sst.pipeline.guard import Guard
 from sst.pipeline.learning import CorrectionEvent, Learner
@@ -466,7 +466,8 @@ class TrayApp:
         if hasattr(engine, "language"):
             engine.language = s.speech_language
         if hasattr(engine, "words"):  # the recogniser listens for them (hotwords, a provider's prompt)
-            engine.words = self.dictionary.hint_terms() if s.voice_pipeline else list(s.vocabulary)
+            # Names and terms only: everyday words as hints get heard where they weren't said (speech_hints)
+            engine.words = speech_hints(self.dictionary.hint_terms() if s.voice_pipeline else s.vocabulary)
         if hasattr(engine, "timestamp_mode"):
             engine.timestamp_mode = VoiceConfig().asr.timestamp_mode  # Gemini Transcribe: word times for the merge
         if engine.name in CLOUD:
@@ -485,7 +486,7 @@ class TrayApp:
         model = s.cleanup_model if s.cleanup else ""
         polisher = None
         if model and self.gateway.address:
-            polisher = Polisher(self.gateway, model, s.vocabulary, fallback=s.cleanup_fallback or None)
+            polisher = Polisher(self.gateway, model, speech_hints(s.vocabulary), fallback=s.cleanup_fallback or None)
             polisher.prepare()  # connect now, so the first dictation doesn't wait for it
         elif s.cleanup:
             self._notify(APP_NAME, "AI cleanup needs an endpoint and a model: set them in AI cleanup.",
@@ -521,7 +522,8 @@ class TrayApp:
         config.formatting.enabled = s.format_text
         pipeline.stages = Stages(dictionary=DictionaryEngine(self.dictionary, config.dictionary),
                                  formatter=Formatter(config.formatting) if s.format_text else None,
-                                 llm=llm, guard=Guard(config.guard), terms=self.dictionary.hint_terms)
+                                 llm=llm, guard=Guard(config.guard),
+                                 terms=lambda: speech_hints(self.dictionary.hint_terms()))  # protected: not "move"
         dictation.pipeline = pipeline
 
     def _on_pipeline_event(self, name: str, data: dict) -> None:
@@ -621,8 +623,9 @@ class TrayApp:
         press)."""
         s, recorder = self.settings, self.recorder
         self._configure(recorder)
-        if s.voice_pipeline:
-            recorder.preroll_seconds = VoiceConfig().audio.pre_roll_ms / 1000
+        # The pipeline trims its 2 s pre-roll to the speech running into the key press; the classic path doesn't, so it
+        # keeps the short pre-roll it always had.
+        recorder.preroll_seconds = VoiceConfig().audio.pre_roll_ms / 1000 if s.voice_pipeline else PREROLL_SECONDS
         if s.always_on_mic:
             recorder.warm_seconds = math.inf
             try:
@@ -729,11 +732,11 @@ class TrayApp:
                                else "Choose a speech model first, on the Speech recognition page.")
         s = self.settings
         models = [m for m in dict.fromkeys((s.cleanup_model, s.cleanup_fallback)) if m] if self.gateway.address else []
-        polishers = {m.rsplit("/", 1)[-1]: Polisher(self.gateway, m, s.vocabulary) for m in models}
+        polishers = {m.rsplit("/", 1)[-1]: Polisher(self.gateway, m, speech_hints(s.vocabulary)) for m in models}
         engine = self.dictation.engine
         if engine.name in REMOTE:  # scored without Parakeet to fall back on, so that a provider's failure shows
             engine = self._new_engine(engine.name, fallback=False)
-            engine.words = list(s.vocabulary)
+            engine.words = speech_hints(s.vocabulary)
         results = evaluate.run(folders, engine, evaluate.pipelines_for(polishers, title=engine.title), progress)
         results.save(evaluate.output_folder(folders))
         return results
@@ -763,7 +766,7 @@ class TrayApp:
         if sample is None:
             raise RuntimeError("the sample sentence is missing (it comes with Parakeet)")
         engine = load_engine(provider, "", api_key, model, url=address)  # the sample is English, whatever the language
-        engine.words = list(self.settings.vocabulary)
+        engine.words = speech_hints(self.settings.vocabulary)
         return engine.check(*sample)
 
     def use_server_speech(self, address: str, api_key: str, model: str) -> None:

@@ -11,7 +11,9 @@ from sst.pipeline.contracts import AudioChunk, ChunkingConfig, VadConfig
 
 RATE = 16_000
 SYLLABLES = 4.5  # per second
-VAD_CONFIG, CHUNKING = VadConfig(), ChunkingConfig()
+# The cutting mechanics are tested with short sentences: a pause may cut after 0.4 s of speech, and a short rest is
+# sent alone. The defaults (4 s, 2 s) are tested in their own tests below.
+VAD_CONFIG, CHUNKING = VadConfig(), ChunkingConfig(min_cut_speech_ms=400, min_alone_speech_ms=0)
 MAX = CHUNKING.max_duration_ms / 1000
 LONGEST = (CHUNKING.max_duration_ms + CHUNKING.boundary_lookahead_ms) / 1000
 OVERLAP = CHUNKING.overlap_ms / 1000
@@ -483,7 +485,7 @@ def test_a_session_at_48_khz_is_cut_at_the_same_moments():
 
 def test_the_configuration_is_respected():
     config = ChunkingConfig(pause_boundary_ms=600, max_duration_ms=5000, overlap_ms=500, boundary_grace_ms=1000,
-                            boundary_lookahead_ms=200, keep_silence_ms=100)
+                            boundary_lookahead_ms=200, keep_silence_ms=100, min_cut_speech_ms=400, min_alone_speech_ms=0)
     audio, truth = scene(("pause", 0.3), ("speech", 2.0), ("pause", 0.8), ("speech", 12.0), ("pause", 0.3))
     chunks = chunk_all(audio, config=config)
     assert chunks[0].boundary == "pause" and {c.boundary for c in chunks[1:-1]} == {"max"} and len(chunks) >= 4
@@ -494,7 +496,8 @@ def test_the_configuration_is_respected():
 
 
 def test_a_nonsensical_configuration_still_moves_forward():
-    config = ChunkingConfig(max_duration_ms=500, overlap_ms=5000, boundary_grace_ms=5000, boundary_lookahead_ms=0)
+    config = ChunkingConfig(max_duration_ms=500, overlap_ms=5000, boundary_grace_ms=5000, boundary_lookahead_ms=0,
+                            min_alone_speech_ms=0)
     audio, _ = scene(("speech", 5.0))
     chunks = chunk_all(audio, config=config)
     assert len(chunks) >= 9 and all(c.duration <= 0.5 for c in chunks)
@@ -563,3 +566,34 @@ def test_nothing_after_the_key_press_is_ever_dropped():
     for drop in (trim_preroll(scene(("speech", 3.0))[0], RATE, PREROLL, VAD_CONFIG),
                  trim_preroll(audio, RATE, PREROLL, VAD_CONFIG)):
         assert 0 <= drop <= PREROLL
+
+
+
+# ---- the defaults: enough speech before a pause may cut, and no short rest sent alone (the owner's log, 2026-10-02)
+
+def test_a_pause_cuts_only_after_four_seconds_of_speech():
+    short, _ = scene(("pause", 0.3), ("speech", 2.5), ("pause", 1.8), ("speech", 6.0), ("pause", 0.5))
+    assert [c.boundary for c in chunk_all(short, config=ChunkingConfig())] == ["end"]  # no 2.5 s fragment alone
+    long, _ = scene(("pause", 0.3), ("speech", 5.0), ("pause", 1.8), ("speech", 6.0), ("pause", 0.5))
+    assert [c.boundary for c in chunk_all(long, config=ChunkingConfig())] == ["pause", "end"]
+
+
+@pytest.mark.parametrize("parts, alone_ms", [
+    # cut at the maximum (at the quietest point of the last 2 s: the rest has 0.4-2.8 s of speech), then let go
+    ((("pause", 0.3), ("speech", 20.8), ("pause", 0.6)), 3000),
+    ((("pause", 0.3), ("speech", 6.0), ("pause", 1.6), ("speech", 0.5), ("pause", 0.4)), 2000),  # a word after a pause
+])
+def test_a_short_rest_goes_again_with_the_part_before_it(parts, alone_ms):
+    audio, _ = scene(*parts)
+    chunks = chunk_all(audio, config=ChunkingConfig(min_alone_speech_ms=alone_ms))
+    first, last = chunks[0], chunks[-1]
+    assert len(chunks) == 2 and last.replaces == first.sequence and last.boundary == "end"
+    assert (last.start_sample, last.overlap_end_sample) == (first.start_sample, first.overlap_end_sample)
+    assert last.end_sample == len(audio) and len(last.audio) == last.end_sample - last.start_sample
+    assert np.array_equal(last.audio[:len(first.audio)], first.audio)
+
+
+def test_a_rest_with_enough_speech_is_sent_alone():
+    audio, _ = scene(("pause", 0.3), ("speech", 6.0), ("pause", 1.6), ("speech", 3.0), ("pause", 0.4))
+    chunks = chunk_all(audio, config=ChunkingConfig())
+    assert [c.boundary for c in chunks] == ["pause", "end"] and chunks[-1].replaces == 0

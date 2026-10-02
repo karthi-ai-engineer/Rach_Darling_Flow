@@ -35,6 +35,35 @@ from sst.pipeline.merge import TranscriptMerger
 log = logging.getLogger(__name__)
 
 RESULT_TIMEOUT = 120.0  # seconds to wait for the last ASR results after the key is released
+BEEP_WINDOW = 0.6  # seconds after the key press in which the start beep is filtered out
+
+
+class _ToneNotch:
+    """A narrow notch (a biquad, Q 8) at one frequency over one span of a session's samples, kept continuous across
+    blocks. It takes out a pure tone (the start beep) and leaves speech, whose energy is spread over many frequencies."""
+
+    def __init__(self, rate: int, hz: float, start: int, end: int):
+        w = 2 * np.pi * hz / rate
+        alpha, cos = np.sin(w) / 16, np.cos(w)
+        self.b = np.array([1, -2 * cos, 1]) / (1 + alpha)
+        self.a = np.array([-2 * cos, 1 - alpha]) / (1 + alpha)
+        self.start, self.end = start, end
+        self.x1 = self.x2 = self.y1 = self.y2 = 0.0
+
+    def __call__(self, block: np.ndarray, position: int) -> np.ndarray:
+        lo, hi = max(self.start, position), min(self.end, position + len(block))
+        if lo >= hi:
+            return block
+        block = block.copy()
+        (b0, b1, b2), (a1, a2) = self.b, self.a
+        x1, x2, y1, y2 = self.x1, self.x2, self.y1, self.y2
+        for i in range(lo - position, hi - position):  # 0.6 s once per dictation: a plain loop is fast enough
+            x = float(block[i])
+            y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2, x1, y2, y1 = x1, x, y1, y
+            block[i] = y
+        self.x1, self.x2, self.y1, self.y2 = x1, x2, y1, y2
+        return block
 
 
 class LazyBackend:
@@ -87,7 +116,8 @@ class Session:
     """One dictation. feed() is called from one thread (the audio feeder), result() from another (the dictation
     worker); the ASR results arrive on the scheduler's worker threads."""
 
-    def __init__(self, pipeline: "VoicePipeline", rate: int, preroll: np.ndarray | None = None):
+    def __init__(self, pipeline: "VoicePipeline", rate: int, preroll: np.ndarray | None = None,
+                 beep_hz: float | None = None):
         self.pipeline, self.rate = pipeline, rate
         self.session_id = new_session_id()
         self.state = SessionState.RECORDING
@@ -101,17 +131,30 @@ class Session:
         self._submitted = 0
         self._chunks: list[AudioChunk] = []  # for diagnostics only (their audio is released once accepted)
         self._finished = False
-        if preroll is not None and len(preroll):
-            # Keep the speech that runs into the key press, not a sentence said to someone two seconds earlier.
-            drop = trim_preroll(preroll, rate, len(preroll), config.vad)
-            self.feed(preroll[drop:])
+        self._fed = 0
+        self._notch: _ToneNotch | None = None
+        preroll = preroll if preroll is not None and len(preroll) else None
+        # Keep the speech that runs into the key press, not a sentence said to someone two seconds earlier. `trimmed`:
+        # samples of the take's pre-roll left out; the whole-recording paths leave them out too.
+        self.trimmed = trim_preroll(preroll, rate, len(preroll), config.vad) if preroll is not None else 0
+        if beep_hz:
+            # Rflow's start beep reaches the microphone about 0.15 s after the key press, louder than the voice (39 of
+            # the owner's 40 recordings): it counted as speech and set the level the audio is raised to.
+            press = len(preroll) - self.trimmed if preroll is not None else 0
+            self._notch = _ToneNotch(rate, beep_hz, press, press + int(BEEP_WINDOW * rate))
+        if preroll is not None:
+            self.feed(preroll[self.trimmed:])
 
     # -- audio in
 
     def feed(self, block: np.ndarray) -> None:
         if self._finished or not len(block):
             return
-        for chunk in self._chunker.push(np.asarray(block, dtype=np.float32)):
+        block = np.asarray(block, dtype=np.float32)
+        if self._notch is not None:
+            block = self._notch(block, self._fed)
+        self._fed += len(block)
+        for chunk in self._chunker.push(block):
             self._submit(chunk)
 
     def finish(self) -> None:
@@ -142,7 +185,8 @@ class Session:
 
     def _on_result(self, result: ChunkResult) -> None:
         # Called in sequence order by the scheduler: the provisional transcript grows while the user is still talking.
-        previous = self._chunks[result.sequence - 2] if result.sequence >= 2 else None
+        before = (self._chunks[result.sequence - 1].replaces or result.sequence) - 1  # a replacement follows what the
+        previous = self._chunks[before - 1] if before >= 1 else None  # part it replaces followed
         if previous is not None and previous.boundary == "pause":
             # Cut in a pause: the overlap holds only silence, so nothing in it can be a duplicate. Without word times
             # the merger couldn't tell, and a phrase the user really said twice across the pause would lose a copy.
@@ -155,9 +199,16 @@ class Session:
         """Wait for every chunk, then the text stages. Never raises: a failure becomes a FAILED FinalText."""
         stages: dict[str, str] = {}
         notes: list[str] = []
+        replaced = {c.replaces for c in self._chunks if c.replaces}  # a short rest sent again with the part before it
         try:
             t0 = time.perf_counter()
-            results = self._asr.wait(timeout)
+            try:
+                results = self._asr.wait(timeout)
+            except SessionFailed as e:
+                if not replaced or any(r.sequence not in replaced for r in e.failed):
+                    raise
+                results = e.results  # only a superseded part failed: its replacement holds the same words
+            results = [r for r in results if r.sequence not in replaced]
             self._stage("asr_wait", t0)
             notes += [r.note for r in results if r.note]
             self.metrics.chunks = len(results)
@@ -166,7 +217,7 @@ class Session:
             stages["raw"] = " | ".join(r.text for r in results)
             self.state = SessionState.MERGING
             t0 = time.perf_counter()
-            merged = self._merger.final()
+            merged = self._merger.final() if not replaced else self._merge(results)
             self._stage("merge", t0)
             stages["merged"] = merged.text
             return self._text_stages(merged.text, stages, notes)
@@ -179,6 +230,13 @@ class Session:
         except Exception as e:  # a bug in a stage must not lose the recording: the caller keeps it
             log.exception("%s failed", self.session_id)
             return self._fail(f"{type(e).__name__}: {e}", stages)
+
+    def _merge(self, results: list[ChunkResult]) -> MergedTranscript:
+        """The final transcript from these results alone (the progressive one also holds a superseded part)."""
+        merger = TranscriptMerger(self.pipeline.config.chunking)
+        for result in results:
+            merger.add(result)
+        return merger.final()
 
     def text_result(self, text: str) -> FinalText:
         """The text stages for a text transcribed another way: the whole recording at once, after a part couldn't be
@@ -260,8 +318,8 @@ class VoicePipeline:
         self.debug_dir = debug_dir  # set: every session's stages (and chunk audio) are kept there for debugging
         self.keep_audio = debug_dir is not None
 
-    def start(self, rate: int, preroll: np.ndarray | None = None) -> Session:
-        return Session(self, rate, preroll)
+    def start(self, rate: int, preroll: np.ndarray | None = None, beep_hz: float | None = None) -> Session:
+        return Session(self, rate, preroll, beep_hz)
 
     def process_audio(self, audio: np.ndarray, rate: int, timeout: float = RESULT_TIMEOUT) -> FinalText:
         """A whole recording at once (a retry, the tests, the reading test): the same stages as live dictation."""

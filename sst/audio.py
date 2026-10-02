@@ -278,12 +278,19 @@ class Recorder:
         block = indata[:, 0].copy()
         self.level = float(np.sqrt(np.mean(block * block)))
         with self._lock:
+            used = 0  # the start of the block that is a take's tail
             for take in self._closing:
                 take.chunks.append(block[:take.remaining])
+                used = max(used, min(len(block), take.remaining))
                 take.remaining -= len(block)
                 if take.remaining <= 0:
                     take.done.set()
             self._closing = [t for t in self._closing if not t.done.is_set()]
+            # The tail belongs to the take just ended: the next take's pre-roll starts after it, or a dictation started
+            # right after the last one would begin with that one's last word again.
+            block = block[used:]
+            if not len(block):
+                return
             if self._take is not None:
                 self._take.chunks.append(block)
             else:

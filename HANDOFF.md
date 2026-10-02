@@ -939,6 +939,43 @@ mic (always on, 2 s pre-roll in RAM) -> session -> VAD -> chunker (1.2 s pause /
 - **Tests: 1525.** Every stage has its own file (`tests/test_pipeline_*.py`, `tests/test_engine_words.py`), plus
   end-to-end sessions with synthetic speech and fake engines (`tests/test_pipeline_session.py`).
 
+## Text never said (fixed 2026-10-02)
+
+The owner saw words they hadn't said, at the end of dictations ("…version installer. Commit tray app pill. Let's move
+stand meeting Thursday morning.") and once a rewritten opening ("Under some protocol, that's not a big deal."). Speech
+model: Gemini `gemini-flash-lite-latest`, with the 20 Your words in its instruction.
+
+- **Evidence** (40 pipeline dictations, each replayed locally through Parakeet; nothing sent anywhere):
+  - Gemini invented the words; they weren't in the audio. In 7 of 40 dictations its text had list words that Parakeet
+    didn't hear; the AI cleanup only passed them on.
+  - The leaked text is the Your-words list itself, in its saved order.
+  - The trigger is a last part with little speech: 5 of 5 with 1.4 s or less of their own speech got the list, 0 of 5
+    with 2.1 s or more. Those parts held mostly the repeated overlap, the release click and Rflow's own stop beep.
+  - "Under some protocol…" was the owner's own speech ("And some of the words are not being…"): a 1.8 s mid-sentence
+    pause cut a 2.5 s fragment, which Gemini rewrote without its context.
+  - The 2 s pre-roll did not leak. Rflow's 880 Hz start beep was in 39 of 40 recordings, louder than the voice.
+- **Fixes:**
+  - Only names and terms go to speech models as hints, and to the guard as protected terms (`speech_hints`): 16 of
+    the 20 words were everyday words. The Dictionary page marks everyday words.
+  - The Gemini instruction calls the hints a spelling reference, never to be written unless spoken.
+  - A transcript with three or more hint words in a row, in the list's order (`hint_echo`), is transcribed again
+    without hints; that transcript is used when the words disappear.
+  - A last part with under 2 s of its own speech goes again with the part before it, as one chunk that replaces it
+    (`min_alone_speech_ms`, `AudioChunk.replaces`).
+  - A pause cuts only after 4 s of a part's own speech (`min_cut_speech_ms`, was 0.4 s).
+  - The stop beep plays after the tail is recorded; the start beep is filtered out (`_ToneNotch`, 880 Hz, 0.6 s).
+  - The fallback, Retry and saved recording leave out the pre-roll the session trimmed. The tail is no longer copied
+    into the next pre-roll. The classic path keeps its 0.4 s pre-roll. The guard accepts either apostrophe and a
+    capital at a sentence start.
+- **Measured:**
+  - On the 45 recordings, short parts (< 4 s) sent alone in multi-part dictations went from 9 to 1, and that one has
+    2.1 s of speech. The owner's example now has 2 parts (0-18.3 s, 17.3-27.2 s) instead of 3.
+  - The 12-sentence real-voice check (local Parakeet): 22 of 166 words wrong (13.3%), against 20 before and 23 for
+    the whole recording at once. A 3 s pause threshold gave the same.
+- **Owner's choice, recommended:** Speech recognition → Google Gemini → model `gemini-3.5-transcribe`. It is Google's
+  dedicated speech model, takes no free-text prompt, and is the more accurate one. The `-latest` alias may now point
+  to a Flash-Lite reported to transcribe dictation worse. Also remove the everyday words from the Dictionary.
+
 ## This laptop's first reading test (2026-10-01, Rflow 1.4.0)
 
 - **The setup:** set B, the laptop microphone (Realtek, WASAPI, 48 kHz), Windows mode, warm microphone.
