@@ -104,6 +104,9 @@ class FakeListener:
     def stop(self):
         self.running = False
 
+    def capture(self, keys):  # Text Transform's menu takes keys while it is open
+        self.captured = keys
+
 
 class FakeEngine:
     """Named after the model it was loaded as, like the real engines."""
@@ -456,3 +459,38 @@ def test_the_tray_app_dictates_through_the_voice_pipeline(tray_app):
     assert app.dictation.pipeline.stages.formatter is None
     app.apply_settings(dataclasses.replace(app.settings, voice_pipeline=False, always_on_mic=False))
     assert app.dictation.pipeline is None and app.recorder.warm_seconds == sst_app.WARM_SECONDS  # the classic way
+
+
+
+def test_voice_commands_go_to_text_transform(tray_app, monkeypatch):
+    app, _, _ = tray_app
+    assert app.voice_command("Make it concise.") is None  # no AI model: typed as said, nothing lost
+    assert app.voice_command("Undo that.") == "undo"  # the pill says there is nothing to undo
+    monkeypatch.setattr(app, "transform_ready", lambda: True)
+    assert app.voice_command("Make it concise.") == "concise"
+    assert app.voice_command("Make it concise and send it to Priya.") is None
+    app.apply_settings(dataclasses.replace(app.settings, command_phrases={"concise": "trim it"}))
+    assert app.voice_command("Trim it.") == "concise" and app.voice_command("Make it concise.") is None
+    app.apply_settings(dataclasses.replace(app.settings, voice_commands=False))
+    assert app.voice_command("Trim it.") is None
+    assert app.dictation.command == app.voice_command  # both ways of dictating ask it
+    assert app.dictation.pipeline is None or app.dictation.pipeline.stages.command == app.voice_command
+    ran = []
+    monkeypatch.setattr(app.transforms, "run_command", ran.append)
+    app.signals.command.emit("bullets")  # from the dictation's thread, carried out on the app's
+    assert ran == ["bullets"]
+
+
+def test_text_transform_starts_with_its_shortcut_and_uses_the_cleanup_model(tray_app):
+    app, saved, history = tray_app
+    controller = app.transforms
+    assert controller.listener is not None and controller.listener.hotkey.text == "double ctrl"  # the default
+    assert not app.transform_ready()  # no AI model yet
+    app.apply_settings(dataclasses.replace(app.settings, transform_shortcut=""))
+    assert controller.listener is None  # off
+    app.apply_settings(dataclasses.replace(app.settings, transform_shortcut="ctrl+alt+t"))
+    assert controller.listener.hotkey.text == "ctrl+alt+t"
+    app._on_result("hello there", "Hello there.", 1.0)
+    assert controller.last_typed[0] == "Hello there. "  # as typed: the shortcut takes it when nothing is selected
+    app.remember("Short.", "A longer original.")
+    assert history[0]["text"] == "Short."

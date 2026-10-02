@@ -89,6 +89,7 @@ class Stages:
     llm: object | None = None  # sst.pipeline.polish.LLMPolisher: polish(text, protected_terms) -> str
     guard: object | None = None  # sst.pipeline.guard.Guard: validate(before, after, terms) -> GuardResult
     terms: Callable[[], list[str]] = list  # the user's dictionary terms, protected through the LLM step
+    command: Callable[[str], str | None] | None = None  # a voice command in the text heard (sst.commands), or None
 
 
 @dataclass
@@ -245,6 +246,13 @@ class Session:
 
     def _text_stages(self, text: str, stages: dict[str, str], notes: list[str]) -> FinalText:
         s = self.pipeline.stages
+        if s.command is not None and text and (command := s.command(text)):
+            # "make it concise": a command for Text Transform, checked on the words heard, before any cleanup
+            self.state = SessionState.READY
+            final = FinalText("", self.session_id, Provenance.FORMATTED, stages=stages, notes=notes,
+                              metrics=self._metrics(), command=command)
+            self.pipeline.record(final, self._chunks)
+            return final
         if s.dictionary is not None and text:
             self.state = SessionState.DICTIONARY
             t0 = time.perf_counter()

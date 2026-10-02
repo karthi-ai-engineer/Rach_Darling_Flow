@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 from sst import bench  # noqa: E402
 from sst import window as w  # noqa: E402
 from sst.audio import save_wav  # noqa: E402
+from sst.commands import DEFAULT_PHRASES  # noqa: E402
 from sst.gateway import GatewayConfig  # noqa: E402
 from sst.settings import Settings, Stats  # noqa: E402
 
@@ -722,3 +723,66 @@ def test_everyday_words_in_the_dictionary_are_marked():
     window.show_page("dictionary")
     labels = _labels(window.pages["dictionary"])
     assert labels.count("everyday word: not given to speech recognition") == 1
+
+
+
+# ---- Text Transform
+
+def test_the_text_transform_page_sets_the_shortcut_and_the_menu():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk"),
+                          settings=Settings(welcomed=True, cleanup_model="gpt-4o-mini"))
+    window.show_page("transform")
+    page = window.pages["transform"]
+    assert "Uses your AI cleanup model: gpt-4o-mini" in page.model.text() and page.setup.isHidden()
+    assert "double-tap Ctrl" in page.how.text() and page.hotkey.currentText() == "Double-tap Ctrl"
+    page.choices["rewrite"].setChecked(True)
+    page.choices["professional"].setChecked(False)
+    assert app.settings.transforms == ["concise", "bullets", "actions", "rewrite"]
+    page.hotkey.setCurrentIndex(page.hotkey.findData(""))
+    assert app.settings.transform_shortcut == "" and "off" in page.how.text()
+
+
+def test_the_voice_command_phrases_can_be_edited():
+    window, app = _window(settings=Settings(welcomed=True))
+    window.show_page("transform")
+    page = window.pages["transform"]
+    assert page.phrases["concise"].text() == ", ".join(DEFAULT_PHRASES["concise"]) and page.reset.isHidden()
+    assert set(page.phrases) == {"concise", "professional", "bullets", "actions", "rewrite", "undo"}
+    page.phrases["concise"].setText("trim it,  tighten this up,")
+    page.phrases["concise"].editingFinished.emit()
+    assert app.settings.command_phrases == {"concise": "trim it, tighten this up"}
+    assert page.phrases["concise"].text() == "trim it, tighten this up" and not page.reset.isHidden()
+    page.phrases["rewrite"].setText("rewrite it, trim it")
+    page.phrases["rewrite"].editingFinished.emit()
+    assert not page.phrase_note.isHidden() and "is in Concise and Rewrite" in page.phrase_note.text()
+    page.phrases["concise"].setText(", ".join(DEFAULT_PHRASES["concise"]))  # back to the defaults: not kept as custom
+    page.phrases["concise"].editingFinished.emit()
+    assert app.settings.command_phrases == {"rewrite": "rewrite it, trim it"} and page.phrase_note.isHidden()
+    page.phrases["undo"].setText("")  # no phrase: that command is off
+    page.phrases["undo"].editingFinished.emit()
+    assert app.settings.command_phrases["undo"] == ""
+    page.reset.click()
+    assert app.settings.command_phrases == {} and page.phrases["undo"].text().startswith("undo")
+    page.voice.setChecked(False)
+    assert not app.settings.voice_commands and not page.phrases["concise"].isEnabled()
+
+
+def test_text_transform_can_be_tried_on_the_page():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk"),
+                          settings=Settings(welcomed=True, cleanup_model="gpt-4o-mini"))
+    page = window.pages["transform"]
+    page.refresh()
+    page.try_buttons["concise"].click()
+    for _ in range(200):
+        QApplication.processEvents()
+        if not page.result.isHidden():
+            break
+        time.sleep(0.01)
+    assert "database migration issue" in page.result.toPlainText() and ("run_transform", "concise") in app.calls
+
+
+def test_text_transform_without_an_ai_model_points_to_the_setup():
+    window, _ = _window()
+    window.show_page("transform")
+    page = window.pages["transform"]
+    assert not page.setup.isHidden() and not page.try_buttons["concise"].isEnabled()

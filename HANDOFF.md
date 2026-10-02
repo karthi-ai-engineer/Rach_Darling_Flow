@@ -7,8 +7,10 @@ _Last updated: 2026-10-01_
 
 ## Start here (a new session, or the owner's other laptop)
 
-**Where things stand (2026-10-01):**
-- **Rflow 1.6.0 is released** (2026-10-01, GitHub Release `v1.6.0`, the website's download): the owner's voice
+**Where things stand (2026-10-02):**
+- **Rflow 1.7.0 is released** (2026-10-02, GitHub Release `v1.7.0`, the website's download), on the owner's "release
+  it": Text Transform (phase 20: say "make it concise" or double-tap Ctrl; PR #50), the fix for text never said
+  (PR #48) and the new names (Rach_flow, rachflow.vercel.app; PR #47). 1.6.0 brought the owner's voice
   pipeline (phase 19: parts transcribed while speaking, dictionary, formatting, a guarded AI cleanup, an always-on
   microphone). 1.5.0 brought speech recognition as building blocks (phases 13-18) and a 90 MB installer. 1.4.0 contained accuracy phases 10-12.
 - **On the owner's voice** (150 read sentences, laptop microphone):
@@ -97,6 +99,7 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
+| 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | done, on `main` (PR #50, with #48), released **v1.7.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0 and v1.6.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
@@ -939,6 +942,109 @@ mic (always on, 2 s pre-roll in RAM) -> session -> VAD -> chunker (1.2 s pause /
 - **Tests: 1525.** Every stage has its own file (`tests/test_pipeline_*.py`, `tests/test_engine_words.py`), plus
   end-to-end sessions with synthetic speech and fake engines (`tests/test_pipeline_session.py`).
 
+## Text Transform (phase 20, the owner's idea of 2026-10-02)
+
+The owner's `post_text_transformation_idea.md` (repository root, not in git): "Speak normally first. Transform the text
+afterwards only when you need to."
+
+The owner's feedback on the first version (a shortcut, then a menu): the shortcut was hard to press, it took three or
+four steps, and a transform was lost when the pointer left the menu. The second version, agreed on 2026-10-02:
+
+- **Two ways in:**
+  1. **Say it** (the main way): hold the dictation key and say only the command: "make it concise", "make it
+     professional", "bullet points", "action items", "rewrite it", "undo that"... (`sst/commands.py`,
+     `DEFAULT_PHRASES`). A whole dictation that is one command phrase (fillers and "please" around it allowed, at most
+     8 words, a slightly misheard phrase counts) is a command: it isn't typed and doesn't go into the history. Anything
+     more is dictation ("make it concise and send it to John" is typed). One-word phrases aren't defaults
+     ("professional" alone is a word people dictate), except "undo". Each user can edit the phrases per command on
+     the Text Transform page (`Settings.command_phrases`: only the commands they changed; an empty box turns a
+     command off) or turn voice commands off (`Settings.voice_commands`). Checked on the words heard, before the
+     dictionary, formatting and the LLM: `Stages.command` in the pipeline, `Dictation.command` in the classic way;
+     both hand it to `TrayApp.voice_command`, then `TransformController.run_command` on the app's thread. Without an
+     AI model a transform's phrase is typed as said; "undo" is always a command.
+  2. **The menu:** double-tap Ctrl by default (`Settings.transform_shortcut`; Ctrl+Alt+T, F8 or off on the page).
+     `parse_hotkey("double ctrl")`: two taps, each held under 0.35 s with no other key, the second within 0.4 s;
+     Ctrl still reaches the apps. Two quick Ctrl+clicks aren't one (the pointer moved between them:
+     `TAP_POINTER_PX`); the keyboard hook can't see clicks, and a mouse hook would slow every mouse move.
+- **Flow** (`sst/transformui.py`, `TransformController`):
+  1. **The text** (`_find`): `textaccess.copy_selection()` presses **Ctrl+Insert** (not Ctrl+C: see below) and puts
+     the user's clipboard back. With nothing selected, the last dictation or transform typed in that window
+     (`note_typed`, within 15 min) is selected with Shift+Left (`select_last`) and checked by a copy; a mismatch
+     collapses the selection and nothing happens. **Never in a terminal** (`TERMINALS`: Ctrl+C there stops the
+     running program). Each step is logged ("selected again in Chrome_WidgetWin_1", "other text is selected now"...).
+  2. **The menu** (`TransformMenu`, the shortcut only): at the pointer. It takes no focus, so the app keeps its
+     selection. Its keys (1-9, numpad, Up/Down, Enter, Esc, U) are taken from the hook while it is open
+     (`HotkeyListener.capture`); clicks work too. A voice command skips it.
+  3. **The transform** (`sst/transform.py`): the AI cleanup's model and backup (`Polisher.complete`, no cleanup
+     length check, 8 s + 0.05 s a word) under `system_prompt()`: a writing tool, never an assistant; keep every
+     value, name, term, negation, condition, choice, uncertainty and question; apply self-corrections; never invent.
+  4. **The check** (`TransformGuard`), independent of the model. It rejects:
+     - lost or new values (numbers in words or digits, dates, times, money, percentages, units, emails, URLs, code,
+       terms) — a corrected value may go
+     - new names
+     - dropped or added uncertainty or negation
+     - lost conditions, qualifiers and choices, and swapped opposites
+     - a question lost or answered
+     - added sentences, assistant replies
+     - Concise or Action items longer than the input
+
+     One repair request names the problems. If it is still rejected, the user's text stays and the pill says why.
+     Action items answers NO_ACTIONS when the text has none.
+  5. **Bring it back** (`_place`), right before the paste: if another window is in front, the text's window is
+     brought back (`textaccess.activate`: restore if minimised, AttachThreadInput + SetForegroundWindow). Then the
+     text must still be the selection (a copy, compared), or, with nothing selected (a click in the same box), be
+     found again right before the caret (`select_last`). If any of that fails, nothing is pasted: the result goes on
+     the clipboard (`textaccess.set_clipboard`, kept there for the user) and the pill says "press Ctrl+V". It is on
+     Home too.
+  6. **The replacement** (`textaccess.paste_rich`): plain text plus CF_HTML, so rich editors (Teams, Outlook,
+     Word, Slack, browsers) get bold headings and real bullet lists, while plain editors get "- " lines. The text's
+     own surrounding spaces are kept.
+  7. **Undo:** say "undo that", or open the menu again right after a transform and press U ("restore the
+     original"): the original is pasted over the transformed text (brought back the same way). Ctrl+Z in the app
+     works too. Each transform is in Home's history with its original as the tooltip.
+- **Transforms** (`TRANSFORMS`): Concise, Professional, Bullet points, Action items (the default menu,
+  `Settings.transforms`), and Rewrite.
+- **The page:** Text Transform (sidebar, after AI cleanup):
+  - Say it: voice commands on or off, and a box of phrases per command (comma-separated; "Use the default phrases";
+    a phrase in two commands is pointed out)
+  - the menu: its shortcut and its transforms
+  - the model used
+  - Try it: a box with a button per transform, showing the result as it would be pasted
+- **Found in the owner's first test (2026-10-02), fixed:**
+  - **NumLock:** keys were sent without the extended-key flag, so Left was the number pad's; with NumLock on, Windows
+    lifts Shift around it and Shift+Left moved the caret instead of selecting. "Make it concise" on the last dictation
+    always said "Select some text first". `hotkey.key_input` now flags arrows, Home/End, Page Up/Down, Insert, Delete
+    (`EXTENDED_KEYS`) and adds scan codes.
+  - **A translator on Ctrl+C:** the owner's laptop runs M4 Translator and DeepL; two Ctrl+C in a second made one put a
+    Tamil translation on the clipboard, which Rflow then read as the selection. Rflow copies with Ctrl+Insert (Ctrl+C
+    only as a fallback where text is known to be selected: `copy_selection(fallback=True)`).
+  - **Pasting right after a copy:** an app that has just copied (Qt) answered an immediate Ctrl+V with its own copy.
+    `paste_rich` waits `SETTLE_DELAY` (0.15 s) between the clipboard and Ctrl+V.
+  - **Spoken corrections:** the check rejected a correct transform of "five servers wait make that 35 servers",
+    "$25,000 not the 20,000" and "five times sorry three times actually five". The dictation guard
+    (`sst/pipeline/guard.py`) now reads "wait/no/sorry + make that / I mean" as one cue, "Actually no," as a cue, and
+    finds the corrected value with its noun before the cue; the transform check reads "X not (the) Y" (same kind of
+    value) as telling X from Y, so Y may go once X is kept.
+  - Checked end to end on real windows (a test text box in its own process, the real `textaccess`, the model replaced
+    by a fixed answer): short and long last dictations, a selection, undo, a switched window brought back. The script
+    is not in the repository; it types into the window in front, so run such checks only with the owner away from
+    the keyboard.
+- **Tests: 1889.**
+  - `tests/test_transform.py`: every good/bad example in the idea file, prompts, the repair, `render`
+  - `tests/test_commands.py`: what is a command and what is dictation, the user's phrases
+  - `tests/test_textaccess.py`: clipboard kept, selection check, CF_HTML offsets, activate, set_clipboard, Ctrl+Insert
+    and its Ctrl+C fallback, the pause before Ctrl+V
+  - `tests/test_hotkey.py`: menu key capture, double taps (slow, long, mixed with shortcuts, Ctrl+clicks)
+  - `tests/test_transformui.py`: the whole flow with fakes: voice commands, undo, terminals, switched windows
+    brought back, the clipboard fallback, failures
+  - `tests/test_dictate.py`, `tests/test_pipeline_session.py`: a command is handed over, never typed
+  - window and app tests
+- **Not yet tried:** against real apps and the owner's model. The checker's rules are heuristics and may reject a
+  good transform now and then: the text is then kept, never damaged. Known gaps: a single swapped noun ("staging"
+  for "production") or a fact restated wrongly with the original's own words passes. VS Code's terminal can't be
+  told from its editor (Ctrl+C there with nothing selected interrupts the program). A dictation that is only
+  "Action items." or "Bullet points." (a heading in notes) is a command: the user can remove those phrases.
+
 ## Text never said (fixed 2026-10-02)
 
 The owner saw words they hadn't said, at the end of dictations ("…version installer. Commit tray app pill. Let's move
@@ -1077,7 +1183,14 @@ These were scratch scripts, not in git. The findings:
    The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
    to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
    (`tag.gpgsign`), so a tag needs `-m`.
-2. **Owner: try the voice pipeline** (phase 19, released as 1.6.0: update from the banner; the download is the
+2. **Owner: try Text Transform** (phase 20, released as 1.7.0: update from the banner): Text Transform page → Try
+   it; then in Teams or Notepad:
+   - dictate a paragraph, then hold Ctrl+Win and say "make it concise"; then say "undo that"
+   - select a paragraph, hold Ctrl+Win and say "bullet points"
+   - select text → double-tap Ctrl → 1-4; open the menu, click into another window, then press 1: the text's
+     window comes back and the text is replaced (or the pill says "press Ctrl+V")
+   - edit a phrase on the page ("trim it" for Concise) and say it
+3. **Owner: try the voice pipeline** (phase 19, released as 1.6.0: update from the banner; the download is the
    ~90 MB installer, nothing else):
    - dictate a long paragraph with pauses: the text should arrive soon after you let go
    - say "twenty five percent" and "October first at three thirty pm"

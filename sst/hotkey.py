@@ -1,13 +1,18 @@
 """Global hotkeys on Windows through a low-level keyboard hook (the way Wispr Flow does it).
 
-A hotkey is modifiers plus an optional key:
+A hotkey is modifiers plus an optional key, or a double tap of Ctrl or Shift:
   ctrl+win     modifiers held together on their own    (default, like Wispr Flow)
   menu         the Menu key, next to right Alt         its right-click menu is blocked
   ctrl+alt+d   modifiers + a key                       the key is blocked, the modifiers pass through
+  double ctrl  Ctrl tapped twice quickly, on its own   Ctrl passes through: alone it does nothing in apps
 
 The hook runs on its own thread and reports "press", "release", "cancel" (Esc while recording),
 "handsfree" (Space added to a modifier-only hotkey: Ctrl+Win+Space, as in Wispr Flow) and "interrupt"
-(any other key added, e.g. Ctrl+Win+D: a Windows shortcut, not dictation) on a queue.
+(any other key added, e.g. Ctrl+Win+D: a Windows shortcut, not dictation) on a queue. A double tap has no "press":
+it reports "release" as the second tap is let go.
+
+While a menu that must not take the keyboard focus is open (Text Transform's, so the app keeps its selection), the
+listener can capture keys: their presses are hidden from every app and reported as "key:<virtual-key code>".
 """
 import ctypes
 import logging
@@ -66,14 +71,24 @@ class INPUT(ctypes.Structure):
 
 
 user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
-INPUT_KEYBOARD, KEYEVENTF_KEYUP = 1, 0x2
+user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 1, 0x1, 0x2
+# The keys of the navigation block (arrows, Home, End, Page Up/Down, Insert, Delete), and the right-hand Ctrl and Alt, the
+# Windows and Menu keys. Sent without the extended flag, an arrow is the number pad's: with NumLock on, Windows then
+# lifts Shift around it, and Shift+Left moves the caret instead of selecting (Text Transform found nothing to transform).
+EXTENDED_KEYS = frozenset({0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x5B, 0x5C, 0x5D, 0xA3, 0xA5})
+
+
+def key_input(vk: int, up: bool) -> INPUT:
+    """One key event as SendInput takes it, with its scan code, like a real keyboard's."""
+    flags = (KEYEVENTF_KEYUP if up else 0) | (KEYEVENTF_EXTENDEDKEY if vk in EXTENDED_KEYS else 0)
+    return INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, wScan=user32.MapVirtualKeyW(vk, 0) & 0xFF, dwFlags=flags,
+                                                    dwExtraInfo=OUR_INPUT))
 
 
 def send_keys(events: list[tuple[int, bool]]) -> None:
     """Press/release keys as (virtual-key code, is_release), marked so our own hook ignores them."""
-    inputs = (INPUT * len(events))(*(
-        INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, dwFlags=KEYEVENTF_KEYUP if up else 0, dwExtraInfo=OUR_INPUT))
-        for vk, up in events))
+    inputs = (INPUT * len(events))(*(key_input(vk, up) for vk, up in events))
     user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
 
 
@@ -86,6 +101,12 @@ _KEYS = {"menu": 0x5D, "apps": 0x5D, "space": 0x20, "enter": 0x0D, "tab": 0x09, 
          "muhenkan": 0x1D, "henkan": 0x1C}  # 無変換 / 変換 on Japanese keyboards
 _KEYS.update({f"f{n}": 0x6F + n for n in range(1, 25)})
 _KEYS.update({c: ord(c.upper()) for c in "abcdefghijklmnopqrstuvwxyz0123456789"})
+_DOUBLE_TAPS = ("ctrl", "shift")  # Alt or Win tapped alone opens the menu bar or the Start menu, so they can't be tapped
+# A double tap: each tap is held shorter than TAP_HOLD, and the second starts within TAP_GAP of the first one's release.
+TAP_HOLD, TAP_GAP = 0.35, 0.4
+# ...and the mouse pointer stays put: two quick Ctrl+clicks (selecting files, opening links) move it between the clicks.
+# The keyboard hook can't see clicks, and a mouse hook would slow every mouse move down, so the pointer tells instead.
+TAP_POINTER_PX = 12
 
 
 @dataclass(frozen=True)
@@ -93,14 +114,23 @@ class Hotkey:
     text: str
     modifiers: frozenset[str]
     key: int | None  # None: the modifiers alone are the hotkey
+    double: bool = False  # the one modifier tapped twice (key None)
 
     @property
     def label(self) -> str:
+        if self.double:
+            return f"Double-tap {min(self.modifiers).capitalize()}"
         return "+".join("Menu key" if part == "menu" else part.capitalize() for part in self.text.split("+"))
 
 
 def parse_hotkey(text: str) -> Hotkey:
-    """'ctrl+win', 'menu' or 'ctrl+alt+d' -> Hotkey."""
+    """'ctrl+win', 'menu', 'ctrl+alt+d' or 'double ctrl' (also 'double-shift') -> Hotkey."""
+    words = text.lower().replace("-", " ").split()
+    if len(words) == 2 and words[0] == "double":
+        modifier = _MODIFIER_NAMES.get(words[1])
+        if modifier not in _DOUBLE_TAPS:
+            raise ValueError(f"'{text}' can't be double-tapped; use double ctrl or double shift")
+        return Hotkey(f"double {modifier}", frozenset({modifier}), None, double=True)
     parts = [part.strip().lower() for part in text.split("+")]
     modifiers, key = set(), None
     for i, part in enumerate(parts):
@@ -115,17 +145,31 @@ def parse_hotkey(text: str) -> Hotkey:
     return Hotkey("+".join(parts), frozenset(modifiers), key)
 
 
+def _pointer() -> tuple[int, int]:
+    point = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(point))
+    return point.x, point.y
+
+
 class Matcher:
     """Decides, for each physical key event, whether the hotkey went down or up and whether other apps
     should see the event. No Windows calls, so every case can be tested without a keyboard."""
 
-    def __init__(self, hotkey: Hotkey, is_held: Callable[[int], bool] | None = None):
+    def __init__(self, hotkey: Hotkey, is_held: Callable[[int], bool] | None = None,
+                 clock: Callable[[], float] = time.monotonic, pointer: Callable[[], tuple[int, int]] | None = None):
         self.hotkey = hotkey
         self.recording = False  # set by the dictation loop: Esc only cancels while recording
         self._is_held = is_held  # asks Windows whether a key is really down
+        self._clock = clock  # times a double tap's taps
+        self._pointer = pointer  # where the mouse pointer is (None: not checked)
+        self._tap_at: tuple[int, int] | None = None  # double tap: the pointer as the first tap of a pair went down
         self._down: set[int] = set()  # keys physically held now
         self._blocked: set[int] = set()  # keys whose repeats and release must stay hidden too
         self._active = False  # the hotkey is held
+        self.capture: frozenset[int] = frozenset()  # keys a menu takes while it is open (HotkeyListener.capture)
+        self._captured: set[int] = set()  # keys whose press went to the menu: their repeats and release are hidden too
+        self._tap: tuple[int, float] | None = None  # double tap: the modifier key down as a tap, and since when
+        self._first_tap: float | None = None  # double tap: when the first tap of a pair was let go
 
     def feed(self, vk: int, is_down: bool) -> tuple[bool, str | None]:
         """Returns (hide the event from other apps, event or None)."""
@@ -133,11 +177,22 @@ class Matcher:
             # The hook misses releases on the lock screen (Win+L) and in admin windows; drop keys that were let go.
             self._down = {k for k in self._down if k == vk or self._is_held(k)}
             self._blocked &= self._down
+            self._captured &= self._down
             if self._active and not (self.hotkey.key in self._down if self.hotkey.key else self._hotkey_held()):
                 self._active = False
         repeat = is_down and vk in self._down
         (self._down.add if is_down else self._down.discard)(vk)
+        # Every key counts, even one a menu captures or a repeat: any key but the tapped modifier breaks a double tap.
+        tapped = self.hotkey.double and self._double_tap(vk, is_down, repeat)
 
+        # The app never saw a captured key go down, so its repeats and release stay hidden even after the capture ends;
+        # a key already held when the capture began is left to the app, so it can't get stuck there.
+        if vk in self._captured or (is_down and not repeat and self._captures(vk)):
+            if not is_down:
+                self._captured.discard(vk)
+                return True, None
+            self._captured.add(vk)
+            return True, f"key:{vk}" if vk in self.capture else None  # repeats too: holding Down walks the menu
         if vk in self._blocked:
             if is_down:
                 return True, None
@@ -151,6 +206,8 @@ class Matcher:
         if is_down and vk == VK_ESCAPE and self.recording:
             self._blocked.add(vk)
             return True, "cancel"
+        if self.hotkey.double:
+            return False, "release" if tapped else None  # the apps see every tap: Ctrl or Shift alone does nothing there
         if self.hotkey.key is not None:
             if is_down and vk == self.hotkey.key and self._held_modifiers() == self.hotkey.modifiers:
                 self._blocked.add(vk)
@@ -177,6 +234,43 @@ class Matcher:
             return False, "release"
         return False, None
 
+    def _double_tap(self, vk: int, is_down: bool, repeat: bool) -> bool:
+        """Follows the taps of a double-tap hotkey's modifier (left and right count alike); True as the second tap of a
+        pair is let go."""
+        now = self._clock()
+        if is_down and not repeat and MODIFIER_OF.get(vk) in self.hotkey.modifiers and self._down == {vk}:
+            if self._first_tap is not None and now - self._first_tap >= TAP_GAP:
+                self._first_tap = None  # too late to be the second tap, but it can be the first of a new pair
+            if self._first_tap is None and self._pointer is not None:
+                self._tap_at = self._pointer()
+            self._tap = (vk, now)
+            return False
+        if not is_down and self._tap and self._tap[0] == vk:
+            quick, first = now - self._tap[1] < TAP_HOLD, self._first_tap
+            self._tap = self._first_tap = None
+            if quick and first is not None:
+                if not self._pointer_moved():
+                    return True  # the pair is used up: a third tap starts a new one
+                if self._pointer is not None:  # Ctrl+clicks, not a double tap; this tap may be the first of a real one
+                    self._tap_at = self._pointer()
+            self._first_tap = now if quick else None
+            return False
+        # Another key (a shortcut like Ctrl+C), the modifier pressed with a key held, or a repeat: it's held too long.
+        self._tap = self._first_tap = None
+        return False
+
+    def _pointer_moved(self) -> bool:
+        if self._pointer is None or self._tap_at is None:
+            return False
+        (x0, y0), (x1, y1) = self._tap_at, self._pointer()
+        return max(abs(x1 - x0), abs(y1 - y0)) > TAP_POINTER_PX
+
+    def _captures(self, vk: int) -> bool:
+        if vk not in self.capture or (vk == VK_ESCAPE and self.recording):
+            return False  # Esc cancels a recording first, the innermost thing going on; the next Esc reaches the menu
+        # The hotkey keeps working while a menu is open, even when its key is one the menu takes.
+        return not (vk == self.hotkey.key and self._held_modifiers() == self.hotkey.modifiers)
+
     def _held_modifiers(self) -> frozenset[str]:
         return frozenset(MODIFIER_OF[vk] for vk in self._down if vk in MODIFIER_OF)
 
@@ -190,7 +284,8 @@ class HotkeyListener:
     def __init__(self, hotkey: Hotkey):
         self.hotkey = hotkey
         self.events: queue.Queue[tuple[str, float]] = queue.Queue()
-        self._matcher = Matcher(hotkey, is_held=lambda vk: bool(user32.GetAsyncKeyState(vk) & 0x8000))
+        self._matcher = Matcher(hotkey, is_held=lambda vk: bool(user32.GetAsyncKeyState(vk) & 0x8000),
+                                pointer=_pointer if hotkey.double else None)
         # Pressing Win or Alt with no other key opens the Start menu / an app's menu bar on release.
         self._mask = bool(hotkey.modifiers & {"win", "alt"})
         self._thread_id = 0
@@ -205,6 +300,11 @@ class HotkeyListener:
     @recording.setter
     def recording(self, value: bool) -> None:
         self._matcher.recording = value
+
+    def capture(self, keys: set[int] | None) -> None:
+        """Take these keys (virtual-key codes) from every app and report their presses as "key:<code>" events, for a
+        menu that leaves the keyboard focus with the app; None gives them back."""
+        self._matcher.capture = frozenset(keys or ())
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="keyboard-hook", daemon=True).start()
@@ -238,7 +338,9 @@ class HotkeyListener:
                 if info.dwExtraInfo != OUR_INPUT:
                     hide, event = self._matcher.feed(info.vkCode, wparam in (WM_KEYDOWN, WM_SYSKEYDOWN))
                     if event:
-                        if event == "press" and self._mask:
+                        # A captured key is hidden, so a Win or Alt held with it would look pressed alone on release.
+                        if (event == "press" and self._mask) or (
+                                event.startswith("key:") and self._matcher._held_modifiers() & {"win", "alt"}):
                             send_keys([(VK_MASK, False), (VK_MASK, True)])
                         self.events.put((event, time.monotonic()))
                     if hide:

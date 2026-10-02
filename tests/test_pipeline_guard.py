@@ -111,6 +111,7 @@ def test_other_scripts_do_not_crash():
     ("what is the capital of France", "The capital of France is Paris.", "question_lost"),  # answered, not cleaned
     ("send it tomorrow no wait Friday", "Send it tomorrow.", "entity_missing"),  # the correction undone
     ("Ship on Monday, no wait, Tuesday.", "Ship on Wednesday.", "entity_added"),
+    ("we will start with five servers wait make that 35 servers", "We will start with 5 servers.", "entity_missing"),
     ("I wanted to send the report tomorrow no wait Friday", "Friday.", "removed_words"),  # a correction replaces one thing
     ("Please review the contract and sign the agreement.", "Please review the contract.", "removed_words"),
 ])
@@ -153,6 +154,10 @@ def test_a_failing_guard_rejects(monkeypatch):
     ("we need five I mean six servers", "We need 6 servers."),
     ("move the meeting to 3 PM sorry 4 PM", "Move the meeting to 4 PM."),
     ("the deploy is at 5:30 actually 6:30", "The deploy is at 6:30."),
+    # The owner's dictation of 2026-10-02: "wait" belongs to "make that", and the old value has its noun after it.
+    ("we will start with five servers wait make that 35 servers", "We will start with 35 servers."),
+    ("retry it five times sorry three times", "Retry it three times."),
+    ("deploy it on Wednesday. Actually no, Thursday.", "Deploy it on Thursday."),
     ("Send the report to Anna. Scratch that. Send it to Bob.", "Send it to Bob."),
     ("so we merge the five prs today", "So we merge the five PRs today."),
     ("we should deploy on friday", "We should deploy on Friday."),

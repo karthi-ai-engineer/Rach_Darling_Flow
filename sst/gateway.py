@@ -36,6 +36,8 @@ CONNECT_ATTEMPTS = 3
 ANSWER_TIMEOUT = 2.0     # seconds, plus ANSWER_PER_WORD for each word; a normal sentence takes 0.5-0.7 s
 ANSWER_PER_WORD = 0.04
 DOWN_FOR = 60.0          # after the gateway couldn't be reached (e.g. off the office network), skip cleanup this long
+TRANSFORM_TIMEOUT = 8.0    # seconds for a Text Transform answer, plus TRANSFORM_PER_WORD for each word
+TRANSFORM_PER_WORD = 0.05
 IDLE_RECONNECT = 30.0    # servers drop idle connections; refresh an older one while the user is speaking
 
 SYSTEM_PROMPT = (
@@ -299,6 +301,26 @@ class Polisher:
             return cleaned
         return text
 
+    def complete(self, text: str) -> str:
+        """The model's answer to `text` under this polisher's system prompt, without the cleanup's checks: Text
+        Transform (sst.transform) may shorten or restructure the text, and checks the answer itself. The backup model is
+        tried when the first fails. More time than a cleanup: the user is waiting for it on purpose. Raises GatewayError
+        with a readable reason."""
+        if not self.address or not self.model:
+            raise GatewayError("no AI model is set up: choose one in AI cleanup")
+        timeout, reason = TRANSFORM_TIMEOUT + TRANSFORM_PER_WORD * len(text.split()), ""
+        for model in [self.model] + ([self.fallback] if self.fallback and self.fallback != self.model else []):
+            try:
+                return self._ask(model, text, timeout)
+            except TimeoutError:
+                reason = f"{_short(model)} took too long"
+            except (OSError, http.client.HTTPException) as e:
+                raise GatewayError(f"could not reach the AI provider: {e}") from None
+            except GatewayError as e:
+                reason = str(e)
+                log.warning("Completion with %s failed: %s", model, e)
+        raise GatewayError(reason)
+
     def check(self) -> str:
         """For the Settings "Test" button: clean one short sentence with the chosen model. Raises with a readable reason."""
         t0 = time.perf_counter()
@@ -357,10 +379,10 @@ class Polisher:
             body["chat_template_kwargs"] = {"enable_thinking": False}  # Qwen3 and the like: answer directly
         return "/chat/completions", body
 
-    def _ask(self, model: str, text: str) -> str:
+    def _ask(self, model: str, text: str, timeout: float | None = None) -> str:
         path, body = self._body(model, text)
         with self._lock:
-            status, data = self._request(path, json.dumps(body), ANSWER_TIMEOUT + ANSWER_PER_WORD * len(text.split()))
+            status, data = self._request(path, json.dumps(body), timeout or ANSWER_TIMEOUT + ANSWER_PER_WORD * len(text.split()))
         try:
             answer = json.loads(data)
         except ValueError:
