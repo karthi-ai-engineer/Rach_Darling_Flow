@@ -7,8 +7,10 @@ _Last updated: 2026-10-01_
 
 ## Start here (a new session, or the owner's other laptop)
 
-**Where things stand (2026-10-01):**
-- **Rflow 1.6.0 is released** (2026-10-01, GitHub Release `v1.6.0`, the website's download): the owner's voice
+**Where things stand (2026-10-02):**
+- **Rflow 1.7.0 is released** (2026-10-02, GitHub Release `v1.7.0`, the website's download), on the owner's "release
+  it": Text Transform (phase 20: say "make it concise" or double-tap Ctrl; PR #50), the fix for text never said
+  (PR #48) and the new names (Rach_flow, rachflow.vercel.app; PR #47). 1.6.0 brought the owner's voice
   pipeline (phase 19: parts transcribed while speaking, dictionary, formatting, a guarded AI cleanup, an always-on
   microphone). 1.5.0 brought speech recognition as building blocks (phases 13-18) and a 90 MB installer. 1.4.0 contained accuracy phases 10-12.
 - **On the owner's voice** (150 read sentences, laptop microphone):
@@ -97,7 +99,7 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
-| 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | PR #50 (stacked on #48), waiting for the owner's test + merge |
+| 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | done, on `main` (PR #50, with #48), released **v1.7.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0 and v1.6.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
@@ -1181,7 +1183,8 @@ These were scratch scripts, not in git. The findings:
    The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
    to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
    (`tag.gpgsign`), so a tag needs `-m`.
-2. **Owner: try Text Transform** (phase 20): Text Transform page → Try it; then in Teams or Notepad:
+2. **Owner: try Text Transform** (phase 20, released as 1.7.0: update from the banner): Text Transform page → Try
+   it; then in Teams or Notepad:
    - dictate a paragraph, then hold Ctrl+Win and say "make it concise"; then say "undo that"
    - select a paragraph, hold Ctrl+Win and say "bullet points"
    - select text → double-tap Ctrl → 1-4; open the menu, click into another window, then press 1: the text's
