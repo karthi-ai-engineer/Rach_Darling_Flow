@@ -14,6 +14,7 @@ from sst.pipeline.dictionary import DictionaryEngine, DictionaryStore, TermMode
 from sst.pipeline.formatting import Formatter
 from sst.pipeline.guard import Guard
 from sst.pipeline.session import LazyBackend, Stages, VoicePipeline
+from sst.snippets import Snippet
 
 RATE = 16_000
 
@@ -313,3 +314,50 @@ def test_dictation_hands_a_voice_command_to_the_app():
     d.handle("release", 2.0)
     d.wait()
     assert commands == ["undo"] and typed == [] and states[-1] == "idle"
+
+
+# ---- snippets (sst.snippets): "my email" types the user's own text
+
+EMAIL = Snippet("my email", "xyz@gmail.com")
+ADDRESS = Snippet("insert my address", "1-2-3 Shibuya,\nTokyo 150-0002", anywhere=True)
+
+
+def snippet_stages(llm=None, **kwargs):
+    return Stages(llm=llm, guard=Guard(), snippets=lambda: [EMAIL, ADDRESS], **kwargs)
+
+
+def run(text, stages):
+    return pipeline(ScriptedBackend([text]), stages).process_audio(np.concatenate([speech(2.5), silence(0.4)]), RATE)
+
+
+def test_a_snippet_said_alone_is_typed_as_entered_and_skips_the_ai():
+    llm = FakeLLM(lambda text: "Polished: " + text)
+    final = run("My email.", snippet_stages(llm))
+    assert final.text == "xyz@gmail.com" and not llm.seen and not final.command
+
+
+def test_a_snippet_wins_over_a_voice_command_with_the_same_words():
+    stages = Stages(command=lambda text: "concise", snippets=lambda: [Snippet("make it concise", "my own text")])
+    final = run("Make it concise.", stages)
+    assert final.text == "my own text" and final.command == ""
+
+
+def test_inside_a_sentence_the_ai_sees_a_placeholder_and_the_text_goes_in_last():
+    llm = FakeLLM(lambda text: text[0].upper() + text[1:] + ".")
+    final = run("send the parcel to insert my address please", snippet_stages(llm))
+    assert final.text == "Send the parcel to 1-2-3 Shibuya,\nTokyo 150-0002 please."  # its line break kept
+    assert "Shibuya" not in llm.seen[0][0] and "RFSNIP1" in llm.seen[0][0]  # the address never went to the AI
+    assert "RFSNIP1" in llm.seen[0][1]  # protected, like the user's terms
+    assert final.provenance is Provenance.LLM_POLISHED
+
+
+def test_an_ai_that_drops_the_placeholder_is_overruled_and_the_snippet_still_typed():
+    llm = FakeLLM(lambda text: text.replace("RFSNIP1", "my place"))
+    final = run("send the parcel to insert my address", snippet_stages(llm))
+    assert final.provenance is Provenance.FORMATTED_FALLBACK  # the guard kept the text from before the AI
+    assert final.text == "send the parcel to 1-2-3 Shibuya,\nTokyo 150-0002"
+
+
+def test_without_snippets_nothing_changes():
+    final = run("I checked my email this morning", snippet_stages())
+    assert final.text == "I checked my email this morning"

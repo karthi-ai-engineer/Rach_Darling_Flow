@@ -36,6 +36,8 @@ class Settings:
     transform_shortcut: str = "double ctrl"  # Text Transform's menu for selected text (sst.transformui); "" = off
     voice_commands: bool = True  # hold the dictation key and say "make it concise" (sst.commands)
     command_phrases: dict[str, str] = field(default_factory=dict)  # transform -> the user's own phrases ("a, b"); else defaults
+    # Snippets (sst.snippets): {"cue": "my email", "text": "xyz@gmail.com", "anywhere": false}, typed when said
+    snippets: list[dict] = field(default_factory=list, metadata={"items": dict})
     transforms: list[str] = field(default_factory=lambda: ["concise", "professional", "bullets", "actions"])  # in the menu
     raw_audio: bool = False  # ask Windows for the microphone without its voice effects (noise suppression, gating)
     speech_model: str = "parakeet"  # the speech recognition model, a key of sst.engines.SPEECH_MODELS
@@ -64,7 +66,8 @@ class Settings:
         for f in fields(cls):  # keep only known keys with the right type
             default = getattr(defaults, f.name)
             value = data.get(f.name, default) if isinstance(data, dict) else default
-            ok = isinstance(value, type(default)) and (not isinstance(value, list) or all(isinstance(v, str) for v in value)) \
+            items = f.metadata.get("items", str)  # a list's items: strings, unless the field says otherwise
+            ok = isinstance(value, type(default)) and (not isinstance(value, list) or all(isinstance(v, items) for v in value)) \
                 and (not isinstance(value, dict) or all(isinstance(v, str) for v in (*value, *value.values())))
             values[f.name] = value if ok else default
         if isinstance(data, dict) and "cleanup" not in data and values["cleanup_model"]:

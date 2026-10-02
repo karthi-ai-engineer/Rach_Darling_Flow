@@ -45,6 +45,8 @@ from sst.pipeline.learning import CorrectionEvent, Learner
 from sst.pipeline.polish import GatewayLLM
 from sst.pipeline.session import LazyBackend, Stages, VoicePipeline
 from sst.settings import Profiles, Settings, Stats, add_to_history, read_history
+from sst.snippets import Snippet
+from sst.snippets import load as load_snippets
 from sst.transform import Transformer
 from sst.transformui import TransformController
 from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
@@ -424,6 +426,7 @@ class TrayApp:
             self.dictation.on_state = self.signals.state.emit
             self.dictation.on_result = self.signals.result.emit
             self.dictation.command = self.voice_command
+            self.dictation.snippets = self.snippets
             self.dictation.on_command = self.signals.command.emit
         else:
             self.dictation.engine = engine  # the next dictation uses it; one being transcribed finishes with the old
@@ -536,7 +539,7 @@ class TrayApp:
                                  formatter=Formatter(config.formatting) if s.format_text else None,
                                  llm=llm, guard=Guard(config.guard),
                                  terms=lambda: speech_hints(self.dictionary.hint_terms()),  # protected: not "move"
-                                 command=self.voice_command)
+                                 command=self.voice_command, snippets=self.snippets)
         dictation.pipeline = pipeline
 
     def _on_pipeline_event(self, name: str, data: dict) -> None:
@@ -708,6 +711,10 @@ class TrayApp:
 
     def transform_ready(self) -> bool:
         return bool(self.transform_model())
+
+    def snippets(self) -> list[Snippet]:
+        """The profile's snippets, as set now (sst.snippets): read at each dictation, so a change counts at once."""
+        return load_snippets(self.settings.snippets)
 
     def voice_command(self, text: str) -> str | None:
         """The Text Transform command a whole dictation is ("make it concise", "undo that"), or None: type it. On the

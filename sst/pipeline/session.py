@@ -12,12 +12,13 @@ import json
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
 
+from sst import snippets
 from sst.pipeline.asr import ASRScheduler, SessionFailed
 from sst.pipeline.audio_stream import Chunker, trim_preroll
 from sst.pipeline.contracts import (
@@ -31,6 +32,7 @@ from sst.pipeline.contracts import (
     new_session_id,
 )
 from sst.pipeline.merge import TranscriptMerger
+from sst.snippets import Snippet
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +92,7 @@ class Stages:
     guard: object | None = None  # sst.pipeline.guard.Guard: validate(before, after, terms) -> GuardResult
     terms: Callable[[], list[str]] = list  # the user's dictionary terms, protected through the LLM step
     command: Callable[[str], str | None] | None = None  # a voice command in the text heard (sst.commands), or None
+    snippets: Callable[[], Sequence[Snippet]] = tuple  # the user's snippets (sst.snippets): "my email" -> their email
 
 
 @dataclass
@@ -246,6 +249,15 @@ class Session:
 
     def _text_stages(self, text: str, stages: dict[str, str], notes: list[str]) -> FinalText:
         s = self.pipeline.stages
+        heard, mine = text, s.snippets() if text else ()
+        if mine and (snippet := snippets.alone(text, mine)) is not None:
+            # "my email": the user's own text, exactly as entered; it wins over a voice command with the same words
+            log.info("%s: snippet '%s'", self.session_id, snippet.cue)
+            self.state = SessionState.READY
+            final = FinalText(snippet.text, self.session_id, Provenance.FORMATTED, stages=stages, notes=notes,
+                              metrics=self._metrics())
+            self.pipeline.record(final, self._chunks)
+            return final
         if s.command is not None and text and (command := s.command(text)):
             # "make it concise": a command for Text Transform, checked on the words heard, before any cleanup
             self.state = SessionState.READY
@@ -253,6 +265,9 @@ class Session:
                               metrics=self._metrics(), command=command)
             self.pipeline.record(final, self._chunks)
             return final
+        text, slots = snippets.protect(text, mine) if mine else (text, {})
+        if slots:  # a cue inside the sentence: a placeholder until the very end, kept by the AI like code
+            stages["snippets"] = text
         if s.dictionary is not None and text:
             self.state = SessionState.DICTIONARY
             t0 = time.perf_counter()
@@ -267,7 +282,7 @@ class Session:
         stages["formatted"] = trusted = text
         provenance, guard_result, error = Provenance.FORMATTED, None, ""
         if s.llm is not None and trusted.strip():
-            terms = [t for t in s.terms() if t.lower() in trusted.lower()]
+            terms = [t for t in s.terms() if t.lower() in trusted.lower()] + list(slots)
             self.state = SessionState.LLM_POLISH
             t0 = time.perf_counter()
             try:
@@ -291,6 +306,9 @@ class Session:
                     log.warning("%s: guard kept the text before the LLM: %s", self.session_id,
                                 "; ".join(guard_result.reasons))
         text = " ".join(text.split())
+        if slots:  # the snippets' own text, last: no stage touches it, line breaks included
+            text = snippets.expand(text, slots) or snippets.expand(" ".join(trusted.split()), slots) \
+                or " ".join(heard.split())
         stages["final"] = text
         self.state = SessionState.READY
         final = FinalText(text, self.session_id, provenance, stages=stages, guard=guard_result, error=error, notes=notes,

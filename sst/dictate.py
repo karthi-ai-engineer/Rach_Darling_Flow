@@ -22,13 +22,15 @@ import subprocess
 import threading
 import time
 import winsound
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import numpy as np
 
+from sst import snippets
 from sst.audio import Recorder, Take, save_recording
 from sst.hotkey import HotkeyListener, parse_hotkey
 from sst.paste import paste_text
+from sst.snippets import Snippet
 
 HOLD_SECONDS = 0.4   # key held longer than this = push-to-talk; a quicker tap = hands-free
 MIN_SECONDS = 0.3    # shorter recordings are treated as accidental presses
@@ -70,6 +72,7 @@ class Dictation:
         # it out (the app's Text Transform). None: every dictation is typed.
         self.command: Callable[[str], str | None] | None = None
         self.on_command: Callable[[str], None] = lambda command: None
+        self.snippets: Callable[[], Sequence[Snippet]] = tuple  # the user's snippets (sst.snippets), for the classic way
         self.recording = False
         self._holding = False  # the press that started this recording has not been released yet
         self._started = 0.0
@@ -222,12 +225,20 @@ class Dictation:
                 fell_back = getattr(engine, "last_error", "")
                 took = time.perf_counter() - t0
                 log.info("%.1fs -> %.2fs  %s", len(audio) / rate, took, text or "(nothing recognised)")
-                if text and self.command is not None and (command := self.command(text)):
+                mine = self.snippets() if text else ()
+                snippet = snippets.alone(text, mine) if mine else None
+                if snippet is None and text and self.command is not None and (command := self.command(text)):
                     self.on_state("idle", "")
                     self.on_command(command)  # not typed, not in the history: a command, not a dictation
                     continue
                 cleanup = self.cleanup  # read once: the app may swap it meanwhile
-                typed = cleanup.polish(text) if cleanup and text else text
+                if snippet is not None:  # "my email": the user's own text, as entered
+                    typed = snippet.text
+                else:
+                    protected, slots = snippets.protect(text, mine) if mine else (text, {})
+                    typed = cleanup.polish(protected) if cleanup and protected else protected
+                    if slots:  # the AI may have lost a placeholder: then the text as heard, with the snippets
+                        typed = snippets.expand(typed, slots) or snippets.expand(protected, slots) or text
                 if typed:
                     self.paste(typed + " ")  # trailing space so the next dictation doesn't run into this one
                 if float(np.abs(audio).max()) < 0.01:

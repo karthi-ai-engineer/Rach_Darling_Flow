@@ -300,3 +300,25 @@ def test_a_voice_command_is_carried_out_not_typed(make):
     d.engine.text = "Make it concise and send it."
     feed(d, (2, "press"), (2.7, "release"))
     assert commands == ["concise"] and typed == ["Make it concise and send it. "]
+
+
+def test_the_classic_way_types_a_snippet_said_alone(make):
+    from sst.snippets import Snippet
+    d, typed, states = make(text="My email.")
+    d.snippets = lambda: [Snippet("my email", "xyz@gmail.com")]
+    d.cleanup = FakeCleanup(result="Something else.")
+    d.command = lambda text: "concise"  # a snippet wins over a voice command
+    feed(d, (0, "press"), (0.7, "release"))
+    assert typed == ["xyz@gmail.com "]
+
+
+@pytest.mark.parametrize("keeps, expected", [(True, "Send it to xyz@gmail.com. "), (False, "send it to xyz@gmail.com ")])
+def test_the_classic_way_puts_an_anywhere_snippet_in_after_the_cleanup(make, keeps, expected):
+    from sst.snippets import Snippet
+    d, typed, _ = make(text="send it to my email")
+    d.snippets = lambda: [Snippet("my email", "xyz@gmail.com", anywhere=True)]
+    cleanup = FakeCleanup()
+    cleanup.polish = lambda text: (text.capitalize().replace("rfsnip1", "RFSNIP1") + ".") if keeps else "Send it to me."
+    d.cleanup = cleanup
+    feed(d, (0, "press"), (0.7, "release"))
+    assert typed == [expected]  # a cleanup that lost the placeholder: the words heard, with the snippet

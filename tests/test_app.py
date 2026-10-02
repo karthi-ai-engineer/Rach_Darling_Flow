@@ -462,6 +462,15 @@ def test_the_tray_app_dictates_through_the_voice_pipeline(tray_app):
 
 
 
+def test_snippets_are_read_from_the_profile_at_each_dictation(tray_app):
+    app, _, _ = tray_app
+    assert app.snippets() == []
+    app.apply_settings(dataclasses.replace(app.settings, snippets=[{"cue": "my email", "text": "xyz@gmail.com"}]))
+    assert [s.text for s in app.snippets()] == ["xyz@gmail.com"]
+    assert app.dictation.snippets == app.snippets  # both ways of dictating ask it
+    assert app.dictation.pipeline is None or app.dictation.pipeline.stages.snippets == app.snippets
+
+
 def test_voice_commands_go_to_text_transform(tray_app, monkeypatch):
     app, _, _ = tray_app
     assert app.voice_command("Make it concise.") is None  # no AI model: typed as said, nothing lost
