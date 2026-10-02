@@ -17,6 +17,7 @@ from sst.audio import save_wav  # noqa: E402
 from sst.commands import DEFAULT_PHRASES  # noqa: E402
 from sst.gateway import GatewayConfig  # noqa: E402
 from sst.settings import Settings, Stats  # noqa: E402
+from sst.snippets import load  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -724,6 +725,44 @@ def test_everyday_words_in_the_dictionary_are_marked():
     labels = _labels(window.pages["dictionary"])
     assert labels.count("everyday word: not given to speech recognition") == 1
 
+
+
+# ---- Snippets
+
+def test_snippets_can_be_added_edited_tried_and_removed():
+    window, app = _window(settings=Settings(welcomed=True))
+    window.show_page("snippets")
+    page = window.pages["snippets"]
+    assert page.list_card.isHidden() and page.count.text() == "0 SNIPPETS"
+    page.cue.setText("  my   email ")
+    page.snippet_text.setPlainText("xyz@gmail.com\n")
+    page.save_button.click()
+    assert app.settings.snippets == [{"cue": "my email", "text": "xyz@gmail.com", "anywhere": False}]
+    assert page.count.text() == "1 SNIPPET" and page.cue.text() == "" and "say \u201cmy email\u201d" in page.note.text()
+    page.cue.setText("My E-mail")  # the same cue, written differently
+    page.snippet_text.setPlainText("other")
+    page.save_button.click()
+    assert len(app.settings.snippets) == 1 and "already a snippet" in page.note.text()
+    page._edit(load(app.settings.snippets)[0])
+    assert page.cue.text() == "my email" and page.save_button.text() == "Save" and not page.cancel_button.isHidden()
+    page.snippet_text.setPlainText("Best regards,\nKarthi")
+    page.anywhere.setChecked(True)
+    page.save_button.click()
+    assert app.settings.snippets == [{"cue": "my email", "text": "Best regards,\nKarthi", "anywhere": True}]
+    page.trial.setText("send it to my email please")
+    assert page.trial_result.text() == "Types: send it to Best regards,\nKarthi please"
+    page.trial.setText("hello there")
+    assert "No snippet here" in page.trial_result.text()
+    page._remove(load(app.settings.snippets)[0])
+    assert app.settings.snippets == [] and page.list_card.isHidden()
+
+
+def test_a_snippet_needs_both_parts():
+    window, app = _window(settings=Settings(welcomed=True))
+    page = window.pages["snippets"]
+    page.cue.setText("my email")
+    page.save_button.click()
+    assert app.settings.snippets == [] and "Fill in both" in page.note.text()
 
 
 # ---- Text Transform

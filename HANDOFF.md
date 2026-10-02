@@ -102,6 +102,7 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
+| 21 | **Snippets** (the owner's idea): say "my email" and your email is typed; your own phrases and text (several lines), alone or inside a sentence, never sent to the AI | PR, waiting for the owner's test + merge |
 | 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | done, on `main` (PR #50, with #48), released **v1.7.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
@@ -947,6 +948,33 @@ mic (always on, 2 s pre-roll in RAM) -> session -> VAD -> chunker (1.2 s pause /
 - **Tests: 1525.** Every stage has its own file (`tests/test_pipeline_*.py`, `tests/test_engine_words.py`), plus
   end-to-end sessions with synthetic speech and fake engines (`tests/test_pipeline_session.py`).
 
+## Snippets (phase 21, the owner's idea of 2026-10-02)
+
+Like Wispr Flow's snippets: say a short phrase, get your own text typed ("my email" → xyz@gmail.com, "my signature" →
+a signature of several lines). The owner asked whether to do it in the AI prompt or after the text; neither alone is
+reliable (the AI may skip, reword or leak it, and the guard would refuse a new email address; after the AI, the
+phrase may be reworded), so it is both ends:
+
+- **Found in the words heard** (`sst/snippets.py`), before the dictionary, formatting and the AI cleanup:
+  - **Alone** (the default): the whole dictation is the cue, a filler or "please" around it allowed; small
+    mishearings count (`alone`: compact letters, so "my e-mail" is "my email"; fuzzy 0.9 for cues of 8+ letters, never
+    a word short). The text is typed as is: no stage, no AI. A snippet wins over a Text Transform voice command.
+  - **Anywhere** (per snippet, opt-in): the cue inside a sentence (whole words) becomes a placeholder `RFSNIP1`
+    (`protect`), which the AI is given as a protected term and the guard protects as code. The snippet's text goes in
+    after the guard (`expand`), exactly as entered, line breaks included; if the placeholder doesn't come back exactly
+    once, the text from before the AI is used, and last the words as heard. Never the default: "I checked my email
+    this morning" must stay as said.
+- **Where:** the pipeline (`Stages.snippets`, in `_text_stages`) and the classic way (`Dictation.snippets`), both
+  from `TrayApp.snippets()` (read from the profile at each dictation: a change counts at once).
+- **Stored** in the profile's settings (`Settings.snippets`: cue, text, anywhere; `Settings.load` checks the items are
+  objects). The text stays on this laptop; the AI never sees it.
+- **Line breaks:** `paste.paste_text` now gives the clipboard "\r\n" (a classic edit box shows a bare "\n" as nothing).
+- **The page:** Snippets (sidebar, after Dictionary): add (what you say, the text, "Also inside a sentence"), edit,
+  remove, and Try it (type what you'd say, see what would be typed).
+- **Tests: 1925.** `tests/test_snippets.py` (matching, placeholders lost, doubled or glued, longest cue first,
+  loading), the pipeline and classic paths (`tests/test_pipeline_session.py`, `tests/test_dictate.py`: an AI that keeps
+  or drops the placeholder), settings, the page, the app, `tests/test_paste.py`.
+
 ## Text Transform (phase 20, the owner's idea of 2026-10-02)
 
 The owner's `post_text_transformation_idea.md` (repository root, not in git): "Speak normally first. Transform the text
@@ -1188,7 +1216,9 @@ These were scratch scripts, not in git. The findings:
    The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
    to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
    (`tag.gpgsign`), so a tag needs `-m`.
-2. **Owner: try Text Transform** (phase 20, released as 1.7.0: update from the banner): Text Transform page → Try
+2. **Owner: try Snippets** (phase 21, PR): Snippets page → add "my email" → your email; dictate "my email"; add
+   "insert my signature" with two lines and "Also inside a sentence", then dictate "thanks, insert my signature".
+3. **Owner: try Text Transform** (phase 20, released as 1.7.0: update from the banner): Text Transform page → Try
    it; then in Teams or Notepad:
    - dictate a paragraph, then hold Ctrl+Win and say "make it concise"; then say "undo that"
    - select a paragraph, hold Ctrl+Win and say "bullet points"

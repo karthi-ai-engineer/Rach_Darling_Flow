@@ -18,6 +18,16 @@ def test_round_trip(tmp_path):
                                            save_recordings=False)
 
 
+def test_snippets_round_trip_and_a_wrong_shape_is_dropped(tmp_path):
+    path = tmp_path / "settings.json"
+    snippets = [{"cue": "my email", "text": "xyz@gmail.com", "anywhere": False},
+                {"cue": "my signature", "text": "Best regards,\nKarthi", "anywhere": True}]
+    Settings(snippets=snippets).save(path)
+    assert Settings.load(path).snippets == snippets
+    path.write_text('{"snippets": ["my email"]}', encoding="utf-8")  # strings, not snippets
+    assert Settings.load(path).snippets == []
+
+
 def test_damaged_file_gives_defaults_so_the_app_still_starts(tmp_path):
     path = tmp_path / "settings.json"
     path.write_text("{ not json", encoding="utf-8")

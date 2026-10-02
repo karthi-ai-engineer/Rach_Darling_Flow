@@ -57,6 +57,8 @@ def paste_text(text: str) -> None:
     _wait_for_modifiers_released()
     with _clipboard():
         saved = _snapshot()
+        # Windows text has "\r\n" line breaks (a snippet's lines): a classic edit box shows a bare "\n" as nothing.
+        text = text.replace("\r\n", "\n").replace("\n", "\r\n")
         _put([(CF_UNICODETEXT, (text + "\0").encode("utf-16-le")), (CF_EXCLUDE_FROM_HISTORY, b"\0" * 4)])
     ours = user32.GetClipboardSequenceNumber()
     _press_ctrl_v()
