@@ -97,7 +97,7 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
-| 20 | **Text Transform** (the owner's idea): a shortcut turns the selected text or the last dictation into Concise, Professional, Bullet points or Action items, checked, with undo | PR (stacked on #48), waiting for the owner's test + merge |
+| 20 | **Text Transform** (the owner's idea): a shortcut turns the selected text or the last dictation into Concise, Professional, Bullet points or Action items, checked, with undo | PR #50 (stacked on #48), waiting for the owner's test + merge |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0 and v1.6.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
