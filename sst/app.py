@@ -49,6 +49,8 @@ from sst.snippets import Snippet
 from sst.snippets import load as load_snippets
 from sst.transform import Transformer
 from sst.transformui import TransformController
+from sst.translate import Translator
+from sst.translateui import TranslateController
 from sst.window import APP_NAME, ICON_FILE, LOG_DIR, MainWindow, PreviewApp
 
 UPDATE_DIR = Path(os.environ.get("TEMP", Path.home())) / "Rflow-update"  # downloaded installers
@@ -300,6 +302,8 @@ class TrayApp:
         # Text Transform: its own shortcut and keyboard hook (HotkeyListener looked up when used: the tests replace it)
         self.transforms = TransformController(self, listener_factory=lambda key: HotkeyListener(key))
         self.transforms.start(self.settings.transform_shortcut)
+        self.translator = TranslateController(self, listener_factory=lambda key: HotkeyListener(key))
+        self.translator.start(self.settings.translate_shortcut)
         self.window = MainWindow(self)
 
         self.tray = QSystemTrayIcon(self.icon)
@@ -672,6 +676,8 @@ class TrayApp:
                 self._start_listener()
         if new.transform_shortcut != old.transform_shortcut and hasattr(self, "transforms"):
             self.transforms.start(new.transform_shortcut)
+        if new.translate_shortcut != old.translate_shortcut and hasattr(self, "translator"):
+            self.translator.start(new.translate_shortcut)
         if new.speech_model != old.speech_model:
             self._load_speech()
         self.window.refresh()
@@ -711,6 +717,21 @@ class TrayApp:
 
     def transform_ready(self) -> bool:
         return bool(self.transform_model())
+
+    def translate_ready(self) -> bool:
+        return self.transform_ready()  # the same model as the AI cleanup
+
+    def run_translation(self, text: str, target: str, second: str = ""):
+        """`text` translated (sst.translate.Translation); raises when the provider can't be asked."""
+        s = self.settings
+
+        def complete(prompt: str, message: str) -> str:
+            return Polisher(self.gateway, s.cleanup_model, [], fallback=s.cleanup_fallback or None,
+                            system_prompt=prompt).complete(message)
+        result = Translator(complete).translate(text, target, second)
+        log.info("Translated %d characters into %s in %.1f s%s", len(text), result.target, result.seconds,
+                 f" ({'; '.join(result.warnings)})" if result.warnings else "")
+        return result
 
     def snippets(self) -> list[Snippet]:
         """The profile's snippets, as set now (sst.snippets): read at each dictation, so a change counts at once."""
@@ -1039,6 +1060,7 @@ class TrayApp:
                 self._start_listener()
             self._load_speech()  # the other profile may use another speech model
         self.transforms.start(self.settings.transform_shortcut)
+        self.translator.start(self.settings.translate_shortcut)
         # Every page shows the profile's own data: build the window again rather than update each field.
         old, self.window = self.window, MainWindow(self)
         self.window.set_status(*self._status)
@@ -1141,6 +1163,7 @@ class TrayApp:
 
     def quit(self) -> None:
         self.transforms.stop()
+        self.translator.stop()
         if self.listener:
             self.listener.stop()
         if self.dictation:

@@ -1,0 +1,293 @@
+"""Translate's flow: Ctrl+C+C, the copied text, the popup, the translation, Copy and Replace. Windows is faked (no key is
+pressed, no window activated, the clipboard isn't touched) and so is the AI model."""
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import queue  # noqa: E402
+import threading  # noqa: E402
+
+import pytest  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from sst import translateui  # noqa: E402
+from sst.hotkey import VK_ESCAPE  # noqa: E402
+from sst.settings import Settings  # noqa: E402
+from sst.translate import Translation  # noqa: E402
+from sst.translateui import TranslateController  # noqa: E402
+
+SOURCE = "Could you send me the updated report by Friday?"
+JAPANESE = "金曜日までに更新したレポートを送っていただけますか？"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def qt():
+    return QApplication.instance() or QApplication([])
+
+
+class FakeAccess:
+    """The user's app and the clipboard: what it copies on Ctrl+C+C, what is selected, what gets pasted."""
+
+    def __init__(self, copied=SOURCE, window=7):
+        self.window, self.copied, self.selection = window, copied, copied
+        self.sequence, self.copies_on_trigger = 1, True  # the app's copy lands just after the shortcut
+        self.cls, self.pid = "Chrome_WidgetWin_1", 4242
+        self.clipboard, self.pasted, self.activated, self.selected_last = None, [], [], []
+        self.copy_calls = 0
+
+    def foreground_window(self):
+        return self.window
+
+    def window_class(self, hwnd):
+        return self.cls
+
+    def window_process(self, hwnd):
+        return os.getpid() if hwnd == 99 else self.pid  # window 99 is one of Rflow's own
+
+    def clipboard_sequence(self):
+        if self.copies_on_trigger:
+            self.copies_on_trigger = False
+            return self.sequence  # read at the shortcut: the copy lands right after
+        return self.sequence + 1
+
+    def clipboard_text(self):
+        return self.copied
+
+    def copy_selection(self, timeout=0.6, fallback=False):
+        self.copy_calls += 1
+        return self.selection
+
+    def select_last(self, text):
+        self.selected_last.append(text)
+        return False
+
+    def activate(self, hwnd):
+        self.activated.append(hwnd)
+        self.window = hwnd
+        return True
+
+    def set_clipboard(self, text, html=None):
+        self.clipboard = text
+
+    def paste_rich(self, text, html=None):
+        self.pasted.append(text)
+
+
+class FakeListener:
+    def __init__(self, hotkey):
+        self.hotkey, self.events, self.captured = hotkey, queue.Queue(), None
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def capture(self, keys):
+        self.captured = keys
+
+
+class FakeApp:
+    def __init__(self, ready=True, answer=JAPANESE, gate=None):
+        self.settings = Settings(welcomed=True, translate_to="Japanese")
+        self.ready, self.answer, self.gate = ready, answer, gate
+        self.said, self.asked = [], []
+
+    def translate_ready(self):
+        return self.ready
+
+    def transform_model(self):
+        return "gemini-3.5-flash-lite"
+
+    def run_translation(self, text, target, second=""):
+        self.asked.append((text, target, second))
+        if self.gate is not None:
+            self.gate.wait(2)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return Translation(f"{self.answer} [{target}]", target, text, 0.4)
+
+    def say(self, state, message=""):
+        self.said.append((state, message))
+
+    def apply_settings(self, new):
+        self.settings = new
+
+
+_LIVE: list[TranslateController] = []  # never collected while a worker thread may still signal them
+
+
+@pytest.fixture(autouse=True)
+def finish_work():
+    yield
+    for controller in _LIVE:
+        wait_until(lambda c=controller: not c.busy)
+        QTest.qWait(30)
+        controller.stop()
+
+
+def make(shortcut="ctrl+c+c", access=None, **app):
+    access, fake_app = access or FakeAccess(), FakeApp(**app)
+    controller = TranslateController(fake_app, access=access, listener_factory=FakeListener)
+    controller.start(shortcut)
+    _LIVE.append(controller)
+    return controller, access, fake_app
+
+
+def wait_until(condition, ms=2000):
+    for _ in range(ms // 10):
+        if condition():
+            return True
+        QTest.qWait(10)
+    return condition()
+
+
+def press(controller):
+    controller.listener.events.put(("release", 0.0))
+
+
+def shown(controller):
+    return wait_until(lambda: controller.result is not None)
+
+
+def test_ctrl_c_c_shows_the_copied_text_translated(qt):
+    controller, access, app = make()
+    assert controller.double_copy
+    press(controller)
+    assert shown(controller) and controller.popup.isVisible()
+    assert app.asked == [(SOURCE, "Japanese", "")]
+    assert controller.popup.result.toPlainText() == f"{JAPANESE} [Japanese]"
+    assert access.copy_calls == 0  # the app copied: Rflow pressed nothing
+    assert controller.listener.captured == {VK_ESCAPE}  # Esc closes the popup
+
+
+def test_a_copy_that_landed_before_the_shortcut_is_read_after_a_moment(qt, monkeypatch):
+    monkeypatch.setattr(translateui, "COPY_WAIT", 0.05)
+    access = FakeAccess()
+    access.copies_on_trigger = False
+    access.clipboard_sequence = lambda: 1  # nothing changes any more
+    controller, _, app = make(access=access)
+    press(controller)
+    assert shown(controller) and app.asked[0][0] == SOURCE
+
+
+@pytest.mark.parametrize("copied, said", [
+    (None, "Select some text first, then try again."),
+    ("   ", "Select some text first, then try again."),
+    ("x" * 5001, "That's 5,001 characters: Translate takes up to 5,000 at a time."),
+])
+def test_nothing_to_translate_says_why(qt, copied, said):
+    controller, access, app = make(access=FakeAccess(copied=copied))
+    press(controller)
+    assert wait_until(lambda: app.said)
+    assert app.said == [("warning", said)] and not controller.popup.isVisible() and not app.asked
+
+
+def test_without_an_ai_model_the_user_is_told(qt):
+    controller, _, app = make(ready=False)
+    controller.trigger()
+    assert app.said == [("warning", "Translate needs an AI model: choose one in AI cleanup.")]
+
+
+def test_the_second_language_is_used_for_text_already_in_the_first(qt):
+    controller, _, app = make()
+    app.settings.translate_second = "English"
+    press(controller)
+    assert shown(controller) and app.asked == [(SOURCE, "Japanese", "English")]
+
+
+def test_picking_a_language_translates_again_into_exactly_it_and_remembers_it(qt):
+    controller, _, app = make()
+    press(controller)
+    assert shown(controller)
+    controller.popup.language.emit("French")
+    assert wait_until(lambda: controller.result is not None and controller.result.target == "French")
+    assert app.asked[-1] == (SOURCE, "French", "") and app.settings.translate_to == "French"
+
+
+def test_an_older_answer_never_replaces_a_newer_one(qt):
+    gate = threading.Event()
+    controller, _, app = make(gate=gate)
+    press(controller)
+    assert wait_until(lambda: len(app.asked) == 1)
+    controller.popup.language.emit("French")  # asked again before the first answer came
+    gate.set()
+    assert wait_until(lambda: controller.result is not None and controller.result.target == "French")
+    QTest.qWait(50)
+    assert controller.result.target == "French"
+
+
+def test_copy_puts_the_translation_on_the_clipboard(qt):
+    controller, access, app = make()
+    press(controller)
+    assert shown(controller)
+    controller.popup.copy.emit()
+    assert access.clipboard == f"{JAPANESE} [Japanese]" and not controller.popup.isVisible()
+    assert app.said[-1] == ("transformed", "Translation copied") and controller.listener.captured is None
+
+
+def test_replace_puts_the_translation_in_place_of_the_text(qt):
+    controller, access, app = make()
+    press(controller)
+    assert shown(controller)
+    access.window = 8  # the user looked at another window meanwhile: the text's window comes back first
+    controller.popup.replace.emit()
+    assert wait_until(lambda: access.pasted)
+    assert access.activated == [7] and access.pasted == [f"{JAPANESE} [Japanese]"]
+    assert wait_until(lambda: app.said and app.said[-1] == ("transformed", "Translated"))
+
+
+def test_replace_never_pastes_over_other_text(qt):
+    controller, access, app = make()
+    press(controller)
+    assert shown(controller)
+    access.selection = "something else the user selected"
+    controller.popup.replace.emit()
+    assert wait_until(lambda: app.said and app.said[-1][0] == "warning")
+    assert not access.pasted and access.clipboard == f"{JAPANESE} [Japanese]" and "press Ctrl+V" in app.said[-1][1]
+
+
+def test_esc_closes_the_popup(qt):
+    controller, _, _ = make()
+    press(controller)
+    assert shown(controller)
+    controller.listener.events.put((f"key:{VK_ESCAPE}", 0.0))
+    assert wait_until(lambda: not controller.popup.isVisible()) and controller.listener.captured is None
+
+
+def test_the_popup_closes_when_the_user_goes_to_another_app_but_not_for_rflows_own_windows(qt):
+    controller, access, _ = make()
+    press(controller)
+    assert shown(controller)
+    access.window = 99  # the language list: one of Rflow's own windows
+    QTest.qWait(60)
+    assert controller.popup.isVisible()
+    access.window = 8  # another app
+    assert wait_until(lambda: not controller.popup.isVisible())
+
+
+def test_a_failing_model_is_shown_in_the_popup(qt):
+    controller, _, _ = make(answer=RuntimeError("HTTP 429 quota"))
+    press(controller)
+    assert wait_until(lambda: "HTTP 429 quota" in controller.popup.status.text())
+    assert not controller.popup.copy_button.isEnabled()
+
+
+def test_another_shortcut_copies_the_selection_itself_but_never_in_a_terminal(qt):
+    controller, access, app = make(shortcut="ctrl+alt+l")
+    assert not controller.double_copy
+    press(controller)
+    assert shown(controller) and access.copy_calls == 1
+    controller.popup.close_popup()
+    access.cls = "CASCADIA_HOSTING_WINDOW_CLASS"
+    app.said.clear()
+    press(controller)
+    assert wait_until(lambda: app.said) and access.copy_calls == 1 and "terminal" in app.said[-1][1]
+
+
+def test_off_means_no_shortcut(qt):
+    controller, _, _ = make(shortcut="")
+    assert controller.listener is None
+    controller.start("not a key")
+    assert controller.listener is None

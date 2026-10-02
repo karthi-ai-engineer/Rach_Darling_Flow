@@ -34,6 +34,9 @@ class Settings:
     format_text: bool = True  # spoken numbers, dates, times and money written as such ("25%", "3:30 PM")
     debug_pipeline: bool = False  # keep every dictation's stages and chunk audio in %LOCALAPPDATA%\sst\debug
     transform_shortcut: str = "double ctrl"  # Text Transform's menu for selected text (sst.transformui); "" = off
+    translate_shortcut: str = "ctrl+c+c"  # Translate's popup for the copied text (sst.translateui); "" = off
+    translate_to: str = "English"  # the language Translate writes in
+    translate_second: str = ""  # for text already in translate_to: this language instead ("" = none)
     voice_commands: bool = True  # hold the dictation key and say "make it concise" (sst.commands)
     command_phrases: dict[str, str] = field(default_factory=dict)  # transform -> the user's own phrases ("a, b"); else defaults
     # Snippets (sst.snippets): {"cue": "my email", "text": "xyz@gmail.com", "anywhere": false}, typed when said
