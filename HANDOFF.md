@@ -97,6 +97,7 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
+| 20 | **Text Transform** (the owner's idea): a shortcut turns the selected text or the last dictation into Concise, Professional, Bullet points or Action items, checked, with undo | PR (stacked on #48), waiting for the owner's test + merge |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
 Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0 and v1.6.0 (GitHub Releases; there is no 1.2.0). Website: https://rachdarlingflow-site.vercel.app (Vercel,
@@ -939,6 +940,60 @@ mic (always on, 2 s pre-roll in RAM) -> session -> VAD -> chunker (1.2 s pause /
 - **Tests: 1525.** Every stage has its own file (`tests/test_pipeline_*.py`, `tests/test_engine_words.py`), plus
   end-to-end sessions with synthetic speech and fake engines (`tests/test_pipeline_session.py`).
 
+## Text Transform (phase 20, the owner's idea of 2026-10-02)
+
+The owner's `post_text_transformation_idea.md` (repository root, not in git): "Speak normally first. Transform the text
+afterwards only when you need to."
+
+- **Flow** (`sst/transformui.py`, `TransformController`):
+  1. **The shortcut:** Ctrl+Alt+T by default (`Settings.transform_hotkey`; "" = off). It has its own keyboard hook
+     (`HotkeyListener`) and fires on release. It is not Ctrl+Win+... (that starts a dictation) and not a plain
+     Ctrl+letter (apps use those).
+  2. **The text:** `textaccess.copy_selection()` presses Ctrl+C and puts the user's clipboard back. With nothing
+     selected, the last dictation or transform typed in that window (`note_typed`, within 15 min) is selected with
+     Shift+Left (`select_last`) and checked by a copy; a mismatch collapses the selection and nothing happens.
+     **Never in a terminal** (`TERMINALS`: Ctrl+C there stops the running program).
+  3. **The menu** (`TransformMenu`): at the pointer. It takes no focus, so the app keeps its selection. Its keys (1-9,
+     numpad, Up/Down, Enter, Esc, U) are taken from the hook while it is open (`HotkeyListener.capture`); clicks
+     work too.
+  4. **The transform** (`sst/transform.py`): the AI cleanup's model and backup (`Polisher.complete`, no cleanup
+     length check, 8 s + 0.05 s a word) under `system_prompt()`: a writing tool, never an assistant; keep every
+     value, name, term, negation, condition, choice, uncertainty and question; apply self-corrections; never invent.
+  5. **The check** (`TransformGuard`), independent of the model. It rejects:
+     - lost or new values (numbers in words or digits, dates, times, money, percentages, units, emails, URLs, code,
+       terms) — a corrected value may go
+     - new names
+     - dropped or added uncertainty or negation
+     - lost conditions, qualifiers and choices, and swapped opposites
+     - a question lost or answered
+     - added sentences, assistant replies
+     - Concise or Action items longer than the input
+
+     One repair request names the problems. If it is still rejected, the user's text stays and the pill says why.
+     Action items answers NO_ACTIONS when the text has none.
+  6. **The replacement** (`textaccess.paste_rich`): plain text plus CF_HTML, so rich editors (Teams, Outlook,
+     Word, Slack, browsers) get bold headings and real bullet lists, while plain editors get "- " lines. The text's
+     own surrounding spaces are kept. Nothing is pasted if another window came to the front meanwhile; the result
+     is then on Home.
+  7. **Undo:** press the shortcut again right after a transform: the menu offers U ("restore the original"), which
+     pastes the original over the transformed text. Ctrl+Z in the app works too. Each transform is in Home's history
+     with its original as the tooltip.
+- **Transforms** (`TRANSFORMS`): Concise, Professional, Bullet points, Action items (the default menu,
+  `Settings.transforms`), and Rewrite.
+- **The page:** Text Transform (sidebar, after AI cleanup):
+  - the shortcut, the transforms in the menu, the model used
+  - Try it: a box with a button per transform, showing the result as it would be pasted
+- **Tests: 1777.**
+  - `tests/test_transform.py`: every good/bad example in the idea file, prompts, the repair, `render`
+  - `tests/test_textaccess.py`: clipboard kept, selection check, CF_HTML offsets
+  - `tests/test_hotkey.py`: menu key capture
+  - `tests/test_transformui.py`: the whole flow with fakes, including undo, terminals, switched windows, failures
+  - window and app tests
+- **Not yet tried:** against real apps and the owner's model. The checker's rules are heuristics and may reject a
+  good transform now and then: the text is then kept, never damaged. Known gaps: a single swapped noun ("staging"
+  for "production") or a fact restated wrongly with the original's own words passes. VS Code's terminal can't be
+  told from its editor (Ctrl+C there with nothing selected interrupts the program).
+
 ## Text never said (fixed 2026-10-02)
 
 The owner saw words they hadn't said, at the end of dictations ("…version installer. Commit tray app pill. Let's move
@@ -1077,7 +1132,9 @@ These were scratch scripts, not in git. The findings:
    The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
    to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
    (`tag.gpgsign`), so a tag needs `-m`.
-2. **Owner: try the voice pipeline** (phase 19, released as 1.6.0: update from the banner; the download is the
+2. **Owner: try Text Transform** (phase 20): Text Transform page → Try it; then in Teams or Notepad, select a
+   paragraph → Ctrl+Alt+T → 1-4; dictate, then Ctrl+Alt+T with nothing selected; press it again → U to undo.
+3. **Owner: try the voice pipeline** (phase 19, released as 1.6.0: update from the banner; the download is the
    ~90 MB installer, nothing else):
    - dictate a long paragraph with pauses: the text should arrive soon after you let go
    - say "twenty five percent" and "October first at three thirty pm"
