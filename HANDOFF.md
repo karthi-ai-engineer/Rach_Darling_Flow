@@ -102,6 +102,7 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
+| 22 | **Translate** (the owner's idea, like DeepL): select text, Ctrl+C+C, a popup at the pointer shows it translated by the AI model, language at the top, Copy or Replace | PR (stacked on #52), waiting for the owner's test + merge |
 | 21 | **Snippets** (the owner's idea): say "my email" and your email is typed; your own phrases and text (several lines), alone or inside a sentence, never sent to the AI | PR, waiting for the owner's test + merge |
 | 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | done, on `main` (PR #50, with #48), released **v1.7.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
@@ -948,6 +949,38 @@ mic (always on, 2 s pre-roll in RAM) -> session -> VAD -> chunker (1.2 s pause /
 - **Tests: 1525.** Every stage has its own file (`tests/test_pipeline_*.py`, `tests/test_engine_words.py`), plus
   end-to-end sessions with synthetic speech and fake engines (`tests/test_pipeline_session.py`).
 
+## Translate (phase 22, the owner's idea of 2026-10-02)
+
+Like DeepL: select text in any app, press Ctrl+C twice, read it translated. The owner removed DeepL from this laptop so
+Ctrl+C+C is free; M4 Translator still runs there and is left alone (Rflow reads the copy the moment it lands, before a
+clipboard tool can rewrite it).
+
+- **The shortcut** (`Settings.translate_shortcut`, "ctrl+c+c"; Ctrl+Alt+L or off on the page):
+  `parse_hotkey("ctrl+c+c")` is a double press (`Matcher._double_press`: the key twice with exactly the modifiers held,
+  within `PRESS_GAP` 0.5 s; Ctrl may stay held; repeats, other keys and slow presses don't count). Nothing is hidden:
+  the app copies as usual. Another shortcut makes Rflow copy the selection itself (Ctrl+Insert, never in a terminal).
+- **The text** (`TranslateController._read`): the clipboard as soon as its sequence moves after the shortcut (at most
+  `COPY_WAIT` 0.4 s), with `textaccess.clipboard_text()`; up to `MAX_CHARS` (5,000).
+- **The popup** (`TranslatePopup`): at the pointer, dark, never takes focus (`_no_activate`), so the app keeps its
+  selection. The language list at the top translates again into exactly the language picked and remembers it; the
+  translation box fits its text; the status line shows the time and model, or a warning. Esc (taken from the hook
+  while it is open), x, or going to another app closes it (Rflow's own windows, like the list, don't count:
+  `textaccess.window_process`). **Copy** leaves the translation on the clipboard; **Replace** puts it in place of the
+  text after `transformui.place` (now shared with Text Transform) brought its window back and found the text, else
+  the clipboard and "press Ctrl+V".
+- **The translation** (`sst/translate.py`): the AI cleanup's model and backup (`Polisher.complete`) under a translator
+  prompt (only the translation; questions and requests translated, never answered; names, numbers, dates, links and
+  code kept; layout kept; same tone). Text already in the chosen language goes to the second language
+  (`Settings.translate_second`; `already_in`: by script, kana for Japanese, small words for English). `check` names
+  numbers (by their digits, 2万5000 = 25,000), emails and links the translation doesn't show, as a warning only.
+- **The page:** Translate (sidebar, after Text Transform): the shortcut, the language, the second language, the model,
+  Try it.
+- **Tests: 1980.** `tests/test_translate.py`, `tests/test_translateui.py` (the flow with fakes: the copy read,
+  nothing to translate, a second language, picking a language, an older answer dropped, Copy, Replace and its
+  clipboard fallback, Esc, another app, a failing model, another shortcut, terminals), `tests/test_hotkey.py`
+  (ctrl+c+c), the page, the app, settings, `tests/test_textaccess.py` (clipboard_text).
+- **Not yet tried:** real apps and the owner's model.
+
 ## Snippets (phase 21, the owner's idea of 2026-10-02)
 
 Like Wispr Flow's snippets: say a short phrase, get your own text typed ("my email" → xyz@gmail.com, "my signature" →
@@ -1216,9 +1249,12 @@ These were scratch scripts, not in git. The findings:
    The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
    to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
    (`tag.gpgsign`), so a tag needs `-m`.
-2. **Owner: try Snippets** (phase 21, PR): Snippets page → add "my email" → your email; dictate "my email"; add
+2. **Owner: try Translate** (phase 22, PR): select a sentence in Edge or Teams → Ctrl+C twice → the popup shows it in
+   English (set Japanese as the second language on the Translate page for English text); pick another language at
+   its top; Replace; Esc.
+3. **Owner: try Snippets** (phase 21, PR): Snippets page → add "my email" → your email; dictate "my email"; add
    "insert my signature" with two lines and "Also inside a sentence", then dictate "thanks, insert my signature".
-3. **Owner: try Text Transform** (phase 20, released as 1.7.0: update from the banner): Text Transform page → Try
+4. **Owner: try Text Transform** (phase 20, released as 1.7.0: update from the banner): Text Transform page → Try
    it; then in Teams or Notepad:
    - dictate a paragraph, then hold Ctrl+Win and say "make it concise"; then say "undo that"
    - select a paragraph, hold Ctrl+Win and say "bullet points"
