@@ -965,10 +965,11 @@ four steps, and a transform was lost when the pointer left the menu. The second 
      Ctrl still reaches the apps. Two quick Ctrl+clicks aren't one (the pointer moved between them:
      `TAP_POINTER_PX`); the keyboard hook can't see clicks, and a mouse hook would slow every mouse move.
 - **Flow** (`sst/transformui.py`, `TransformController`):
-  1. **The text** (`_find`): `textaccess.copy_selection()` presses Ctrl+C and puts the user's clipboard back. With
-     nothing selected, the last dictation or transform typed in that window (`note_typed`, within 15 min) is selected
-     with Shift+Left (`select_last`) and checked by a copy; a mismatch collapses the selection and nothing happens.
-     **Never in a terminal** (`TERMINALS`: Ctrl+C there stops the running program).
+  1. **The text** (`_find`): `textaccess.copy_selection()` presses **Ctrl+Insert** (not Ctrl+C: see below) and puts
+     the user's clipboard back. With nothing selected, the last dictation or transform typed in that window
+     (`note_typed`, within 15 min) is selected with Shift+Left (`select_last`) and checked by a copy; a mismatch
+     collapses the selection and nothing happens. **Never in a terminal** (`TERMINALS`: Ctrl+C there stops the
+     running program). Each step is logged ("selected again in Chrome_WidgetWin_1", "other text is selected now"...).
   2. **The menu** (`TransformMenu`, the shortcut only): at the pointer. It takes no focus, so the app keeps its
      selection. Its keys (1-9, numpad, Up/Down, Enter, Esc, U) are taken from the hook while it is open
      (`HotkeyListener.capture`); clicks work too. A voice command skips it.
@@ -1007,10 +1008,30 @@ four steps, and a transform was lost when the pointer left the menu. The second 
   - the menu: its shortcut and its transforms
   - the model used
   - Try it: a box with a button per transform, showing the result as it would be pasted
-- **Tests: 1865.**
+- **Found in the owner's first test (2026-10-02), fixed:**
+  - **NumLock:** keys were sent without the extended-key flag, so Left was the number pad's; with NumLock on, Windows
+    lifts Shift around it and Shift+Left moved the caret instead of selecting. "Make it concise" on the last dictation
+    always said "Select some text first". `hotkey.key_input` now flags arrows, Home/End, Page Up/Down, Insert, Delete
+    (`EXTENDED_KEYS`) and adds scan codes.
+  - **A translator on Ctrl+C:** the owner's laptop runs M4 Translator and DeepL; two Ctrl+C in a second made one put a
+    Tamil translation on the clipboard, which Rflow then read as the selection. Rflow copies with Ctrl+Insert (Ctrl+C
+    only as a fallback where text is known to be selected: `copy_selection(fallback=True)`).
+  - **Pasting right after a copy:** an app that has just copied (Qt) answered an immediate Ctrl+V with its own copy.
+    `paste_rich` waits `SETTLE_DELAY` (0.15 s) between the clipboard and Ctrl+V.
+  - **Spoken corrections:** the check rejected a correct transform of "five servers wait make that 35 servers",
+    "$25,000 not the 20,000" and "five times sorry three times actually five". The dictation guard
+    (`sst/pipeline/guard.py`) now reads "wait/no/sorry + make that / I mean" as one cue, "Actually no," as a cue, and
+    finds the corrected value with its noun before the cue; the transform check reads "X not (the) Y" (same kind of
+    value) as telling X from Y, so Y may go once X is kept.
+  - Checked end to end on real windows (a test text box in its own process, the real `textaccess`, the model replaced
+    by a fixed answer): short and long last dictations, a selection, undo, a switched window brought back. The script
+    is not in the repository; it types into the window in front, so run such checks only with the owner away from
+    the keyboard.
+- **Tests: 1889.**
   - `tests/test_transform.py`: every good/bad example in the idea file, prompts, the repair, `render`
   - `tests/test_commands.py`: what is a command and what is dictation, the user's phrases
-  - `tests/test_textaccess.py`: clipboard kept, selection check, CF_HTML offsets, activate, set_clipboard
+  - `tests/test_textaccess.py`: clipboard kept, selection check, CF_HTML offsets, activate, set_clipboard, Ctrl+Insert
+    and its Ctrl+C fallback, the pause before Ctrl+V
   - `tests/test_hotkey.py`: menu key capture, double taps (slow, long, mixed with shortcuts, Ctrl+clicks)
   - `tests/test_transformui.py`: the whole flow with fakes: voice commands, undo, terminals, switched windows
     brought back, the clipboard fallback, failures
