@@ -191,6 +191,42 @@ def test_a_self_correction_keeps_only_the_correction(original):
     assert any("Tuesday" in note for note in got.reasons)  # a note, on an accepted result
 
 
+# The owner's test dictation of 2026-10-02, with three spoken corrections: "five servers wait make that 35 servers",
+# "$25,000 not the 20,000" and "five times sorry three times actually five". A good transform applies them.
+OWNERS_TEST = ("Okay, so I want to deploy the new Kubernetes service on Wednesday. Actually no, Thursday of October 15th, "
+               "2026 at around 9:45 AM. We will start with five servers wait make that 35 servers and the budget should be "
+               "$25,000 not the 20,000 the API needs to support the postgreSQL request uh read is GitHub actions and Gemini "
+               "and if the request takes more than 30 seconds we should retry it five times sorry three times actually five "
+               "I also want the dashboard to show a 10% error rate threshold And if if that threshold is exceed exceeded we "
+               "should automatically roll back the deployment. We we should keep the first release simple but if everything "
+               "works well We can add monitoring and automatic alerts and backup system in the next version.")
+OWNERS_BULLETS = """**Deployment plan**
+- Deploy the new Kubernetes service on Thursday, October 15th, 2026, at around 9:45 AM.
+- Start with 35 servers.
+- The budget should be $25,000.
+- The API needs to support postgreSQL requests, GitHub actions and Gemini.
+- If a request takes more than 30 seconds, retry it five times.
+- The dashboard should show a 10% error rate threshold; if it is exceeded, automatically roll back the deployment.
+- Keep the first release simple; if everything works well, add monitoring, alerts and a backup system in the next version."""
+
+
+def test_the_owners_corrections_are_applied_not_counted_as_lost():
+    got = check(OWNERS_TEST, OWNERS_BULLETS, "bullets", ["Kubernetes", "GitHub", "Gemini"])
+    assert got.accepted, got.reasons
+
+
+@pytest.mark.parametrize("wrong, why", [
+    (("Start with 35 servers", "Start with five servers"), "lost '35'"),
+    (("$25,000", "$20,000"), "lost '$25,000'"),
+    (("retry it five times", "retry it three times"), "lost 'five'"),
+    (("Thursday", "Wednesday"), "lost 'Thursday'"),
+    (("- The budget should be $25,000.\n", ""), "lost '$25,000'"),
+])
+def test_a_wrong_reading_of_the_owners_corrections_is_still_rejected(wrong, why):
+    got = check(OWNERS_TEST, OWNERS_BULLETS.replace(*wrong), "bullets", ["Kubernetes", "GitHub", "Gemini"])
+    assert not got.accepted and why in got.reasons
+
+
 def test_a_value_is_not_excused_unless_its_correction_is_kept():
     got = check("Call at 3 PM. No, 4 PM.", "Call at 3 PM.")
     assert not got.accepted and "lost '4 PM'" in got.reasons

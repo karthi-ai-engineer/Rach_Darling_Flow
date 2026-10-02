@@ -347,6 +347,22 @@ def _corrections(b: _Side, a: _Side) -> tuple[set[int], list[str]]:
                 out.update(b.spans[old], run)
                 notes.append(f"self-correction: '{o.value}' -> '{n.value}'")
         i = k
+    # "The budget is $25,000, not the 20,000": told apart from the value it replaced, which may go once the value is kept.
+    # Only "not", in the same sentence: "3 PM. No, 4 PM" is the other way round, a self-correction.
+    for e, span in zip(b.entities, b.spans, strict=True):
+        if e.kind != "NEGATION" or not span or span[0] == 0 or toks[span[0]].norm != "not" \
+                or toks[span[0] - 1].sent != toks[span[0]].sent:
+            continue
+        k = span[-1] + 1
+        while k < len(toks) and toks[k].norm in ("the", "a", "an"):
+            k += 1
+        old, new = (b.owner[k] if k < len(toks) else None), b.owner[span[0] - 1]
+        if old is None or new is None or old == new:
+            continue
+        o, n = b.entities[old], b.entities[new]
+        if _FAMILIES.get(o.kind, o.kind) == _FAMILIES.get(n.kind, n.kind) and _key(o) != _key(n) and _key(n) in a.values:
+            out.update(span, range(span[-1] + 1, k), b.spans[old])
+            notes.append(f"told apart: '{n.value}', not '{o.value}'")
     return out, notes
 
 

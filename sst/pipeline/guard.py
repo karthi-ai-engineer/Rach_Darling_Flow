@@ -339,9 +339,13 @@ _OPPOSITES = [("on", "off"), ("in", "out"), ("and", "or"), ("with", "without"), 
 _NEGATING_PREFIXES = ("un", "in", "im", "il", "ir", "dis", "non", "mis", "de", "anti")
 # Self-correction cues (§56). "cross": may correct the previous sentence; "cancel": drops the whole clause before it;
 # "comma": a cue only when a comma or dash follows ("no, Friday", not "no problem").
-_CUES = {("no", "wait"): "cross", ("wait", "no"): "cross", ("oh", "wait"): "cross", ("scratch", "that"): "cancel",
-         ("or", "rather"): "", ("make", "that"): "", ("i", "mean"): "", ("i", "meant"): "", ("correction",): "",
-         ("sorry",): "sorry", ("actually",): "", ("rather",): "rather", ("no",): "comma", ("wait",): "comma"}
+_CUES = {("no", "wait"): "cross", ("wait", "no"): "cross", ("oh", "wait"): "cross", ("actually", "no"): "cross",
+         ("scratch", "that"): "cancel", ("or", "rather"): "", ("make", "that"): "", ("i", "mean"): "", ("i", "meant"): "",
+         ("correction",): "", ("sorry",): "sorry", ("actually",): "", ("rather",): "rather", ("no",): "comma",
+         ("wait",): "comma"}
+# "wait, make that 35", said without the comma too: the first word belongs to the cue, not to what it corrects.
+_CUES.update({(first, *rest): "" for first in ("wait", "no", "sorry", "oh", "actually")
+              for rest in (("make", "that"), ("i", "mean"))})
 _NOT_SORRY = {"am", "is", "are", "was", "were", "be", "been", "so", "very", "really", "feel", "felt", "i", "say", "said"}
 _AUX = {"am", "is", "are", "was", "were", "do", "does", "did", "have", "has", "had", "can", "could", "will", "would", "shall",
         "should", "may", "might", "must"}
@@ -530,7 +534,7 @@ def _asks(side: _Side, sentence: tuple[int, int]) -> bool | None:
 def _cue(b: _Side, i: int) -> tuple[int, str] | None:
     """A self-correction cue starting at word i: (its length in words, its kind)."""
     toks = b.toks
-    for size in (2, 1):
+    for size in (3, 2, 1):
         words = tuple(t.norm for t in toks[i:i + size])
         kind = _CUES.get(words) if len(words) == size else None
         if kind is None or toks[i + size - 1].sent != toks[i].sent:
@@ -557,6 +561,12 @@ def _reparandum(b: _Side, candidates: list[int], repair: list[int], kind: str) -
     owner = b.owner[candidates[-1]]
     if owner is not None and b.owner[repair[0]] is not None:  # one value for another: "tomorrow, no wait, Friday"
         return [k for k in candidates if b.owner[k] == owner]
+    if (new := b.owner[repair[0]]) is not None:  # a value with its noun: "five servers, wait, make that 35 (servers)"
+        for k in reversed(candidates[-4:]):
+            if (old := b.owner[k]) is not None:
+                if b.entities[old].kind == b.entities[new].kind:
+                    return [j for j in candidates if j >= b.spans[old][0]]
+                break
     return candidates[-1:]
 
 
