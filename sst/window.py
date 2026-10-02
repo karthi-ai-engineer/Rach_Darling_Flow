@@ -71,8 +71,8 @@ APP_NAME = "Rflow"
 ICON_FILE = Path(__file__).parent / "static" / "sst.ico"
 UI_IMAGES = Path(__file__).parent / "static" / "ui"  # drawn by scripts/make_ui_images.py
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "sst" / "logs"
-WEBSITE = "https://rachdarlingflow-site.vercel.app"
-REPO = "https://github.com/karthi-ai-engineer/Rach_Darling_Flow"
+WEBSITE = "https://rachflow.vercel.app"
+REPO = "https://github.com/karthi-ai-engineer/Rach_flow"
 HOTKEY_CHOICES = [("Ctrl+Win (like Wispr Flow)", "ctrl+win"), ("Menu key", "menu"), ("Ctrl+Alt+D", "ctrl+alt+d")]
 # Text Transform's menu shortcut: not Ctrl+Win+... (that starts a dictation) and not a plain Ctrl+letter (apps use those).
 # A double tap of Ctrl is the easiest; PowerToys' "Find My Mouse" uses a double Ctrl too (Rflow's still works with it).

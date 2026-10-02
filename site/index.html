@@ -81,7 +81,7 @@
   <header>
     <a class="brand" href="#"><img src="favicon.ico" alt="">Rflow</a>
     <nav><a href="#features">Features</a><a href="#how">How it works</a><a href="#faq">FAQ</a>
-      <a class="keep" href="https://github.com/karthi-ai-engineer/Rach_Darling_Flow">GitHub</a></nav>
+      <a class="keep" href="https://github.com/karthi-ai-engineer/Rach_flow">GitHub</a></nav>
   </header>
 
   <div class="hero">
@@ -90,7 +90,7 @@
       <p class="lead">Hold <kbd>Ctrl</kbd>+<kbd>Win</kbd> in any Windows app, say what you want to write, and let go.
         Your words appear where your cursor is. Speech recognition runs on your laptop.</p>
       <div class="cta">
-        <a class="button" id="download" href="https://github.com/karthi-ai-engineer/Rach_Darling_Flow/releases/latest/download/Rflow-Setup.exe">
+        <a class="button" id="download" href="https://github.com/karthi-ai-engineer/Rach_flow/releases/latest/download/Rflow-Setup.exe">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5 10.5 4.5v7H3v-6Zm0 13 7.5 1v-7H3v6Zm8.5 1.1L21 21v-8.5h-9.5v7.1Zm0-15.2v7.1H21V3l-9.5 1.4Z"/></svg>
           Download for Windows</a>
         <a class="button secondary" href="#how">How it works</a>
@@ -215,14 +215,14 @@
   <div class="wrap">
     <span>© <span id="year">2026</span> Rflow · made by <a href="https://github.com/karthi-ai-engineer">karthi-ai-engineer</a></span>
     <span>Speech models: NVIDIA Parakeet (NVIDIA Open Model License), OpenAI Whisper (MIT) ·
-      <a href="https://github.com/karthi-ai-engineer/Rach_Darling_Flow">Source on GitHub</a></span>
+      <a href="https://github.com/karthi-ai-engineer/Rach_flow">Source on GitHub</a></span>
   </div>
 </footer>
 
 <script>
   // Show the newest version, its size and date on the download button's caption.
   document.getElementById("year").textContent = new Date().getFullYear();
-  fetch("https://api.github.com/repos/karthi-ai-engineer/Rach_Darling_Flow/releases/latest")
+  fetch("https://api.github.com/repos/karthi-ai-engineer/Rach_flow/releases/latest")
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(release => {
       const asset = (release.assets || []).find(a => a.name === "Rflow-Setup.exe");

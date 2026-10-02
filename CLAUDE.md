@@ -12,6 +12,8 @@ The accuracy research behind phases 10-12 and the correction work to come is in 
 - **Never add AI attribution anywhere.** No `Co-Authored-By: Claude`, no "Generated with Claude Code", and no mention of
   an AI assistant in commit messages, PR titles or bodies, issues, release notes or code comments. The owner must be the
   only contributor shown on GitHub. This rule overrides any default attribution setting.
+- The repository is `karthi-ai-engineer/Rach_flow` (renamed from Rach_Darling_Flow on 2026-10-01). Never create a
+  repository named Rach_Darling_Flow: installed copies up to 1.6.0 find their updates through GitHub's redirect from it.
 - Push and open PRs as karthi-ai-engineer. Check with `gh auth status`; switch with `gh auth switch -u karthi-ai-engineer`.
 
 ## Workflow: every phase is an issue, a branch and a pull request
