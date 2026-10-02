@@ -15,12 +15,14 @@ from sst.textaccess import (
     VK_RIGHT,
     VK_SHIFT,
     VK_V,
+    activate,
     cf_html,
     collapse_selection,
     copy_selection,
     paste_rich,
     select_back,
     select_last,
+    set_clipboard,
 )
 
 CF_RTF = 0xC0F0  # stands for any registered format the user's copy carries besides its text
@@ -125,7 +127,9 @@ def no_real_windows_calls(monkeypatch):
     """A test that forgets its fake fails instead of pressing keys or touching the clipboard."""
     def refuse(*args, **kwargs):
         raise AssertionError("a real Windows call in a test")
-    for name in ("send_keys", "_clipboard", "_snapshot", "_put", "_read_text", "_sequence", "_wait_for_modifiers_released"):
+    for name in ("send_keys", "_clipboard", "_snapshot", "_put", "_read_text", "_sequence", "_wait_for_modifiers_released",
+                 "foreground_window", "_is_window", "_is_iconic", "_show_window", "_bring_to_top", "_set_foreground",
+                 "_window_thread", "_current_thread", "_attach_input"):
         monkeypatch.setattr(textaccess, name, refuse)
 
 
@@ -347,6 +351,118 @@ def test_an_empty_clipboard_comes_back_empty(desktop):
     d.select(0, 1)
     paste_rich("y")
     assert d.clipboard == {}
+
+
+# ---------------------------------------------------------------- set_clipboard (the user pastes it themselves)
+
+def test_set_clipboard_leaves_text_and_html_for_the_user(desktop):
+    d = desktop("x")
+    html = "<p>one</p><p>two</p>"
+    set_clipboard("one\ntwo", html)
+    # Not put back, and without the marker that keeps a copy out of Win+V history: the user wants this one.
+    assert d.clipboard == {CF_UNICODETEXT: utf16("one\r\ntwo"), CF_HTML: cf_html(html) + b"\0"}
+    assert d.sessions == 1 and d.log == []  # no key pressed, nothing waited for
+    assert "".join(d.units) == "x"
+
+
+def test_set_clipboard_without_html_puts_only_text(desktop):
+    d = desktop()
+    set_clipboard("plain\r\ntext")
+    assert d.clipboard == {CF_UNICODETEXT: utf16("plain\r\ntext")} and d.puts == 1
+
+
+# ---------------------------------------------------------------- activate (back to the window the text came from)
+
+ME, EDITOR, BROWSER, PANEL = 7, 0x1001, 0x2002, 0x3003  # our thread; the editor, a browser in front, a window of ours
+
+
+class Windows:
+    """The top-level windows as activate sees them. As in Windows, the foreground passes on only from a thread joined
+    to the input of the window in front."""
+
+    def __init__(self, front=BROWSER, minimised=(), refuses=False, gone=(), threads=None):
+        self.front, self.minimised, self.refuses, self.gone = front, set(minimised), refuses, set(gone)
+        self.threads = threads or {EDITOR: 11, BROWSER: 22, PANEL: ME}
+        self.joined, self.calls = set(), []
+
+    def attach(self, thread, to, on):
+        assert thread == ME and to != ME  # Windows refuses to join a thread to itself
+        self.calls.append(("attach" if on else "detach", to))
+        (self.joined.add if on else self.joined.discard)(to)
+        return True
+
+    def show(self, hwnd, command):
+        self.calls.append(("show", hwnd, command))
+        self.minimised.discard(hwnd)
+
+    def set_foreground(self, hwnd):
+        self.calls.append(("foreground", hwnd))
+        if not self.refuses and self.threads.get(self.front) in self.joined | {ME}:
+            self.front = hwnd
+
+
+@pytest.fixture
+def windows(monkeypatch):
+    def make(**kwargs):
+        w = Windows(**kwargs)
+        fakes = {"foreground_window": lambda: w.front, "_is_window": lambda h: h in w.threads and h not in w.gone,
+                 "_is_iconic": lambda h: h in w.minimised, "_show_window": w.show, "_set_foreground": w.set_foreground,
+                 "_bring_to_top": lambda h: w.calls.append(("top", h)), "_window_thread": lambda h: w.threads.get(h, 0),
+                 "_current_thread": lambda: ME, "_attach_input": w.attach}
+        for name, fake in fakes.items():
+            monkeypatch.setattr(textaccess, name, fake)
+        return w
+    return make
+
+
+def test_activate_joins_the_input_for_the_switch_and_leaves_again(windows):
+    w = windows()
+    assert activate(EDITOR)
+    assert w.front == EDITOR and not w.joined
+    assert w.calls == [("attach", 22), ("attach", 11), ("top", EDITOR), ("foreground", EDITOR), ("detach", 22), ("detach", 11)]
+
+
+def test_a_minimised_window_is_restored_first(windows):
+    w = windows(minimised={EDITOR})
+    assert activate(EDITOR)
+    assert w.calls[0] == ("show", EDITOR, textaccess.SW_RESTORE) and w.front == EDITOR and not w.minimised
+
+
+def test_a_window_already_in_front_is_left_alone(windows):
+    w = windows(front=EDITOR)
+    assert activate(EDITOR) and w.calls == []
+
+
+def test_a_closed_window_cannot_be_activated(windows):
+    w = windows(gone={EDITOR})
+    assert not activate(EDITOR) and not activate(0)
+    assert w.calls == [] and w.front == BROWSER
+
+
+def test_each_other_thread_is_joined_once_and_ours_never(windows):
+    w = windows(front=PANEL)  # Rflow's own window is in front
+    assert activate(EDITOR)
+    assert [call for call in w.calls if call[0] in ("attach", "detach")] == [("attach", 11), ("detach", 11)]
+    w = windows(threads={EDITOR: 11, BROWSER: 11})  # another window of the same app
+    assert activate(EDITOR)
+    assert [call for call in w.calls if call[0] in ("attach", "detach")] == [("attach", 11), ("detach", 11)]
+
+
+def test_when_windows_keeps_another_window_in_front_activate_says_so(windows):
+    w = windows(refuses=True)
+    assert not activate(EDITOR, timeout=0.05)
+    assert w.front == BROWSER and not w.joined
+
+
+def test_the_input_is_always_detached(windows, monkeypatch):
+    w = windows()
+
+    def broken(hwnd):
+        raise OSError("SetForegroundWindow failed")
+    monkeypatch.setattr(textaccess, "_set_foreground", broken)
+    with pytest.raises(OSError):
+        activate(EDITOR)
+    assert not w.joined and w.calls[-2:] == [("detach", 22), ("detach", 11)]
 
 
 # ---------------------------------------------------------------- the HTML clipboard format

@@ -2,7 +2,8 @@
 
 Apps don't share their text with other programs in one common way, so this does what the user would do: Ctrl+C copies
 the selection, Shift+Left selects what Rflow has just typed, and Ctrl+V pastes the result over the selection, as
-formatted HTML too for the editors that take it. The user's clipboard is put back every time.
+formatted HTML too for the editors that take it. The user's clipboard is put back every time, except by set_clipboard:
+when the result can't go back where the text was, it is left on the clipboard for the user to paste.
 
 Every Windows call sits behind a small module-level function, so the tests replace them with fakes.
 """
@@ -31,6 +32,15 @@ user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.BringWindowToTop.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
@@ -45,6 +55,7 @@ kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
 kernel32.GlobalSize.restype = ctypes.c_size_t
 
 VK_C, VK_LEFT, VK_RIGHT = 0x43, 0x25, 0x27
+SW_RESTORE = 9
 CF_HTML = user32.RegisterClipboardFormatW("HTML Format")  # where browsers, Office, Teams and Slack look for formatted text
 _NO_HISTORY = (CF_EXCLUDE_FROM_HISTORY, b"\0" * 4)
 _CTRL_C = [(VK_CONTROL, False), (VK_C, False), (VK_C, True), (VK_CONTROL, True)]
@@ -75,6 +86,66 @@ def window_class(hwnd: int) -> str:
     buffer = ctypes.create_unicode_buffer(256)
     user32.GetClassNameW(hwnd, buffer, len(buffer))
     return buffer.value
+
+
+def activate(hwnd: int, timeout: float = 0.3) -> bool:
+    """Bring the window `hwnd` back to the front (restored if minimised), so a paste goes there. True once it is the
+    foreground window; False when it no longer exists or Windows kept another window in front."""
+    if not hwnd or not _is_window(hwnd):
+        return False
+    if _is_iconic(hwnd):
+        _show_window(hwnd, SW_RESTORE)
+    elif foreground_window() == hwnd:
+        return True
+    # Windows lets a background app like Rflow take the foreground only with the input of the window in front: joined
+    # to its thread (and the target's) for the call, SetForegroundWindow works instead of just flashing the taskbar.
+    me = _current_thread()
+    threads = dict.fromkeys(_window_thread(h) for h in (foreground_window(), hwnd) if h)
+    attached = [thread for thread in threads if thread and thread != me and _attach_input(me, thread, True)]
+    try:
+        _bring_to_top(hwnd)
+        _set_foreground(hwnd)
+    finally:
+        for thread in attached:  # never leave our input joined to another app's: its keyboard state would be shared
+            _attach_input(me, thread, False)
+    deadline = time.monotonic() + timeout
+    while foreground_window() != hwnd:  # the switch can land a moment later
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def _is_window(hwnd: int) -> bool:
+    return bool(user32.IsWindow(hwnd))
+
+
+def _is_iconic(hwnd: int) -> bool:
+    return bool(user32.IsIconic(hwnd))
+
+
+def _show_window(hwnd: int, command: int) -> None:
+    user32.ShowWindow(hwnd, command)
+
+
+def _bring_to_top(hwnd: int) -> None:
+    user32.BringWindowToTop(hwnd)
+
+
+def _set_foreground(hwnd: int) -> None:
+    user32.SetForegroundWindow(hwnd)
+
+
+def _window_thread(hwnd: int) -> int:
+    return user32.GetWindowThreadProcessId(hwnd, None)
+
+
+def _current_thread() -> int:
+    return kernel32.GetCurrentThreadId()
+
+
+def _attach_input(thread: int, to: int, attach: bool) -> bool:
+    return bool(user32.AttachThreadInput(thread, to, attach))
 
 
 # ---------------------------------------------------------------- reading the selection
@@ -177,10 +248,7 @@ def paste_rich(text: str, html: str | None = None) -> None:
     """Paste over the selection in the focused app: `text` for plain editors and, when given, the HTML fragment `html`
     for rich ones (Word, Outlook, Teams, Slack, browsers), so headings and lists arrive formatted. The user's clipboard
     comes back after RESTORE_DELAY, unless they copied something new meanwhile."""
-    # Windows text on the clipboard has "\r\n" line breaks; the classic edit box shows a bare "\n" as nothing.
-    items = [(CF_UNICODETEXT, (text.replace("\r\n", "\n").replace("\n", "\r\n") + "\0").encode("utf-16-le"))]
-    if html is not None:
-        items.append((CF_HTML, cf_html(html) + b"\0"))
+    items = _items(text, html)
     _wait_for_modifiers_released()  # Ctrl+V pressed while the user still holds Alt would arrive as Ctrl+Alt+V
     with _clipboard():
         saved = _snapshot()
@@ -191,6 +259,22 @@ def paste_rich(text: str, html: str | None = None) -> None:
         time.sleep(RESTORE_DELAY)  # the app reads the clipboard when it handles Ctrl+V, a moment later
     finally:
         _restore(saved, ours)
+
+
+def set_clipboard(text: str, html: str | None = None) -> None:
+    """Put `text` (and, when given, the HTML fragment `html`) on the clipboard for the user to paste themselves: the
+    fallback when the result can't go back where the text was. Unlike paste_rich this is a copy the user wants, so it
+    replaces theirs for good and is kept in Win+V history. Raises OSError while another app holds the clipboard."""
+    with _clipboard():
+        _put(_items(text, html))
+
+
+def _items(text: str, html: str | None) -> list[tuple[int, bytes]]:
+    # Windows text on the clipboard has "\r\n" line breaks; the classic edit box shows a bare "\n" as nothing.
+    items = [(CF_UNICODETEXT, (text.replace("\r\n", "\n").replace("\n", "\r\n") + "\0").encode("utf-16-le"))]
+    if html is not None:
+        items.append((CF_HTML, cf_html(html) + b"\0"))
+    return items
 
 
 def cf_html(fragment: str) -> bytes:
