@@ -5,6 +5,7 @@ A hotkey is modifiers plus an optional key, or a double tap of Ctrl or Shift:
   menu         the Menu key, next to right Alt         its right-click menu is blocked
   ctrl+alt+d   modifiers + a key                       the key is blocked, the modifiers pass through
   double ctrl  Ctrl tapped twice quickly, on its own   Ctrl passes through: alone it does nothing in apps
+  ctrl+c+c     Ctrl+C pressed twice quickly            nothing is blocked: the app copies as usual (the translator)
 
 The hook runs on its own thread and reports "press", "release", "cancel" (Esc while recording),
 "handsfree" (Space added to a modifier-only hotkey: Ctrl+Win+Space, as in Wispr Flow) and "interrupt"
@@ -107,6 +108,7 @@ TAP_HOLD, TAP_GAP = 0.35, 0.4
 # ...and the mouse pointer stays put: two quick Ctrl+clicks (selecting files, opening links) move it between the clicks.
 # The keyboard hook can't see clicks, and a mouse hook would slow every mouse move down, so the pointer tells instead.
 TAP_POINTER_PX = 12
+PRESS_GAP = 0.5  # ctrl+c+c: the second press of the key within this many seconds of the first
 
 
 @dataclass(frozen=True)
@@ -114,17 +116,17 @@ class Hotkey:
     text: str
     modifiers: frozenset[str]
     key: int | None  # None: the modifiers alone are the hotkey
-    double: bool = False  # the one modifier tapped twice (key None)
+    double: bool = False  # the one modifier tapped twice (key None), or the key pressed twice (ctrl+c+c)
 
     @property
     def label(self) -> str:
-        if self.double:
+        if self.double and self.key is None:
             return f"Double-tap {min(self.modifiers).capitalize()}"
         return "+".join("Menu key" if part == "menu" else part.capitalize() for part in self.text.split("+"))
 
 
 def parse_hotkey(text: str) -> Hotkey:
-    """'ctrl+win', 'menu', 'ctrl+alt+d' or 'double ctrl' (also 'double-shift') -> Hotkey."""
+    """'ctrl+win', 'menu', 'ctrl+alt+d', 'double ctrl' (also 'double-shift') or 'ctrl+c+c' -> Hotkey."""
     words = text.lower().replace("-", " ").split()
     if len(words) == 2 and words[0] == "double":
         modifier = _MODIFIER_NAMES.get(words[1])
@@ -132,6 +134,11 @@ def parse_hotkey(text: str) -> Hotkey:
             raise ValueError(f"'{text}' can't be double-tapped; use double ctrl or double shift")
         return Hotkey(f"double {modifier}", frozenset({modifier}), None, double=True)
     parts = [part.strip().lower() for part in text.split("+")]
+    if len(parts) >= 3 and parts[-1] == parts[-2] and parts[-1] in _KEYS:  # "ctrl+c+c": the key pressed twice
+        single = parse_hotkey("+".join(parts[:-1]))
+        if not single.modifiers:
+            raise ValueError(f"'{text}' needs a modifier, like ctrl+c+c")
+        return Hotkey("+".join(parts), single.modifiers, single.key, double=True)
     modifiers, key = set(), None
     for i, part in enumerate(parts):
         if part in _MODIFIER_NAMES:
@@ -170,6 +177,7 @@ class Matcher:
         self._captured: set[int] = set()  # keys whose press went to the menu: their repeats and release are hidden too
         self._tap: tuple[int, float] | None = None  # double tap: the modifier key down as a tap, and since when
         self._first_tap: float | None = None  # double tap: when the first tap of a pair was let go
+        self._first_press: float | None = None  # ctrl+c+c: when the key was first pressed with the modifiers
 
     def feed(self, vk: int, is_down: bool) -> tuple[bool, str | None]:
         """Returns (hide the event from other apps, event or None)."""
@@ -183,7 +191,8 @@ class Matcher:
         repeat = is_down and vk in self._down
         (self._down.add if is_down else self._down.discard)(vk)
         # Every key counts, even one a menu captures or a repeat: any key but the tapped modifier breaks a double tap.
-        tapped = self.hotkey.double and self._double_tap(vk, is_down, repeat)
+        tapped = self.hotkey.double and (self._double_tap(vk, is_down, repeat) if self.hotkey.key is None
+                                         else self._double_press(vk, is_down, repeat))
 
         # The app never saw a captured key go down, so its repeats and release stay hidden even after the capture ends;
         # a key already held when the capture began is left to the app, so it can't get stuck there.
@@ -257,6 +266,21 @@ class Matcher:
             return False
         # Another key (a shortcut like Ctrl+C), the modifier pressed with a key held, or a repeat: it's held too long.
         self._tap = self._first_tap = None
+        return False
+
+    def _double_press(self, vk: int, is_down: bool, repeat: bool) -> bool:
+        """ctrl+c+c: True as the key goes down the second time with exactly the modifiers held, soon after the first.
+        Ctrl may stay held or be pressed again in between; any other key, or a key held down (repeats), breaks it."""
+        if not is_down or MODIFIER_OF.get(vk) in self.hotkey.modifiers:
+            return False
+        now = self._clock()
+        if vk != self.hotkey.key or repeat or self._held_modifiers() != self.hotkey.modifiers:
+            self._first_press = None
+            return False
+        if self._first_press is not None and now - self._first_press < PRESS_GAP:
+            self._first_press = None  # a third press starts a new pair
+            return True
+        self._first_press = now
         return False
 
     def _pointer_moved(self) -> bool:

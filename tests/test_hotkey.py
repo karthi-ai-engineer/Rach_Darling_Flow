@@ -436,3 +436,46 @@ def test_ctrl_clicks_that_move_the_pointer_are_not_a_double_tap():
     first = play(m, clock, 0.5, *tap(), 0.1)
     at[0] = (108, 146)  # a hand resting on the mouse nudges it a little: still a double tap
     assert events(first + play(m, clock, *tap())) == ["release"]
+
+
+# ---------------------------------------------------------------- ctrl+c+c (Translate)
+
+def test_parse_ctrl_c_c():
+    hotkey = parse_hotkey("ctrl+c+c")
+    assert hotkey.double and hotkey.key == C and hotkey.modifiers == {"ctrl"} and hotkey.label == "Ctrl+C+C"
+    with pytest.raises(ValueError):
+        parse_hotkey("c+c")  # without a modifier it would fire while typing "cc"
+
+
+def press_c():
+    return ("down", C), 0.05, ("up", C)
+
+
+def test_ctrl_held_and_c_pressed_twice_fires_and_hides_nothing():
+    m, clock = tapping("ctrl+c+c")
+    results = play(m, clock, ("down", LCTRL), *press_c(), 0.1, *press_c(), ("up", LCTRL))
+    assert events(results) == ["release"] and not any(hidden for hidden, _ in results)  # the app still copies
+
+
+def test_ctrl_c_twice_with_ctrl_let_go_in_between_fires():
+    m, clock = tapping("ctrl+c+c")
+    assert events(play(m, clock, ("down", LCTRL), *press_c(), ("up", LCTRL), 0.1, ("down", RCTRL), *press_c(),
+                       ("up", RCTRL))) == ["release"]
+
+
+def test_slow_copies_shortcuts_and_held_keys_are_not_ctrl_c_c():
+    m, clock = tapping("ctrl+c+c")
+    assert events(play(m, clock, ("down", LCTRL), *press_c(), 0.6, *press_c(), ("up", LCTRL))) == []  # too slow
+    assert events(play(m, clock, 1.0, ("down", LCTRL), *press_c(), ("down", 0x56), ("up", 0x56), *press_c(),
+                       ("up", LCTRL))) == []  # Ctrl+C, Ctrl+V, Ctrl+C: a paste in between
+    assert events(play(m, clock, 1.0, ("down", LCTRL), ("down", C), ("down", C), ("down", C), ("up", C),
+                       ("up", LCTRL))) == []  # C held down: repeats aren't presses
+    assert events(play(m, clock, 1.0, *press_c(), 0.1, *press_c())) == []  # "cc" typed, no Ctrl
+    assert events(play(m, clock, 1.0, ("down", LCTRL), ("down", LSHIFT), *press_c(), *press_c(), ("up", LSHIFT),
+                       ("up", LCTRL))) == []  # Ctrl+Shift+C is another shortcut
+
+
+def test_a_third_copy_starts_a_new_pair():
+    m, clock = tapping("ctrl+c+c")
+    assert events(play(m, clock, ("down", LCTRL), *press_c(), *press_c(), *press_c(), *press_c(),
+                       ("up", LCTRL))) == ["release", "release"]
