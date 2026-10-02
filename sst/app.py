@@ -29,7 +29,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
 from sst import __version__, bench, downloads, evaluate, scan, updates
-from sst.audio import TAIL_SECONDS, Recorder, input_device_names
+from sst.audio import PREROLL_SECONDS, TAIL_SECONDS, Recorder, input_device_names
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, load_engine, usable
 from sst.engines.cloud import CLOUD, REMOTE, SERVER, CloudEngine
@@ -623,8 +623,9 @@ class TrayApp:
         press)."""
         s, recorder = self.settings, self.recorder
         self._configure(recorder)
-        if s.voice_pipeline:
-            recorder.preroll_seconds = VoiceConfig().audio.pre_roll_ms / 1000
+        # The pipeline trims its 2 s pre-roll to the speech running into the key press; the classic path doesn't, so it
+        # keeps the short pre-roll it always had.
+        recorder.preroll_seconds = VoiceConfig().audio.pre_roll_ms / 1000 if s.voice_pipeline else PREROLL_SECONDS
         if s.always_on_mic:
             recorder.warm_seconds = math.inf
             try:

@@ -138,8 +138,9 @@ def extract_entities(text: str, terms: Iterable[str] = ()) -> list[ProtectedEnti
             plain = re.fullmatch(r"\d+(?:\.\d+)?", m.group())
             add("NUMBER" if plain else "CODE", m.start(), m.end(), _dec(Decimal(m.group())) if plain else m.group().casefold())
     for term in _unique(terms):
-        for m in re.finditer(r"(?<!\w)" + r"\s+".join(map(re.escape, term.split())) + r"(?!\w)", text, re.I):
-            add("TERM", m.start(), m.end(), " ".join(m.group().casefold().split()), claim=False)
+        words = (re.sub("['’]", "['’]", re.escape(w)) for w in term.split())
+        for m in re.finditer(r"(?<!\w)" + r"\s+".join(words) + r"(?!\w)", text, re.I):  # either apostrophe
+            add("TERM", m.start(), m.end(), " ".join(m.group().casefold().replace("’", "'").split()), claim=False)
     for m in _NEGATION.finditer(text):
         add("NEGATION", m.start(), m.end(), "not", claim=False)
     return sorted(found, key=lambda e: e.span)
@@ -770,7 +771,15 @@ class Guard:
 def _spelled(side: _Side, term: str, is_excused=None) -> int:
     """How often a term is written exactly as the user spells it (not counting words a correction replaced)."""
     return sum(1 for e, span in zip(side.entities, side.spans, strict=True)
-               if e.kind == "TERM" and " ".join(e.value.split()) == term and not (is_excused and is_excused(span)))
+               if e.kind == "TERM" and _same_spelling(" ".join(e.value.split()), term)
+               and not (is_excused and is_excused(span)))
+
+
+def _same_spelling(written: str, term: str) -> bool:
+    """Written as the user spells the term: either apostrophe, and a lowercase term may start a sentence with a capital
+    ("tray" -> "Tray"); the user's own capitals ("GitHub") must stay as they are."""
+    written, term = written.replace("’", "'"), term.replace("’", "'")
+    return written == term or (term[:1].islower() and written == term[:1].upper() + term[1:])
 
 
 def _result(fired: list[tuple[str, str]], notes: list[str], ratio: float, diagnostics: dict) -> GuardResult:

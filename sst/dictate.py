@@ -34,6 +34,7 @@ HOLD_SECONDS = 0.4   # key held longer than this = push-to-talk; a quicker tap =
 MIN_SECONDS = 0.3    # shorter recordings are treated as accidental presses
 MAX_SECONDS = 180    # recordings stop by themselves after 3 minutes (the text is still typed)
 DEFAULT_HOTKEY = "ctrl+win"
+START_BEEP = 880  # Hz: the voice pipeline filters it out of the recording (sst.pipeline.session._ToneNotch)
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ class Dictation:
             log.exception("Could not open the microphone")
             self.on_state("error", f"Could not open the microphone: {e}")
             return
-        self._beep(880)
+        self._beep(START_BEEP)
         prepare = getattr(self.engine, "prepare", None)
         if prepare:
             prepare()  # a cloud speech model: connect while the user speaks, not after
@@ -155,7 +156,7 @@ class Dictation:
         elif take.seconds < MIN_SECONDS:
             self.on_state("ignored", "Too short, ignored.")
         else:
-            self._beep(660)
+            self._beep(660, after=take.done)  # once the tail is in: the microphone heard it in the last part
             self._jobs.put((take, session))
             self.on_state("transcribing", "")
 
@@ -183,7 +184,8 @@ class Dictation:
                     break
                 preroll.append(block)
                 n += len(block)
-            session = self.pipeline.start(take.rate, np.concatenate(preroll) if preroll else None)
+            session = self.pipeline.start(take.rate, np.concatenate(preroll) if preroll else None,
+                                          START_BEEP if self.sounds else None)
             _Feeder(take, session, skip=len(preroll)).start()
             return session
         except Exception:  # the classic way still types the text
@@ -239,7 +241,9 @@ class Dictation:
                 self._jobs.task_done()
 
     def _finish_session(self, take: Take, session) -> None:
-        audio, rate = take.audio(), take.rate
+        # Without the pre-roll the session left out (speech before the key press that isn't part of the dictation):
+        # the whole-recording last resort, a retry and the saved recording see what the session saw.
+        audio, rate = take.audio()[getattr(session, "trimmed", 0):], take.rate
         final = session.result()
         if final.provenance.value == "failed" and self.engine is not None and len(audio):
             try:  # the last resort before failing: the whole recording in one piece, as before the voice pipeline
@@ -274,9 +278,15 @@ class Dictation:
         else:
             self.on_state("typed" if typed else "idle", typed)
 
-    def _beep(self, frequency: int) -> None:
-        if self.sounds:
-            threading.Thread(target=winsound.Beep, args=(frequency, 60), daemon=True).start()
+    def _beep(self, frequency: int, after: threading.Event | None = None) -> None:
+        if not self.sounds:
+            return
+
+        def play() -> None:
+            if after is not None:
+                after.wait(2.0)
+            winsound.Beep(frequency, 60)
+        threading.Thread(target=play, daemon=True).start()
 
 
 class _Feeder(threading.Thread):
