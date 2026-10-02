@@ -6,13 +6,15 @@ package keeps its name, `sst`. **Never create a repository named Rach_Darling_Fl
 1.6.0 check for updates under the old name, which GitHub redirects only while that name stays free (checked after
 the rename: an installed 1.5.0 asking under the old name was offered 1.6.0).
 
-_Last updated: 2026-10-01_
+_Last updated: 2026-10-02_
 
 ## Start here (a new session, or the owner's other laptop)
 
 **Where things stand (2026-10-02):**
-- **Rflow 1.7.0 is released** (2026-10-02, GitHub Release `v1.7.0`, the website's download), on the owner's "release
-  it": Text Transform (phase 20: say "make it concise" or double-tap Ctrl; PR #50), the fix for text never said
+- **Rflow 1.8.0 is released** (2026-10-02, GitHub Release `v1.8.0`, the website's download), on the owner's "RELEASE
+  IT": Snippets (phase 21: say "my email", your text is typed; PR #52) and Translate (phase 22: select text, Ctrl+C+C,
+  a popup with the translation; PR #54).
+- 1.7.0 (the same day): Text Transform (phase 20: say "make it concise" or double-tap Ctrl; PR #50), the fix for text never said
   (PR #48) and the new names (Rach_flow, rachflow.vercel.app; PR #47). 1.6.0 brought the owner's voice
   pipeline (phase 19: parts transcribed while speaking, dictionary, formatting, a guarded AI cleanup, an always-on
   microphone). 1.5.0 brought speech recognition as building blocks (phases 13-18) and a 90 MB installer. 1.4.0 contained accuracy phases 10-12.
@@ -102,12 +104,12 @@ _Last updated: 2026-10-01_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
-| 22 | **Translate** (the owner's idea, like DeepL): select text, Ctrl+C+C, a popup at the pointer shows it translated by the AI model, language at the top, Copy or Replace | PR (stacked on #52), waiting for the owner's test + merge |
-| 21 | **Snippets** (the owner's idea): say "my email" and your email is typed; your own phrases and text (several lines), alone or inside a sentence, never sent to the AI | PR, waiting for the owner's test + merge |
+| 22 | **Translate** (the owner's idea, like DeepL): select text, Ctrl+C+C, a popup at the pointer shows it translated by the AI model, language at the top, Copy or Replace | done, on `main` (PR #54), released **v1.8.0** |
+| 21 | **Snippets** (the owner's idea): say "my email" and your email is typed; your own phrases and text (several lines), alone or inside a sentence, never sent to the AI | done, on `main` (PR #52), released **v1.8.0** |
 | 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | done, on `main` (PR #50, with #48), released **v1.7.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
-Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0 and v1.7.0 (GitHub Releases; there is no 1.2.0). Website: https://rachflow.vercel.app (Vercel project `rach_darling_flow-site`, team karthi-labs; the address was
+Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0 and v1.8.0 (GitHub Releases; there is no 1.2.0). Website: https://rachflow.vercel.app (Vercel project `rach_darling_flow-site`, team karthi-labs; the address was
 added on 2026-10-01, and the old https://rachdarlingflow-site.vercel.app stays assigned: installed apps up to 1.6.0
 link there, so never remove it;
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -1249,10 +1251,10 @@ These were scratch scripts, not in git. The findings:
    The release was made with the stacked-merge recipe: #35 into `main`, then #37, #39, #41 and #43, each retargeted
    to `main` first; CI green on `main`; then the tag. This laptop's global git config signs tags
    (`tag.gpgsign`), so a tag needs `-m`.
-2. **Owner: try Translate** (phase 22, PR): select a sentence in Edge or Teams → Ctrl+C twice → the popup shows it in
+2. **Owner: try Translate** (phase 22, released as 1.8.0: update from the banner): select a sentence in Edge or Teams → Ctrl+C twice → the popup shows it in
    English (set Japanese as the second language on the Translate page for English text); pick another language at
    its top; Replace; Esc.
-3. **Owner: try Snippets** (phase 21, PR): Snippets page → add "my email" → your email; dictate "my email"; add
+3. **Owner: try Snippets** (phase 21, released as 1.8.0): Snippets page → add "my email" → your email; dictate "my email"; add
    "insert my signature" with two lines and "Also inside a sentence", then dictate "thanks, insert my signature".
 4. **Owner: try Text Transform** (phase 20, released as 1.7.0: update from the banner): Text Transform page → Try
    it; then in Teams or Notepad:
