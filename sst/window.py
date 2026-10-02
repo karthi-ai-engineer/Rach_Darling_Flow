@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from sst import RECORDINGS_DIR, __version__, bench
 from sst.audio import LevelMeter, Take, call_quality, save_wav
+from sst.commands import DEFAULT_PHRASES, UNDO, normalize, parse_phrases, phrases_for
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, WHERE, usable
 from sst.engines.cloud import CLOUD, SPEECH
 from sst.engines.whisper import LANGUAGES
@@ -73,9 +74,9 @@ LOG_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "sst" / "logs"
 WEBSITE = "https://rachdarlingflow-site.vercel.app"
 REPO = "https://github.com/karthi-ai-engineer/Rach_Darling_Flow"
 HOTKEY_CHOICES = [("Ctrl+Win (like Wispr Flow)", "ctrl+win"), ("Menu key", "menu"), ("Ctrl+Alt+D", "ctrl+alt+d")]
-# Text Transform's shortcut: not Ctrl+Win+... (that starts a dictation) and not a plain Ctrl+letter (apps use those).
-TRANSFORM_HOTKEYS = [("Ctrl+Alt+T", "ctrl+alt+t"), ("Ctrl+Alt+Y", "ctrl+alt+y"), ("Ctrl+Shift+Space", "ctrl+shift+space"),
-                     ("Off", "")]
+# Text Transform's menu shortcut: not Ctrl+Win+... (that starts a dictation) and not a plain Ctrl+letter (apps use those).
+# A double tap of Ctrl is the easiest; PowerToys' "Find My Mouse" uses a double Ctrl too (Rflow's still works with it).
+TRANSFORM_HOTKEYS = [("Double-tap Ctrl", "double ctrl"), ("Ctrl+Alt+T", "ctrl+alt+t"), ("F8", "f8"), ("Off", "")]
 
 log = logging.getLogger("sst.window")
 
@@ -1556,19 +1557,54 @@ class CleanupPage(Page):
 # ---------------------------------------------------------------- Text Transform
 
 class TransformPage(Page):
-    """Text Transform (sst.transformui): the shortcut, the transforms in its menu, and a box to try them in."""
+    """Text Transform (sst.transformui): the voice commands and their phrases (sst.commands), the menu's shortcut and
+    transforms, and a box to try them in."""
 
     def __init__(self, app, go_to):
-        super().__init__("Text Transform", "Speak normally first; transform the text afterwards, only when you want to. "
-                                           "Select text in any app, or just finish a dictation, press the shortcut, "
-                                           "then a number. The result replaces the text, and nothing is added, "
-                                           "dropped or decided for you: numbers, names, dates and your \"maybe\" stay.")
+        super().__init__("Text Transform", "Speak normally first; transform the text afterwards, only when you want to: "
+                                           "say \"make it concise\", or double-tap Ctrl for a menu. It works on the "
+                                           "text selected in any app, or else on your last dictation. The result "
+                                           "replaces the text, and nothing is added, dropped or decided for you: "
+                                           "numbers, names, dates and your \"maybe\" stay.")
         self.app = app
+        s = app.settings
+        voice, layout = card(8)
+        layout.addWidget(text("Say it", "h2"))
+        self.voice = QCheckBox("Voice commands: hold the dictation key and say one")
+        self.voice.setChecked(s.voice_commands)
+        self.voice.toggled.connect(self._apply)
+        layout.addWidget(self.voice)
+        layout.addWidget(text("Say only the command; anything longer is typed as dictated. Your own phrases: separate "
+                              "them with commas.", muted=True))
+        names = {key: transform.name for key, transform in TRANSFORMS.items()} | {UNDO: "Undo"}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(6)
+        self.phrases: dict[str, QLineEdit] = {}
+        for i, key in enumerate(DEFAULT_PHRASES):
+            edit = QLineEdit()
+            edit.setPlaceholderText("no phrase: this command is off")
+            edit.setToolTip(f"What you say for {names[key]}. The defaults: {', '.join(DEFAULT_PHRASES[key])}.")
+            edit.editingFinished.connect(self._save_phrases)
+            self.phrases[key] = edit
+            grid.addWidget(text(names[key], wrap=False), i, 0)
+            grid.addWidget(edit, i, 1)
+        grid.setColumnStretch(1, 1)
+        layout.addLayout(grid)
+        self.phrase_note = text("", "warning")
+        layout.addWidget(self.phrase_note)
+        self.reset = button("Use the default phrases", self._reset_phrases, link=True)
+        layout.addLayout(row(self.reset, stretch_at=1))
+        self.add(voice)
+
         frame, layout = card(10)
+        layout.addWidget(text("The menu", "h2"))
         self.hotkey = QComboBox()
         for label, value in TRANSFORM_HOTKEYS:
             self.hotkey.addItem(label, value)
-        self.hotkey.setCurrentIndex(max(0, self.hotkey.findData(app.settings.transform_hotkey)))
+        if self.hotkey.findData(s.transform_shortcut) < 0:
+            self.hotkey.insertItem(self.hotkey.count() - 1, s.transform_shortcut, s.transform_shortcut)  # set by hand
+        self.hotkey.setCurrentIndex(self.hotkey.findData(s.transform_shortcut))
         self.hotkey.currentIndexChanged.connect(self._apply)
         layout.addLayout(row(text("Shortcut", wrap=False), self.hotkey, stretch_at=2))
         self.how = text("", muted=True)
@@ -1620,10 +1656,19 @@ class TransformPage(Page):
 
     def refresh(self) -> None:
         s, model = self.app.settings, self.app.transform_model()
-        label = self.hotkey.currentText()
-        self.how.setText("Text Transform is off." if not s.transform_hotkey else
-                         f"Select text, or don't (then your last dictation is used), press {label}, then 1-"
+        shortcut = s.transform_shortcut
+        press = "double-tap Ctrl" if shortcut == "double ctrl" else f"press {self.hotkey.currentText()}"
+        self.how.setText("The menu is off: voice commands still work." if not shortcut else
+                         f"Select text, or don't (then your last dictation is used), {press}, then 1-"
                          f"{max(1, len(s.transforms))} or a click. U undoes the last transform; Esc closes the menu.")
+        phrases = phrases_for(s.command_phrases)
+        for key, edit in self.phrases.items():
+            if not edit.hasFocus():  # never rewrite what the user is typing
+                edit.setText(", ".join(phrases[key]))
+                edit.setCursorPosition(0)  # a long list shows its first phrases, not its last
+            edit.setEnabled(s.voice_commands)
+        self.reset.setVisible(bool(s.command_phrases))
+        self._check_phrases(phrases)
         self.model.setText(f"Uses your AI cleanup model: {model}" if model else
                            "Text Transform needs an AI model: choose a provider and a model in AI cleanup.")
         self.setup.setVisible(not model)
@@ -1632,9 +1677,41 @@ class TransformPage(Page):
 
     def _apply(self, *_) -> None:
         chosen = [key for key, box in self.choices.items() if box.isChecked()]
-        self.app.apply_settings(dataclasses.replace(self.app.settings, transform_hotkey=self.hotkey.currentData(),
-                                                    transforms=chosen))
+        self.app.apply_settings(dataclasses.replace(self.app.settings, transform_shortcut=self.hotkey.currentData(),
+                                                    transforms=chosen, voice_commands=self.voice.isChecked()))
         self.refresh()
+
+    def _save_phrases(self) -> None:
+        """A phrase box was left: keep the user's phrases where they differ from the defaults (the defaults can then
+        improve in an update)."""
+        custom = {}
+        for key, edit in self.phrases.items():
+            said = parse_phrases(edit.text())
+            if said != list(DEFAULT_PHRASES[key]):
+                custom[key] = ", ".join(said)
+        if custom != self.app.settings.command_phrases:
+            self.app.apply_settings(dataclasses.replace(self.app.settings, command_phrases=custom))
+        self.refresh()
+
+    def _reset_phrases(self) -> None:
+        self.app.apply_settings(dataclasses.replace(self.app.settings, command_phrases={}))
+        for edit in self.phrases.values():
+            edit.clearFocus()
+        self.refresh()
+
+    def _check_phrases(self, phrases: dict[str, list[str]]) -> None:
+        """A phrase given to two commands: the first one gets it; say so, rather than surprise the user."""
+        seen: dict[str, str] = {}
+        twice = []
+        names = {key: transform.name for key, transform in TRANSFORMS.items()} | {UNDO: "Undo"}
+        for key, options in phrases.items():
+            for phrase in options:
+                said = normalize(phrase)
+                if said in seen and seen[said] != key:
+                    twice.append(f"\"{phrase}\" is in {names[seen[said]]} and {names[key]}: {names[seen[said]]} is used.")
+                seen.setdefault(said, key)
+        self.phrase_note.setText(" ".join(twice))
+        self.phrase_note.setVisible(bool(twice))
 
     def _say(self, message: str) -> None:
         self.note.setText(message)

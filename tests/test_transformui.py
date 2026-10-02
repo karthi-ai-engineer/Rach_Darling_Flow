@@ -1,5 +1,6 @@
-"""Text Transform's flow: the shortcut, the text (a selection, or the last dictation), the menu, the transform, the
-replacement and undo. Windows is faked (no key is pressed, the clipboard isn't touched) and so is the AI model."""
+"""Text Transform's flow: the shortcut or a voice command, the text (a selection, or the last dictation), the menu, the
+transform, the replacement (its window brought back, or the clipboard) and undo. Windows is faked (no key is pressed,
+no window activated, the clipboard isn't touched) and so is the AI model."""
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from sst.settings import Settings  # noqa: E402
 from sst.transform import TransformResult  # noqa: E402
-from sst.transformui import MENU_KEYS, TransformController, edges  # noqa: E402
+from sst.transformui import MENU_KEYS, UNDO, TransformController, edges  # noqa: E402
 
 ORIGINAL = "I checked the deployment and everything looks good, but we still have one issue with the database migration."
 CONCISE = "Deployment looks good, but the database migration issue remains."
@@ -24,14 +25,24 @@ def qt():
 
 
 class FakeAccess:
-    """The focused app: what is selected, what was typed last, what gets pasted."""
+    """The focused app: what is selected, what was typed last, what gets pasted; the window in front."""
 
     def __init__(self, selection=None, window=7):
         self.selection, self.window = selection, window
-        self.selected_last, self.pasted = [], []
-        self.select_ok = True
+        self.selected_last, self.pasted, self.activated = [], [], []
+        self.select_ok = self.activate_ok = True
         self.cls = "Chrome_WidgetWin_1"
         self.copied = 0
+        self.clipboard = None  # what Rflow left there for the user (set_clipboard)
+
+    def activate(self, hwnd):
+        self.activated.append(hwnd)
+        if self.activate_ok:
+            self.window = hwnd
+        return self.activate_ok
+
+    def set_clipboard(self, text, html=None):
+        self.clipboard = (text, html)
 
     def foreground_window(self):
         return self.window
@@ -45,10 +56,13 @@ class FakeAccess:
 
     def select_last(self, text):
         self.selected_last.append(text)
+        if self.select_ok:
+            self.selection = text
         return self.select_ok
 
     def paste_rich(self, text, html=None):
         self.pasted.append((text, html))
+        self.selection = None  # the paste replaced the selection: the caret is after it
 
 
 class FakeListener:
@@ -157,7 +171,7 @@ def test_without_text_nothing_is_changed_and_the_user_is_told(qt, case):
     access.select_ok = case != "not found"
     open_menu(controller)
     assert not controller.menu.isVisible() and not access.pasted
-    assert app.said[-1] == ("warning", "Select some text first, then press the shortcut again.")
+    assert app.said[-1] == ("warning", "Select some text first, then try again.")
 
 
 def test_a_rejected_transform_keeps_the_text_and_says_why(qt):
@@ -177,13 +191,41 @@ def test_a_failing_provider_changes_nothing(qt):
     assert "HTTP 429 quota" in app.said[-1][1] and not access.pasted
 
 
-def test_switching_windows_meanwhile_pastes_nothing(qt):
+def test_switching_windows_meanwhile_brings_the_text_back(qt):
     controller, access, app = make(selection=ORIGINAL)
     open_menu(controller)
-    access.window = 8  # the user went elsewhere while the model answered
+    access.window = 8  # the user went elsewhere while choosing, or while the model answered
+    controller.menu.key(0x31)
+    assert wait_until(lambda: not controller.busy and access.pasted)
+    assert access.activated == [7] and access.window == 7  # its window came back to the front first
+    assert access.pasted == [(CONCISE, f"<p>{CONCISE}</p>")] and access.clipboard is None
+    assert ("transformed", "Transformed: Concise") in app.said
+
+
+def test_clicking_away_in_the_same_window_selects_the_text_again(qt):
+    controller, access, app = make(selection=ORIGINAL)
+    open_menu(controller)
+    access.selection = None  # a click in the text box: the selection is gone, the caret is after the text
+    controller.menu.key(0x31)
+    assert wait_until(lambda: not controller.busy and access.pasted)
+    assert access.selected_last == [ORIGINAL] and access.pasted[0][0] == CONCISE
+
+
+@pytest.mark.parametrize("case", ["window gone", "other text selected", "caret elsewhere"])
+def test_when_the_text_cant_be_found_again_the_result_waits_on_the_clipboard(qt, case):
+    controller, access, app = make(selection=ORIGINAL)
+    open_menu(controller)
+    if case == "window gone":
+        access.window, access.activate_ok = 8, False
+    elif case == "other text selected":
+        access.selection = "something else the user selected meanwhile"
+    else:
+        access.selection, access.select_ok = None, False
     controller.menu.key(0x31)
     assert wait_until(lambda: not controller.busy and app.said[-1][0] == "warning")
-    assert "switched windows" in app.said[-1][1] and not access.pasted and app.remembered  # the result is on Home
+    assert not access.pasted  # never pasted over something else
+    assert access.clipboard == (CONCISE, f"<p>{CONCISE}</p>") and "press Ctrl+V" in app.said[-1][1]
+    assert app.remembered == [(CONCISE, ORIGINAL)]  # and on Home
 
 
 def test_undo_restores_the_original(qt):
@@ -200,6 +242,65 @@ def test_undo_restores_the_original(qt):
     assert wait_until(lambda: len(access.pasted) == 2)
     assert access.pasted[1] == (ORIGINAL, None) and controller.last is None
     assert wait_until(lambda: ("transformed", "Original restored") in app.said)
+
+
+def test_undo_puts_the_original_on_the_clipboard_when_the_text_moved(qt):
+    controller, access, app = make(selection=ORIGINAL)
+    open_menu(controller)
+    controller.menu.key(0x31)
+    assert wait_until(lambda: controller.last is not None and not controller.busy)
+    app.said.clear()
+    open_menu(controller)
+    assert controller.menu.items[-1][0] == UNDO
+    access.selection, access.select_ok = "other words", False  # the user selected something else before pressing U
+    controller.menu.key(0x55)
+    assert wait_until(lambda: not controller.busy and app.said[-1][0] == "warning")
+    assert len(access.pasted) == 1 and access.clipboard == (ORIGINAL, None) and "press Ctrl+V" in app.said[-1][1]
+
+
+# -- voice commands: "make it concise" said while holding the dictation key (sst.commands)
+
+def test_a_voice_command_transforms_the_selection_without_a_menu(qt):
+    controller, access, app = make(selection=ORIGINAL)
+    controller.run_command("concise")
+    assert app.said[0] == ("transforming", "Concise")
+    assert wait_until(lambda: not controller.busy and access.pasted)
+    assert not controller.menu.isVisible() and access.pasted == [(CONCISE, f"<p>{CONCISE}</p>")]
+    assert app.asked == [("concise", ORIGINAL)] and ("transformed", "Transformed: Concise") in app.said
+
+
+def test_a_voice_command_takes_the_last_dictation(qt):
+    controller, access, app = make(selection=None)
+    controller.note_typed(ORIGINAL + " ", hwnd=7)
+    controller.run_command("professional")
+    assert wait_until(lambda: not controller.busy and access.pasted)
+    assert access.selected_last == [ORIGINAL + " "] and access.pasted[0][0] == CONCISE + " "
+    assert app.asked == [("professional", ORIGINAL)]
+
+
+def test_undo_that_restores_the_original(qt):
+    controller, access, app = make(selection=ORIGINAL)
+    controller.run_command("concise")
+    assert wait_until(lambda: controller.last is not None and not controller.busy)
+    controller.run_command(UNDO)  # nothing selected after the paste: the transform just typed is the text
+    assert wait_until(lambda: not controller.busy and len(access.pasted) == 2)
+    assert access.selected_last == [CONCISE] and access.pasted[1] == (ORIGINAL, None)
+    assert ("transformed", "Original restored") in app.said and controller.last is None
+
+
+@pytest.mark.parametrize("case, command, message", [
+    ("no model", "concise", "Text Transform needs an AI model: choose one in AI cleanup."),
+    ("nothing to undo", UNDO, "Nothing to undo: there was no transform yet."),
+    ("no text", "concise", "Select some text first, then try again."),
+    ("busy", "concise", "Text Transform is still busy with the last one."),
+])
+def test_a_voice_command_that_cant_run_says_why(qt, case, command, message):
+    controller, access, app = make(selection=None, ready=case != "no model")
+    controller.busy = case == "busy"
+    controller.run_command(command)
+    assert wait_until(lambda: app.said and app.said[-1][0] == "warning")
+    assert app.said[-1] == ("warning", message) and not access.pasted and not app.asked
+    controller.busy = False
 
 
 def test_esc_or_the_shortcut_again_closes_the_menu(qt):

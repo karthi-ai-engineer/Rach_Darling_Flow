@@ -33,7 +33,9 @@ class Settings:
     voice_pipeline: bool = True  # chunks while speaking, then dictionary, formatting, LLM and guard (sst.pipeline)
     format_text: bool = True  # spoken numbers, dates, times and money written as such ("25%", "3:30 PM")
     debug_pipeline: bool = False  # keep every dictation's stages and chunk audio in %LOCALAPPDATA%\sst\debug
-    transform_hotkey: str = "ctrl+alt+t"  # Text Transform's shortcut (sst.transformui); "" = off
+    transform_shortcut: str = "double ctrl"  # Text Transform's menu for selected text (sst.transformui); "" = off
+    voice_commands: bool = True  # hold the dictation key and say "make it concise" (sst.commands)
+    command_phrases: dict[str, str] = field(default_factory=dict)  # transform -> the user's own phrases ("a, b"); else defaults
     transforms: list[str] = field(default_factory=lambda: ["concise", "professional", "bullets", "actions"])  # in the menu
     raw_audio: bool = False  # ask Windows for the microphone without its voice effects (noise suppression, gating)
     speech_model: str = "parakeet"  # the speech recognition model, a key of sst.engines.SPEECH_MODELS

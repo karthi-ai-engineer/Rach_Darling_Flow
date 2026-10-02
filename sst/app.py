@@ -30,6 +30,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon,
 
 from sst import __version__, bench, downloads, evaluate, scan, updates
 from sst.audio import PREROLL_SECONDS, TAIL_SECONDS, Recorder, input_device_names
+from sst.commands import UNDO, match_command, phrases_for
 from sst.dictate import DEFAULT_HOTKEY, Dictation, already_running, wispr_flow_running
 from sst.engines import DEFAULT_MODEL, SPEECH_MODELS, load_engine, usable
 from sst.engines.cloud import CLOUD, REMOTE, SERVER, CloudEngine
@@ -237,6 +238,7 @@ def show_running_window() -> bool:
 class _Signals(QObject):
     state = Signal(str, str)  # from Dictation, possibly on its worker thread
     result = Signal(str, str, float)  # (heard, typed, seconds of audio), from Dictation's worker thread
+    command = Signal(str)  # a voice command for Text Transform ("make it concise"), from Dictation's worker thread
     loaded = Signal(object)
     failed = Signal(str, str)  # (speech model, why it couldn't load)
     update_found = Signal(object)  # the rest come from the update threads
@@ -277,6 +279,7 @@ class TrayApp:
         self.signals = _Signals()
         self.signals.state.connect(self._on_state)
         self.signals.result.connect(self._on_result)
+        self.signals.command.connect(lambda command: self.transforms.run_command(command))
         self.signals.loaded.connect(self._on_loaded)
         self.signals.failed.connect(self._on_failed)
         self.signals.update_found.connect(self._on_update_found)
@@ -294,7 +297,7 @@ class TrayApp:
         self.pill = Pill(level=lambda: self.recorder.level)
         # Text Transform: its own shortcut and keyboard hook (HotkeyListener looked up when used: the tests replace it)
         self.transforms = TransformController(self, listener_factory=lambda key: HotkeyListener(key))
-        self.transforms.start(self.settings.transform_hotkey)
+        self.transforms.start(self.settings.transform_shortcut)
         self.window = MainWindow(self)
 
         self.tray = QSystemTrayIcon(self.icon)
@@ -420,6 +423,8 @@ class TrayApp:
                                        save=self.settings.save_recordings)
             self.dictation.on_state = self.signals.state.emit
             self.dictation.on_result = self.signals.result.emit
+            self.dictation.command = self.voice_command
+            self.dictation.on_command = self.signals.command.emit
         else:
             self.dictation.engine = engine  # the next dictation uses it; one being transcribed finishes with the old
         self._apply_cleanup()  # also gives the new model Your words, and builds its voice pipeline
@@ -530,7 +535,8 @@ class TrayApp:
         pipeline.stages = Stages(dictionary=DictionaryEngine(self.dictionary, config.dictionary),
                                  formatter=Formatter(config.formatting) if s.format_text else None,
                                  llm=llm, guard=Guard(config.guard),
-                                 terms=lambda: speech_hints(self.dictionary.hint_terms()))  # protected: not "move"
+                                 terms=lambda: speech_hints(self.dictionary.hint_terms()),  # protected: not "move"
+                                 command=self.voice_command)
         dictation.pipeline = pipeline
 
     def _on_pipeline_event(self, name: str, data: dict) -> None:
@@ -661,8 +667,8 @@ class TrayApp:
                 self._build_pipeline()
             if new.hotkey != old.hotkey:
                 self._start_listener()
-        if new.transform_hotkey != old.transform_hotkey and hasattr(self, "transforms"):
-            self.transforms.start(new.transform_hotkey)
+        if new.transform_shortcut != old.transform_shortcut and hasattr(self, "transforms"):
+            self.transforms.start(new.transform_shortcut)
         if new.speech_model != old.speech_model:
             self._load_speech()
         self.window.refresh()
@@ -702,6 +708,16 @@ class TrayApp:
 
     def transform_ready(self) -> bool:
         return bool(self.transform_model())
+
+    def voice_command(self, text: str) -> str | None:
+        """The Text Transform command a whole dictation is ("make it concise", "undo that"), or None: type it. On the
+        dictation's thread. Without an AI model a transform's phrase is typed as said (nothing is lost); "undo" is
+        always a command, so the pill can say there is nothing to undo."""
+        s = self.settings
+        if not s.voice_commands:
+            return None
+        command = match_command(text, phrases_for(s.command_phrases))
+        return command if command == UNDO or (command and self.transform_ready()) else None
 
     def run_transform(self, text: str, key: str):
         """The transform of `text` (sst.transform.TransformResult); raises when the provider can't be asked."""
@@ -1015,7 +1031,7 @@ class TrayApp:
             if self.settings.hotkey != old_hotkey:
                 self._start_listener()
             self._load_speech()  # the other profile may use another speech model
-        self.transforms.start(self.settings.transform_hotkey)
+        self.transforms.start(self.settings.transform_shortcut)
         # Every page shows the profile's own data: build the window again rather than update each field.
         old, self.window = self.window, MainWindow(self)
         self.window.set_status(*self._status)

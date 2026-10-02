@@ -1,14 +1,18 @@
 """Text Transform (the owner's idea, 2026-10-02): speak normally first, transform the text afterwards, only on request.
 
-  the shortcut (Ctrl+Alt+T)   the text selected in the focused app, or else the last dictation (or transform) typed there
-  1-9 or a click              the transform (Concise, Professional, Bullet points, Action items...)
-  U                           undo: the last transform's original comes back (Ctrl+Z in the app works too)
-  Esc                         close the menu; nothing changes
+  say "make it concise"         (holding the dictation key) the transform, right away: sst.commands, run_command
+  double-tap Ctrl (the shortcut) the menu for the text selected in the focused app, or else the last dictation typed there
+  1-9 or a click                the transform (Concise, Professional, Bullet points, Action items...)
+  U, or say "undo that"         undo: the last transform's original comes back (Ctrl+Z in the app works too)
+  Esc                           close the menu; nothing changes
 
-The menu takes no keyboard focus, so the app keeps its selection; the keys the menu needs are taken from the keyboard
-hook while it is open. The text is transformed by the AI cleanup's model under a strict prompt and checked by
-sst.transform.TransformGuard: a result that loses or invents anything isn't typed, and the user is told why. The user's
-clipboard is left as it was (sst.textaccess).
+The text is the selection, else the last dictation (or transform) typed in that window, selected again by Rflow. The
+menu takes no keyboard focus, so the app keeps its selection; the keys the menu needs are taken from the keyboard hook
+while it is open. The text is transformed by the AI cleanup's model under a strict prompt and checked by
+sst.transform.TransformGuard: a result that loses or invents anything isn't typed, and the user is told why. Before the
+result replaces the text, its window is brought back and the text checked to still be selected there; if that can't be
+made sure, the result goes on the clipboard instead ("press Ctrl+V"). Otherwise the user's clipboard is left as it was
+(sst.textaccess).
 """
 import logging
 import threading
@@ -181,7 +185,7 @@ class TransformController(QObject):
 
     _ready = Signal(object)  # a Target, or why there is no text (str), from the capture thread
     _done = Signal(object)  # (Target, TransformResult or error str), from the transform thread
-    _restored = Signal(object)  # (Done, error str or ""), from the undo thread
+    _restored = Signal(object)  # (Done, "") after an undo, or (None, "transformed:<name>" or what went wrong): the end
 
     def __init__(self, app, access=None, listener_factory=HotkeyListener):
         super().__init__()
@@ -194,7 +198,7 @@ class TransformController(QObject):
         self.menu.closed.connect(self._menu_closed)
         self._ready.connect(self._show_menu)
         self._done.connect(self._finish)
-        self._restored.connect(self._after_undo)
+        self._restored.connect(self._after)
         self.pump = QTimer(self)
         self.pump.setInterval(15)
         self.pump.timeout.connect(self._pump)
@@ -243,6 +247,7 @@ class TransformController(QObject):
                 self.menu.key(int(event[4:]))
 
     def trigger(self) -> None:
+        """The shortcut: the menu for the selected text (or the last dictation)."""
         if self.menu.isVisible():  # the shortcut again closes the menu
             self.menu.close_menu()
             return
@@ -252,26 +257,51 @@ class TransformController(QObject):
             self.app.say("warning", "Text Transform needs an AI model: choose one in AI cleanup.")
             return
         self.busy = True
-        threading.Thread(target=self._capture, name="transform-capture", daemon=True).start()
+        threading.Thread(target=self._capture, args=(None,), name="transform-capture", daemon=True).start()
 
-    def _capture(self) -> None:
+    def run_command(self, command: str) -> None:
+        """A voice command (sst.commands): a transform, or UNDO, on the selected text or the last dictation; no menu."""
+        if self.busy or self.menu.isVisible():
+            self.app.say("warning", "Text Transform is still busy with the last one.")
+            return
+        if command == UNDO and self.last is None:
+            self.app.say("warning", "Nothing to undo: there was no transform yet.")
+            return
+        if command != UNDO and not self.app.transform_ready():
+            self.app.say("warning", "Text Transform needs an AI model: choose one in AI cleanup.")
+            return
+        self.busy = True
+        if command != UNDO:
+            self.app.say("transforming", TRANSFORMS[command].name)
+        threading.Thread(target=self._capture, args=(command,), name="transform-command", daemon=True).start()
+
+    def _capture(self, command: str | None) -> None:
+        """Find the text (on a thread: copying waits for the app), then the menu, or the command right away."""
         try:
-            hwnd = self.access.foreground_window()
-            if self.access.window_class(hwnd) in TERMINALS:
-                self._ready.emit("Text Transform doesn't work in a terminal: Ctrl+C there would stop the running program.")
-                return
-            text = self.access.copy_selection()
-            if text and text.strip():
-                self._ready.emit(Target(text, "selection", hwnd))
-                return
-            last = self.last_typed
-            if last and last[2] == hwnd and time.monotonic() - last[1] < LAST_TEXT_SECONDS and self.access.select_last(last[0]):
-                self._ready.emit(Target(last[0], "last", hwnd))
-                return
-            self._ready.emit("Select some text first, then press the shortcut again.")
-        except Exception as e:  # the clipboard was busy, a window closed...: say so, never leave the shortcut stuck
+            target = self._find(self.access.foreground_window())
+        except Exception as e:  # the clipboard was busy, a window closed...: say so, never leave Text Transform stuck
             log.exception("Reading the text to transform failed")
-            self._ready.emit(f"Couldn't read the text ({e})")
+            target = f"Couldn't read the text ({e})"
+        if command is None:
+            self._ready.emit(target)
+        elif isinstance(target, str):
+            self._restored.emit((None, target))
+        elif command == UNDO:
+            self._undo(target)
+        else:
+            self._run(target, command)
+
+    def _find(self, hwnd: int) -> Target | str:
+        """The selected text, else the last text typed in this window (selected again); or why there is none."""
+        if self.access.window_class(hwnd) in TERMINALS:
+            return "Text Transform doesn't work in a terminal: Ctrl+C there would stop the running program."
+        text = self.access.copy_selection()
+        if text and text.strip():
+            return Target(text, "selection", hwnd)
+        last = self.last_typed
+        if last and last[2] == hwnd and time.monotonic() - last[1] < LAST_TEXT_SECONDS and self.access.select_last(last[0]):
+            return Target(last[0], "last", hwnd)
+        return "Select some text first, then try again."
 
     # -- the menu
 
@@ -338,18 +368,30 @@ class TransformController(QObject):
         lead, trail = edges(target.text)
         pasted = lead + result.plain + trail
         self.app.remember(pasted.strip(), target.text.strip())
-        if self.access.foreground_window() != target.hwnd:  # another window is in front: its text isn't the one read
-            self.busy = False
-            self.app.say("warning", "You switched windows, so nothing was replaced. The result is on Rflow's Home page.")
-            return
         threading.Thread(target=self._paste, args=(target, result, pasted), name="transform-paste", daemon=True).start()
+
+    def _place(self, target: Target) -> bool:
+        """Make sure the text read is selected again where it was, the moment before it is replaced: the user may have
+        clicked elsewhere or switched windows while the menu was open or the model answered. Its window comes back to
+        the front, and the text must be the selection, or be found right before the caret (as typed); else False."""
+        if self.access.foreground_window() != target.hwnd and not self.access.activate(target.hwnd):
+            return False
+        copied = self.access.copy_selection()
+        if copied is not None:  # something is selected: replace it only if it is still that text
+            return same_text(copied, target.text)
+        return self.access.select_last(target.text)
 
     def _paste(self, target: Target, result, pasted: str) -> None:
         try:
-            self.access.paste_rich(pasted, result.html or None)
-            self.last = Done(target.text, pasted, target.hwnd, result.transform)
-            self.last_typed = (pasted, time.monotonic(), target.hwnd)  # press the shortcut again: another transform, or undo
-            self._restored.emit((None, f"transformed:{TRANSFORMS[result.transform].name}"))
+            if self._place(target):
+                self.access.paste_rich(pasted, result.html or None)
+                self.last = Done(target.text, pasted, target.hwnd, result.transform)
+                self.last_typed = (pasted, time.monotonic(), target.hwnd)  # again: another transform, or undo
+                self._restored.emit((None, f"transformed:{TRANSFORMS[result.transform].name}"))
+            else:  # never paste over something else: the result waits on the clipboard instead
+                self.access.set_clipboard(pasted.strip(), result.html or None)
+                self._restored.emit((None, "Your text wasn't where it was any more, so the result is on the clipboard: "
+                                           "press Ctrl+V."))
         except Exception as e:
             log.exception("Pasting the transform failed")
             self._restored.emit((None, f"Couldn't type the result ({e}); it is on Rflow's Home page."))
@@ -359,6 +401,10 @@ class TransformController(QObject):
         try:
             if last is None or not same_text(target.text, last.pasted):
                 raise RuntimeError("undo works on the text a transform just typed; Ctrl+Z in the app works too")
+            if not self._place(target):
+                self.access.set_clipboard(last.original.strip())
+                raise RuntimeError("Your text wasn't where it was any more, so the original is on the clipboard: press "
+                                   "Ctrl+V")
             self.access.paste_rich(last.original)
             self.last = None
             self.last_typed = (last.original, time.monotonic(), target.hwnd)
@@ -366,7 +412,7 @@ class TransformController(QObject):
         except Exception as e:
             self._restored.emit((None, str(e)))
 
-    def _after_undo(self, payload) -> None:
+    def _after(self, payload) -> None:
         self.busy = False
         last, message = payload
         if message.startswith("transformed:"):
