@@ -765,6 +765,44 @@ def test_a_snippet_needs_both_parts():
     assert app.settings.snippets == [] and "Fill in both" in page.note.text()
 
 
+# ---- Translate
+
+def test_the_translate_page_sets_the_shortcut_and_the_languages():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk"),
+                          settings=Settings(welcomed=True, cleanup_model="gpt-4o-mini"))
+    window.show_page("translate")
+    page = window.pages["translate"]
+    assert page.shortcut.currentData() == "ctrl+c+c" and "Ctrl+C+C" in page.how.text()
+    assert "Uses your AI cleanup model: gpt-4o-mini" in page.model.text() and page.setup.isHidden()
+    page.target.setCurrentText("Japanese")
+    page.second.setCurrentIndex(page.second.findData("English"))
+    assert (app.settings.translate_to, app.settings.translate_second) == ("Japanese", "English")
+    assert "already in Japanese: into English" in page.how.text()
+    page.shortcut.setCurrentIndex(page.shortcut.findData(""))
+    assert app.settings.translate_shortcut == "" and "off" in page.how.text()
+
+
+def test_translate_can_be_tried_on_the_page():
+    window, app = _window(gateway=GatewayConfig(provider="openai", api_key="sk"),
+                          settings=Settings(welcomed=True, cleanup_model="gpt-4o-mini", translate_to="Spanish"))
+    page = window.pages["translate"]
+    page.refresh()
+    page.try_button.click()
+    for _ in range(200):
+        QApplication.processEvents()
+        if not page.result.isHidden():
+            break
+        time.sleep(0.01)
+    assert "informe" in page.result.toPlainText() and ("run_translation", "Spanish") in app.calls
+
+
+def test_translate_without_an_ai_model_points_to_the_setup():
+    window, _ = _window()
+    window.show_page("translate")
+    page = window.pages["translate"]
+    assert not page.setup.isHidden() and not page.try_button.isEnabled()
+
+
 # ---- Text Transform
 
 def test_the_text_transform_page_sets_the_shortcut_and_the_menu():
