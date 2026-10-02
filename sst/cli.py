@@ -123,7 +123,8 @@ def cmd_eval(args) -> None:
         engine.language = settings.speech_language
     if hasattr(engine, "words"):  # as in dictation: the recogniser listens for Your words
         chosen = [w.strip() for w in args.words.split(",")] if args.words else settings.vocabulary
-        engine.words = [] if args.no_words else [w for w in chosen if w]
+        from sst.pipeline.dictionary import speech_hints
+        engine.words = [] if args.no_words else speech_hints(w for w in chosen if w)  # as in dictation
         biased = getattr(engine, "biased", True)  # Parakeet listens for them only with its bpe.vocab
         print(f"  Your words used while recognising: {len(engine.words)}" + ("" if biased else " (no bpe.vocab)"))
     results = evaluate.run(folders, engine, pipelines, progress=lambda text: print(" ", text))

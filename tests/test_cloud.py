@@ -44,6 +44,7 @@ class FakeProvider:
     def __init__(self):
         self.requests, self.connections, self.statuses, self.delay = [], 0, [], 0.0
         self.answer, self.drop = None, False
+        self.reply = None  # (request) -> the text a Flash or OpenAI-format model answers, or None for the default
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -80,6 +81,10 @@ class FakeProvider:
                     return self._reply(status, {"error": {"message": reason}})
                 if "json" in request and "transcribe" in self.path:
                     return self._reply(200, fake.answer or TRANSCRIBED)
+                if fake.reply is not None and (text := fake.reply(request)) is not None:
+                    if "json" in request:
+                        return self._reply(200, {"candidates": [{"content": {"parts": [{"text": text}]}}]})
+                    return self._reply(200, {"text": text})
                 if "json" in request:
                     return self._reply(200, {"candidates": [{"content": {"parts": [
                         {"text": "Thinking about it...", "thought": True}, {"text": " Hello  from\nGemini. "}]}}]})
@@ -525,3 +530,81 @@ def test_an_old_idle_connection_is_replaced_and_a_dropped_one_reconnected(fake, 
     # The dead connection was replaced and nothing was asked twice. Whether the client notices the server's close
     # before reusing the connection (one new connection) or only when it fails (two) depends on timing (seen on CI).
     assert len(fake.requests) == 4 and fake.connections in (3, 4)
+
+
+
+# ---- the hint list written into the transcript (the owner's log, 2026-10-02)
+
+OWNER_WORDS = ["version", "installer", "commit", "tray", "app", "pill", "Let's", "move", "stand", "meeting", "Thursday",
+               "morning", "commits", "GitHub", "Rflow", "Parakeet", "laptop", "Vercel", "after", "tests"]
+
+
+def _prompt(request) -> str:
+    if "json" in request:
+        return " ".join(p.get("text", "") for p in request["json"]["contents"][0]["parts"])
+    return (request["fields"].get("prompt") or b"").decode()
+
+
+def test_only_names_and_terms_go_to_the_speech_model_as_a_spelling_reference(fake):
+    for provider, path in (("gemini", "/v1beta"), ("groq", "/v1")):
+        engine = fake.engine(provider, model="gemini-flash-lite-latest" if provider == "gemini" else "", path=path)
+        engine.words = OWNER_WORDS
+        engine.transcribe(AUDIO, RATE)
+        prompt = _prompt(fake.requests[-1])
+        assert all(term in prompt for term in ("GitHub", "Rflow", "Parakeet", "Vercel"))
+        assert not any(f'"{w}"' in prompt or f" {w}," in prompt for w in ("move", "after", "tests", "laptop", "Let's"))
+    assert "Never write any of them unless it is clearly spoken" in _prompt(fake.requests[0])
+
+
+def test_a_copied_hint_list_is_replaced_by_the_transcript_made_without_hints(fake):
+    fake.reply = lambda request: ("What is the problem. GitHub, Rflow, Parakeet, Vercel." if "GitHub" in _prompt(request)
+                                  else "What is the problem.")
+    engine = fake.engine("gemini", model="gemini-flash-lite-latest", path="/v1beta")
+    engine.words = OWNER_WORDS
+    raw = engine.transcribe_chunk(AUDIO, RATE)
+    assert raw.text == "What is the problem." and raw.diagnostics["hint_echo"] == "replaced"
+    assert "GitHub" in _prompt(fake.requests[0]) and "GitHub" not in _prompt(fake.requests[1])  # asked again, plainly
+    assert engine.transcribe(AUDIO, RATE) == "What is the problem."  # the classic path too
+
+
+def test_terms_really_said_in_their_list_order_are_kept(fake):
+    fake.reply = lambda request: ("We ship GitHub, Rflow, Parakeet today." if "GitHub" in _prompt(request)
+                                  else "We ship Github, airflow, parakeet today.")
+    engine = fake.engine("openai", model="whisper-1")
+    engine.words = OWNER_WORDS
+    raw = engine.transcribe_chunk(AUDIO, RATE)
+    assert raw.text == "We ship GitHub, Rflow, Parakeet today." and raw.diagnostics["hint_echo"] == "spoken"
+
+
+def test_without_a_second_opinion_the_copied_list_is_taken_out(fake):
+    def reply(request):
+        if "GitHub" in _prompt(request):
+            fake.statuses.append(503)  # the plain request that follows fails
+            return "Send it to me, GitHub Rflow Parakeet Vercel."
+        return None
+    fake.reply = reply
+    engine = fake.engine("gemini", model="gemini-flash-lite-latest", path="/v1beta")
+    engine.words = OWNER_WORDS
+    raw = engine.transcribe_chunk(AUDIO, RATE)
+    assert raw.text == "Send it to me." and raw.diagnostics["hint_echo"] == "removed"
+
+
+@pytest.mark.parametrize("text, copied", [
+    ("Could you tell me what is the problem. version installer. Commit tray app pill. Let's move stand meeting Thursday "
+     "morning.", "version installer. Commit tray app pill. Let's move stand meeting Thursday morning"),
+    ("this directory, Let's move standard meeting Thursday morning, commits GitHub, Rflow, Parakeet, laptop, Vercel, after "
+     "tests.", "meeting Thursday morning, commits GitHub, Rflow, Parakeet, laptop, Vercel, after tests"),
+    ("Let's move the meeting to Thursday morning.", None),  # said: not in the list's order, words between
+    ("We use GitHub and Vercel every day.", None),
+    ("GitHub Rflow", None),  # two in a row is not enough
+])
+def test_hint_echo_finds_the_list_written_out_in_order(text, copied):
+    from sst.engines.cloud import hint_echo
+    span = hint_echo(text, OWNER_WORDS)
+    assert (text[span[0]:span[1]] if span else None) == copied
+
+
+def test_taking_out_a_copied_run_tidies_the_punctuation():
+    from sst.engines.cloud import without
+    text = "Could you tell me the problem, version installer commit tray. Thanks."
+    assert without(text, (text.index("version"), text.index("tray") + 4)) == "Could you tell me the problem. Thanks."

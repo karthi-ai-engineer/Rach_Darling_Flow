@@ -20,6 +20,7 @@ pipeline's chunks (transcribe_chunk) never fall back here: the pipeline decides.
 each on a kept-alive connection of its own.
 """
 import base64
+import difflib
 import hashlib
 import http.client
 import io
@@ -40,6 +41,7 @@ import numpy as np
 from sst.audio import TARGET_RATE, condition, resample
 from sst.engines.whisper import LANGUAGES
 from sst.pipeline.contracts import RawTranscript, WordInfo
+from sst.pipeline.dictionary import speech_hints
 
 CONNECT_TIMEOUT = 1.5  # a first connection sometimes stalls (seen from Python); a retry gets through in milliseconds
 CONNECT_ATTEMPTS = 3
@@ -84,9 +86,14 @@ REMOTE = {**CLOUD, SERVER.key: SERVER}  # every speech model that runs somewhere
 
 SPEECH = re.compile(r"whisper|transcri|speech|asr|parakeet|canary|voxtral|stt|audio", re.IGNORECASE)  # "Load models"
 
-INSTRUCTION = ("Write down exactly what is said in this recording, word for word, with punctuation and capital letters. "
-               "Output only the transcript: no introduction, no notes, no translation.")
-TIMESTAMP_MODES = ("timestamps", "vocabulary")  # Gemini Transcribe: word times, or Your words as custom vocabulary
+INSTRUCTION = ("Transcribe the speech in this recording exactly, word for word, with punctuation and capital letters. "
+               "Output only the words that are spoken: no introduction, no notes, no translation. If nothing is spoken, "
+               "output nothing.")
+# The hints follow as a spelling reference. Phrased as plain data ("these may occur") a Flash model has written the
+# list itself into the transcript (the owner's log, 2026-10-02), most often for a part with little speech.
+HINTS = ("Spelling reference only, not part of the recording: if the speaker says one of these names or terms, spell it "
+         "like this: {terms}. Never write any of them unless it is clearly spoken in the recording.")
+ECHO_MIN_WORDS = 3  # this many hint words in a row, in the hints' own order, look like the hint list written out
 
 
 class CloudError(Exception):
@@ -209,7 +216,7 @@ class CloudEngine:
             log.warning("No speech model to fall back on: %s", e)
             raise CloudError(f"{self.provider.name}: {reason} ({e})") from None
         if hasattr(self._fallback, "words"):
-            self._fallback.words = list(self.words)
+            self._fallback.words = speech_hints(self.words)
         self.last_error = f"{self.provider.name}: {reason}"
         return self._fallback.transcribe(audio, sample_rate)
 
@@ -261,27 +268,50 @@ class CloudEngine:
 
     def _ask(self, wav: bytes, seconds: float, timed: bool = False) -> RawTranscript:
         """The provider's transcript. `timed` asks a Whisper model for word times too (verbose_json: the same text,
-        a bigger answer). Gemini Transcribe's request is the same either way, so `sst eval` scores what dictation gets."""
+        a bigger answer). Gemini Transcribe's request is the same either way, so `sst eval` scores what dictation gets.
+
+        If the text holds the hint list itself (hint_echo), the recording is transcribed once more without hints: when
+        those words are gone, the model had copied them from the prompt, and the plain transcript is used."""
+        hints = speech_hints(self.words)
+        raw = self._ask_once(wav, seconds, timed, hints)
+        echo = hint_echo(raw.text, hints)
+        if echo is None:
+            return raw
+        copied = raw.text[echo[0]:echo[1]]
+        try:
+            plain = self._ask_once(wav, seconds, timed, [])
+        except (CloudError, OSError, http.client.HTTPException) as e:  # no second opinion: drop the run itself
+            log.warning("%s wrote the hint list into a transcript; removed it (no check possible: %s)", self.title, e)
+            raw.text, raw.words = without(raw.text, echo), []
+            raw.diagnostics["hint_echo"] = "removed"
+            return raw
+        if still_there(copied, plain.text):  # said for real: keep the transcript made with the spelling help
+            raw.diagnostics["hint_echo"] = "spoken"
+            return raw
+        log.warning("%s wrote the hint list into a transcript; used the transcript made without hints", self.title)
+        plain.diagnostics["hint_echo"] = "replaced"
+        return plain
+
+    def _ask_once(self, wav: bytes, seconds: float, timed: bool, hints: list[str]) -> RawTranscript:
         timeout = ANSWER_TIMEOUT + ANSWER_PER_SECOND * seconds
         backend = self.title
         if self._transcribe_model():
-            raw = self._ask_transcribe(wav, timeout)
+            raw = self._ask_transcribe(wav, timeout, hints)
         elif self.provider.api == "gemini":
-            raw = self._ask_gemini(wav, timeout)
+            raw = self._ask_gemini(wav, timeout, hints)
         else:
-            raw = self._ask_openai(wav, timeout, timed and self._asks_word_times())
+            raw = self._ask_openai(wav, timeout, timed and self._asks_word_times(), hints)
         raw.text, raw.backend = " ".join(raw.text.split()), backend
         raw.language = raw.language or self.language
         return raw
 
-    def _ask_gemini(self, wav: bytes, timeout: float) -> RawTranscript:
-        """A Flash model: the recording inline, with an instruction (and the hints) in words."""
-        words = ", ".join(w for w in self.words if w.strip())
+    def _ask_gemini(self, wav: bytes, timeout: float, hints: list[str]) -> RawTranscript:
+        """A Flash model: the recording inline, with an instruction (and the hints, as a spelling reference)."""
         instruction = INSTRUCTION
         if self.language:
             instruction += f" The speech is in {LANGUAGES.get(self.language, self.language)}."
-        if words:
-            instruction += f" These names and terms may occur; spell them like this: {words}."
+        if hints:
+            instruction += " " + HINTS.format(terms=", ".join(f'"{h}"' for h in hints))
         body = json.dumps({"contents": [{"parts": [
             {"inline_data": {"mime_type": "audio/wav", "data": base64.b64encode(wav).decode("ascii")}},
             {"text": instruction}]}], "generationConfig": {"temperature": 0}}).encode("utf-8")
@@ -292,31 +322,32 @@ class CloudEngine:
 
     # ---- Gemini Transcribe (the owner's plan, sections 18-21): upload, transcribe and delete kept apart
 
-    def _ask_transcribe(self, wav: bytes, timeout: float) -> RawTranscript:
+    def _ask_transcribe(self, wav: bytes, timeout: float, hints: list[str] | None = None) -> RawTranscript:
         mode = self._mode
         if len(wav) <= INLINE_LIMIT:
             transport = "inline"
             answer = self.transcribe_audio(
-                {"inlineData": {"mimeType": "audio/wav", "data": base64.b64encode(wav).decode("ascii")}}, timeout, mode)
+                {"inlineData": {"mimeType": "audio/wav", "data": base64.b64encode(wav).decode("ascii")}}, timeout, mode,
+                hints)
         else:
             transport = "files"
             file = self.upload_audio(wav, timeout)
             try:
                 answer = self.transcribe_audio({"fileData": {"mimeType": "audio/wav", "fileUri": file["uri"]}}, timeout,
-                                               mode)
+                                               mode, hints)
             finally:
                 self.delete_remote_file(str(file.get("name") or ""))
         text, words, language = gemini_transcript(answer)
         return RawTranscript(text, words, language, diagnostics={"mode": mode, "transport": transport})
 
-    def transcribe_audio(self, audio: dict, timeout: float, mode: str | None = None) -> dict:
+    def transcribe_audio(self, audio: dict, timeout: float, mode: str | None = None, hints: list[str] | None = None) -> dict:
         """Gemini Transcribe's answer for one recording, given inline ({"inlineData": ...}) or uploaded
         ({"fileData": ...}). No instruction: the config says what to do. VERBATIM, since SMART mode (cleaned up)
         allows no word times and the pipeline cleans up itself."""
         config = {"mode": "VERBATIM", "languageCodes": [self.language] if self.language else [], "wordTimestamp": True}
         if (mode or self._mode) == "vocabulary":  # Google: custom vocabulary works only without word times
             config["wordTimestamp"] = False
-            if vocabulary := vocabulary_list(self.words):
+            if vocabulary := vocabulary_list(speech_hints(self.words) if hints is None else hints):
                 config["customVocabulary"] = vocabulary
         body = json.dumps({"contents": [{"parts": [audio]}], "generationConfig": {"audioTranscriptionConfig": config}})
         status, data, _ = self._request(f"/models/{self.model}:generateContent", body.encode("utf-8"), self._google(),
@@ -367,8 +398,8 @@ class CloudEngine:
         Whisper model, and no more once it refused."""
         return "whisper" in self.model.lower() and (self.url, self.model) not in self._plain_json
 
-    def _ask_openai(self, wav: bytes, timeout: float, timed: bool) -> RawTranscript:
-        words = ", ".join(w for w in self.words if w.strip())
+    def _ask_openai(self, wav: bytes, timeout: float, timed: bool, hints: list[str]) -> RawTranscript:
+        words = ", ".join(hints)
         fields = {"model": self.model} if self.model else {}
         fields["response_format"] = "verbose_json" if timed else "json"
         if timed:
@@ -383,7 +414,7 @@ class CloudEngine:
         if timed and self.name == SERVER.key and status in (400, 422):  # FastAPI-based servers say 422
             # A server that answers only plain JSON: ask again without word times. Once that works, this server and
             # model aren't asked for them again (a 400 for another reason fails the plain request too).
-            raw = self._ask_openai(wav, timeout, False)
+            raw = self._ask_openai(wav, timeout, False, hints)
             self._plain_json.add((self.url, self.model))
             log.info("%s gives no word times (HTTP %d); asking for plain JSON from now on", self.title, status)
             return raw
@@ -514,6 +545,59 @@ class CloudEngine:
                 continue
             return conn
         raise Unreachable(f"cannot reach {host}: {error}")
+
+
+def _norm(word: str) -> str:
+    return re.sub(r"\W", "", word.replace("\u2019", "'").casefold())
+
+
+_WORD = re.compile(r"[\w'\u2019-]+")
+
+
+def hint_echo(text: str, hints: list[str]) -> tuple[int, int] | None:
+    """Where a transcript holds the hint list itself: the character span of the longest run of ECHO_MIN_WORDS or more
+    words in a row (punctuation between them allowed) that are hint words in the hints' own order, or None. A person
+    rarely says their dictionary's terms one after another in its order; a model copying its prompt does exactly
+    that. A plural or singular counts as the same word ("commits" for "commit")."""
+    order: dict[str, list[int]] = {}
+    for n, word in enumerate(w for term in hints for w in term.split() if _norm(w)):
+        order.setdefault(_norm(word), []).append(n)
+    if sum(len(v) for v in order.values()) < ECHO_MIN_WORDS:
+        return None
+    tokens = list(_WORD.finditer(text))
+    best, start, last, count = None, 0, -1, 0
+    for i, token in enumerate(tokens):
+        key = _norm(token.group())
+        alternative = key[:-1] if key.endswith("s") else key + "s"
+        positions = sorted(set(order.get(key, []) + order.get(alternative, [])))
+        following = next((p for p in positions if p > last), None) if count else None
+        if following is not None:
+            last, count = following, count + 1
+        elif positions:  # a new run starts here
+            start, last, count = i, positions[0], 1
+        else:
+            count = 0
+        if count >= ECHO_MIN_WORDS and (best is None or count > best[2]):
+            best = (start, i, count)
+    return (tokens[best[0]].start(), tokens[best[1]].end()) if best else None
+
+
+def still_there(copied: str, text: str) -> bool:
+    """Whether most of a suspected copied run is in a transcript made without hints, in the same order: then it was
+    really said (spelled however the model hears it without help)."""
+    want = [_norm(w) for w in _WORD.findall(copied)]
+    have = [_norm(w) for w in _WORD.findall(text)]
+    matched = sum(block.size for block in difflib.SequenceMatcher(None, want, have, autojunk=False).get_matching_blocks())
+    return bool(want) and matched / len(want) >= 0.6
+
+
+def without(text: str, span: tuple[int, int]) -> str:
+    """The text with a span taken out and the punctuation around the gap tidied ("it, . Then" -> "it. Then")."""
+    text = text[:span[0]] + " " + text[span[1]:]
+    text = re.sub(r"\s+([,.;:!?])", r"\1", " ".join(text.split()))
+    text = re.sub(r"([,;:])+\s*([.!?])", r"\2", text)
+    text = re.sub(r"([.!?])(\s*[.,;:])+", r"\1", text)
+    return text.strip(" ,;:")
 
 
 def vocabulary_list(words: list[str]) -> list[str]:

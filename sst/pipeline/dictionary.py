@@ -160,6 +160,24 @@ def is_common(word: str) -> bool:
                for suffix, stem in _SUFFIXES)
 
 
+def speech_hints(terms: Iterable[str]) -> list[str]:
+    """The terms worth giving a speech model as hints, or protecting through the AI cleanup: names and technical terms,
+    not everyday words. Speech models spell everyday words right without help, and a hint list of them only makes them
+    heard where they weren't said; an LLM transcriber (Gemini Flash-Lite) even wrote the whole list into the text, at
+    the end of dictations (the owner's log, 2026-10-02: "Let's move stand meeting Thursday morning"). A phrase of
+    everyday words stays when it is written as a name ("Visual Studio Code")."""
+    out: dict[str, str] = {}
+    for term in terms:
+        words = str(term).split()
+        if not words:
+            continue
+        everyday = all(is_common(normalize(w).strip(".,;:!?\"()")) for w in words)
+        named = len(words) > 1 and all(w[:1].isupper() for w in words)
+        if not everyday or named:
+            out.setdefault(" ".join(words).casefold(), " ".join(words))
+    return list(out.values())
+
+
 @lru_cache(maxsize=65536)
 def phonetic(word: str) -> str:
     """A Metaphone-like sound skeleton of an English word or of a phrase written together: consonants by sound, vowels

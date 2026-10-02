@@ -465,3 +465,13 @@ def test_performance_5000_terms_200_words():
     check_spans(text, result)
     assert min(timings) < 0.050, timings
     store.close()
+
+
+
+def test_only_names_and_terms_are_speech_hints():
+    from sst.pipeline.dictionary import speech_hints
+    owner = ["version", "installer", "commit", "tray", "app", "pill", "Let's", "move", "stand", "meeting", "Thursday",
+             "morning", "commits", "GitHub", "Rflow", "Parakeet", "laptop", "Vercel", "after", "tests"]
+    assert speech_hints(owner) == ["tray", "GitHub", "Rflow", "Parakeet", "Vercel"]
+    assert speech_hints(["Visual Studio Code", "stand meeting", "Karthi", "karthi", "H100", " ", "Swift"]) == [
+        "Visual Studio Code", "Karthi", "H100"]  # a name written as one stays; duplicates and everyday words go

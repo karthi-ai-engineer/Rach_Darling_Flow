@@ -53,6 +53,7 @@ from sst.engines.cloud import CLOUD, SPEECH
 from sst.engines.whisper import LANGUAGES
 from sst.gateway import PROVIDERS, GatewayConfig, Polisher
 from sst.hotkey import parse_hotkey
+from sst.pipeline.dictionary import speech_hints
 from sst.scan import Computer
 from sst.settings import (
     Profiles,
@@ -571,6 +572,11 @@ class DictionaryPage(Page):
             layout = QHBoxLayout(line)
             layout.setContentsMargins(10, 4, 4, 4)
             layout.addWidget(text(word, wrap=False))
+            if not speech_hints([word]):
+                everyday = text("everyday word: not given to speech recognition", muted=True, wrap=False)
+                everyday.setToolTip("Speech models spell everyday words right by themselves; listed as hints, they get "
+                                    "heard where you didn't say them. Keep names and terms here.")
+                layout.addWidget(everyday)
             if aliases:
                 layout.addWidget(text("also when heard as " + ", ".join(f"\u201c{a}\u201d" for a in aliases), muted=True,
                                       wrap=False))
