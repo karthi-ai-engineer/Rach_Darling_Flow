@@ -65,6 +65,13 @@ from sst.settings import (
     set_start_with_windows,
     starts_with_windows,
 )
+from sst.snippets import MAX_CUE_WORDS as SNIPPET_WORDS
+from sst.snippets import Snippet
+from sst.snippets import alone as snippet_alone
+from sst.snippets import compact as compact_cue
+from sst.snippets import expand as expand_snippets
+from sst.snippets import load as load_snippets
+from sst.snippets import protect as protect_snippets
 from sst.transform import TRANSFORMS
 
 APP_NAME = "Rflow"
@@ -86,7 +93,7 @@ GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanu
           "copy": "\ue8c8", "edit": "\ue70f", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
           "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
           "profile": "\ue77b", "speech": "\ue720", "warning": "\ue7ba", "cancel": "\ue711", "dot": "\ue915",
-          "transform": "\ue8ac"}
+          "transform": "\ue8ac", "snippets": "\ue70b"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
@@ -627,6 +634,146 @@ class DictionaryPage(Page):
     def _remove(self, word: str) -> None:
         self.app.remove_word(word)
         self.refresh()
+
+
+# ---------------------------------------------------------------- Snippets
+
+class SnippetsPage(Page):
+    """Snippets (sst.snippets): say a short phrase, get your own text typed, exactly as written here."""
+
+    def __init__(self, app):
+        super().__init__("Snippets", "Say a short phrase, get your own text: \u201cmy email\u201d types your email "
+                                     "address, \u201cmy signature\u201d your signature, line breaks and all. The text "
+                                     "is typed exactly as you write it here, and is never sent to the AI cleanup.")
+        self.app = app
+        self.editing: str | None = None  # the cue of the snippet being edited
+        form, layout = card(8)
+        self.form_title = text("Add a snippet", "h2")
+        layout.addWidget(self.form_title)
+        self.cue = QLineEdit()
+        self.cue.setPlaceholderText("When I say\u2026 (e.g. my email)")
+        layout.addWidget(self.cue)
+        self.snippet_text = QPlainTextEdit()
+        self.snippet_text.setPlaceholderText("\u2026type this (e.g. xyz@gmail.com). Several lines are fine.")
+        self.snippet_text.setFixedHeight(84)
+        layout.addWidget(self.snippet_text)
+        self.anywhere = QCheckBox("Also inside a sentence (\u201csend it to my email\u201d)")
+        self.anywhere.setToolTip("Off: only when you say the phrase on its own, so \u201cI checked my email this "
+                                 "morning\u201d stays as you said it. Turn it on for phrases you wouldn't say "
+                                 "otherwise, like \u201cinsert my signature\u201d.")
+        layout.addWidget(self.anywhere)
+        self.note = text("", muted=True)
+        self.note.hide()
+        layout.addWidget(self.note)
+        self.save_button = button("Add", self._save, primary=True)
+        self.cancel_button = button("Cancel", self._cancel)
+        self.cancel_button.hide()
+        layout.addLayout(row(self.save_button, self.cancel_button, stretch_at=2))
+        self.add(form)
+
+        trial, layout = card(8)
+        layout.addWidget(text("Try it", "h2"))
+        self.trial = QLineEdit()
+        self.trial.setPlaceholderText("Type what you would say, e.g. send it to my email")
+        self.trial.textChanged.connect(self._try)
+        layout.addWidget(self.trial)
+        self.trial_result = text("", muted=True)
+        layout.addWidget(self.trial_result)
+        self.add(trial)
+
+        self.count = text("", "section")
+        self.add(self.count)
+        self.list_card, self.list = card(0)
+        self.list.setContentsMargins(6, 4, 6, 4)
+        self.add(self.list_card)
+        self.body.addStretch()
+
+    def refresh(self) -> None:
+        mine = load_snippets(self.app.settings.snippets)
+        clear(self.list)
+        self.count.setText(f"{len(mine)} SNIPPET{'S' if len(mine) != 1 else ''}")
+        self.list_card.setVisible(bool(mine))
+        for snippet in mine:
+            line = QWidget()
+            layout = QHBoxLayout(line)
+            layout.setContentsMargins(10, 4, 4, 4)
+            layout.addWidget(text(f"\u201c{snippet.cue}\u201d", wrap=False))
+            lines = snippet.text.strip().splitlines()
+            shown = text("\u2192 " + lines[0] + (" \u2026" if len(lines) > 1 else ""), muted=True, wrap=False)
+            shown.setToolTip(snippet.text)
+            layout.addWidget(shown, 1)
+            if snippet.anywhere:
+                layout.addWidget(text("also inside sentences", muted=True, wrap=False))
+            layout.addWidget(icon_button("edit", f"Edit \u201c{snippet.cue}\u201d", lambda _=False, s=snippet: self._edit(s)))
+            layout.addWidget(icon_button("delete", f"Remove \u201c{snippet.cue}\u201d",
+                                         lambda _=False, s=snippet: self._remove(s)))
+            self.list.addWidget(line)
+        self._try()
+
+    def _say(self, message: str) -> None:
+        self.note.setText(message)
+        self.note.setVisible(bool(message))
+
+    def _save(self) -> None:
+        cue, body = " ".join(self.cue.text().split()), self.snippet_text.toPlainText().strip()
+        if not cue or not body:
+            self._say("Fill in both: what you say, and the text to type.")
+            return
+        new = Snippet.from_dict({"cue": cue, "text": body, "anywhere": self.anywhere.isChecked()})
+        if new is None:
+            self._say(f"A phrase of at most {SNIPPET_WORDS} words, please.")
+            return
+        mine = [s for s in load_snippets(self.app.settings.snippets) if s.cue != self.editing]
+        if any(compact_cue(s.cue) == compact_cue(cue) for s in mine):
+            self._say(f"There is already a snippet for \u201c{cue}\u201d.")
+            return
+        self.app.apply_settings(dataclasses.replace(self.app.settings, snippets=[s.to_dict() for s in [*mine, new]]))
+        warning = ""
+        if new.anywhere and len(cue.split()) == 1:
+            warning = f"Saved. Note: \u201c{cue}\u201d will be replaced every time you say it in a sentence."
+        self._cancel()
+        self._say(warning or f"Saved: say \u201c{cue}\u201d to type it.")
+
+    def _edit(self, snippet: Snippet) -> None:
+        self.editing = snippet.cue
+        self.cue.setText(snippet.cue)
+        self.snippet_text.setPlainText(snippet.text)
+        self.anywhere.setChecked(snippet.anywhere)
+        self.form_title.setText("Edit the snippet")
+        self.save_button.setText("Save")
+        self.cancel_button.show()
+        self._say("")
+        self.cue.setFocus()
+
+    def _cancel(self) -> None:
+        self.editing = None
+        self.cue.clear()
+        self.snippet_text.clear()
+        self.anywhere.setChecked(False)
+        self.form_title.setText("Add a snippet")
+        self.save_button.setText("Add")
+        self.cancel_button.hide()
+        self._say("")
+        self.refresh()
+
+    def _remove(self, snippet: Snippet) -> None:
+        mine = [s.to_dict() for s in load_snippets(self.app.settings.snippets) if s.cue != snippet.cue]
+        self.app.apply_settings(dataclasses.replace(self.app.settings, snippets=mine))
+        if self.editing == snippet.cue:
+            self._cancel()
+        self.refresh()
+
+    def _try(self, *_) -> None:
+        said, mine = self.trial.text().strip(), load_snippets(self.app.settings.snippets)
+        if not said:
+            self.trial_result.setText("What Rflow would type appears here.")
+            return
+        if (snippet := snippet_alone(said, mine)) is not None:
+            self.trial_result.setText(f"Types: {snippet.text}")
+            return
+        protected, slots = protect_snippets(said, mine)
+        typed = expand_snippets(protected, slots) or said
+        self.trial_result.setText(f"Types: {typed}" if slots else "No snippet here: typed as you said it.")
 
 
 # ---------------------------------------------------------------- Reading test
@@ -2047,7 +2194,8 @@ class ProfilesPage(Page):
 
 # ---------------------------------------------------------------- the window
 
-NAV = [("home", "Home"), ("dictionary", "Dictionary"), ("speech", "Speech recognition"), ("cleanup", "AI cleanup"),
+NAV = [("home", "Home"), ("dictionary", "Dictionary"), ("snippets", "Snippets"), ("speech", "Speech recognition"),
+       ("cleanup", "AI cleanup"),
        ("transform", "Text Transform"),
        ("reading", "Reading test"), ("settings", "Settings"), ("profiles", "Profiles")]
 
@@ -2112,7 +2260,7 @@ class MainWindow(QWidget):
         banner.addWidget(self.update_button)
         self.banner.hide()
 
-        self.pages = {"home": HomePage(app), "dictionary": DictionaryPage(app, self.show_page),
+        self.pages = {"home": HomePage(app), "dictionary": DictionaryPage(app, self.show_page), "snippets": SnippetsPage(app),
                       "speech": SpeechPage(app), "reading": ReadingTestPage(app), "cleanup": CleanupPage(app),
                       "transform": TransformPage(app, self.show_page),
                       "settings": SettingsPage(app),
@@ -2153,7 +2301,7 @@ class MainWindow(QWidget):
     def show_page(self, key: str) -> None:
         page = self.pages[key]
         self._show_profile()
-        if key in ("home", "dictionary", "profiles", "speech", "cleanup", "transform"):
+        if key in ("home", "dictionary", "snippets", "profiles", "speech", "cleanup", "transform"):
             page.refresh()
         elif key == "welcome":
             page.refresh(self.ready)
@@ -2202,7 +2350,7 @@ class MainWindow(QWidget):
         """New dictation, words, settings or profile name: update what is on screen."""
         self._show_profile()
         current = self.current_page()
-        if current in ("home", "dictionary", "profiles", "speech", "cleanup", "transform"):
+        if current in ("home", "dictionary", "snippets", "profiles", "speech", "cleanup", "transform"):
             self.pages[current].refresh()
         elif current == "welcome":
             self.pages[current].refresh(self.ready)
