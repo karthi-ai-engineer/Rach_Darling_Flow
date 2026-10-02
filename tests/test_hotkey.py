@@ -3,7 +3,18 @@ import struct
 
 import pytest
 
-from sst.hotkey import INPUT, VK_ESCAPE, Hotkey, HotkeyListener, Matcher, parse_hotkey
+from sst.hotkey import (
+    INPUT,
+    KEYEVENTF_EXTENDEDKEY,
+    KEYEVENTF_KEYUP,
+    OUR_INPUT,
+    VK_ESCAPE,
+    Hotkey,
+    HotkeyListener,
+    Matcher,
+    key_input,
+    parse_hotkey,
+)
 
 LCTRL, RCTRL, LWIN, RWIN, LALT, LSHIFT, MENU, D, LEFT, SPACE = 0xA2, 0xA3, 0x5B, 0x5C, 0xA4, 0xA0, 0x5D, 0x44, 0x25, 0x20
 ONE, NUM1, UP, DOWN, ENTER, U, T, C, RSHIFT = 0x31, 0x61, 0x26, 0x28, 0x0D, 0x55, 0x54, 0x43, 0xA1
@@ -404,6 +415,15 @@ def test_a_captured_key_breaks_the_double_tap():
 def test_a_double_tap_needs_no_mask():
     # Ctrl or Shift tapped alone opens no menu, so the listener presses nothing of its own.
     assert not HotkeyListener(parse_hotkey("double ctrl"))._mask
+
+
+@pytest.mark.parametrize("vk, extended", [(0x25, True), (0x27, True), (0x2D, True), (0x24, True), (0x2E, True),
+                                          (0x11, False), (0x10, False), (0x43, False), (0x56, False), (0xE8, False)])
+def test_navigation_keys_are_sent_as_extended_keys(vk, extended):
+    # Without the flag, Left is the number pad's: with NumLock on, Shift+Left then moved the caret instead of selecting.
+    event = key_input(vk, up=False)
+    assert bool(event.ki.dwFlags & KEYEVENTF_EXTENDEDKEY) == extended and event.ki.wVk == vk
+    assert key_input(vk, up=True).ki.dwFlags & KEYEVENTF_KEYUP and event.ki.dwExtraInfo == OUR_INPUT
 
 
 def test_ctrl_clicks_that_move_the_pointer_are_not_a_double_tap():

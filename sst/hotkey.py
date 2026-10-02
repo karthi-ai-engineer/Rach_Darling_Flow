@@ -71,14 +71,24 @@ class INPUT(ctypes.Structure):
 
 
 user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
-INPUT_KEYBOARD, KEYEVENTF_KEYUP = 1, 0x2
+user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
+INPUT_KEYBOARD, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 1, 0x1, 0x2
+# The keys of the navigation block (arrows, Home, End, Page Up/Down, Insert, Delete), and the right-hand Ctrl and Alt, the
+# Windows and Menu keys. Sent without the extended flag, an arrow is the number pad's: with NumLock on, Windows then
+# lifts Shift around it, and Shift+Left moves the caret instead of selecting (Text Transform found nothing to transform).
+EXTENDED_KEYS = frozenset({0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x5B, 0x5C, 0x5D, 0xA3, 0xA5})
+
+
+def key_input(vk: int, up: bool) -> INPUT:
+    """One key event as SendInput takes it, with its scan code, like a real keyboard's."""
+    flags = (KEYEVENTF_KEYUP if up else 0) | (KEYEVENTF_EXTENDEDKEY if vk in EXTENDED_KEYS else 0)
+    return INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, wScan=user32.MapVirtualKeyW(vk, 0) & 0xFF, dwFlags=flags,
+                                                    dwExtraInfo=OUR_INPUT))
 
 
 def send_keys(events: list[tuple[int, bool]]) -> None:
     """Press/release keys as (virtual-key code, is_release), marked so our own hook ignores them."""
-    inputs = (INPUT * len(events))(*(
-        INPUT(type=INPUT_KEYBOARD, ki=KEYBDINPUT(wVk=vk, dwFlags=KEYEVENTF_KEYUP if up else 0, dwExtraInfo=OUR_INPUT))
-        for vk, up in events))
+    inputs = (INPUT * len(events))(*(key_input(vk, up) for vk, up in events))
     user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT))
 
 
