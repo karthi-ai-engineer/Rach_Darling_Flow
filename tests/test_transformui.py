@@ -50,7 +50,7 @@ class FakeAccess:
     def window_class(self, hwnd):
         return self.cls
 
-    def copy_selection(self, timeout=0.6):
+    def copy_selection(self, timeout=0.6, fallback=False):
         self.copied += 1
         return self.selection
 

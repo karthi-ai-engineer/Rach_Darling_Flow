@@ -11,6 +11,7 @@ from sst.textaccess import (
     CF_UNICODETEXT,
     VK_C,
     VK_CONTROL,
+    VK_INSERT,
     VK_LEFT,
     VK_RIGHT,
     VK_SHIFT,
@@ -45,11 +46,12 @@ class Desktop:
     """The clipboard and the focused text box, as textaccess sees them. The box holds `units`, the steps its caret takes
     (one per code point, or per cluster like a browser), and its selection runs from `anchor` to `caret`."""
 
-    def __init__(self, text="", units=None, copies=True):
+    def __init__(self, text="", units=None, copies=True, insert_copies=True):
         self.clipboard, self.seq = dict(USERS_COPY), 1
         self.units = list(text) if units is None else list(units)
         self.caret = self.anchor = len(self.units)
         self.copies = copies  # False: an app where Ctrl+C copies nothing
+        self.insert_copies = insert_copies  # False: an app that copies with Ctrl+C only, not with Ctrl+Insert
         self.log = []  # "wait" (for the modifiers to be let go) and the keys of each SendInput call, in order
         self.sessions, self.is_open, self.puts = 0, False, 0
         self.on_close = {}  # session number -> what happens right after we close the clipboard that time
@@ -81,7 +83,8 @@ class Desktop:
             elif vk == VK_RIGHT:  # collapses a selection to its end, else moves on
                 end = max(self.caret, self.anchor) if self.caret != self.anchor else min(len(self.units), self.caret + 1)
                 self.caret = self.anchor = end
-            elif vk == VK_C and VK_CONTROL in self.held and self.copies and self.selected:
+            elif (vk == VK_C or vk == VK_INSERT and self.insert_copies) and VK_CONTROL in self.held and self.copies \
+                    and self.selected:
                 self.copy_by_user({CF_UNICODETEXT: utf16(self.selected.replace("\n", "\r\n"))})  # Windows apps copy \r\n
             elif vk == VK_V and VK_CONTROL in self.held:
                 self.pasted = dict(self.clipboard)
@@ -142,6 +145,7 @@ def desktop(monkeypatch):
         for name, fake in fakes.items():
             monkeypatch.setattr(textaccess, name, fake)
         monkeypatch.setattr(textaccess, "RESTORE_DELAY", 0)
+        monkeypatch.setattr(textaccess, "SETTLE_DELAY", 0)
         return d
     return make
 
@@ -155,6 +159,7 @@ def count(d, vk):
 
 
 CTRL_C = [(VK_CONTROL, False), (VK_C, False), (VK_C, True), (VK_CONTROL, True)]
+CTRL_INSERT = [(VK_CONTROL, False), (VK_INSERT, False), (VK_INSERT, True), (VK_CONTROL, True)]
 
 
 # ---------------------------------------------------------------- copy_selection
@@ -163,7 +168,7 @@ def test_copy_selection_returns_the_selection_and_puts_the_users_clipboard_back(
     d = desktop("Dear team, the report is late.")
     d.select(11, 30)
     assert copy_selection() == "the report is late."
-    assert d.log == ["wait", CTRL_C]  # the shortcut's modifiers are let go before Ctrl+C
+    assert d.log == ["wait", CTRL_INSERT]  # the shortcut's modifiers are let go before the copy
     assert d.clipboard == RESTORED
     assert d.selected == "the report is late."  # still selected, ready to be replaced
 
@@ -171,8 +176,29 @@ def test_copy_selection_returns_the_selection_and_puts_the_users_clipboard_back(
 def test_with_nothing_selected_the_clipboard_is_left_untouched(desktop):
     d = desktop("Dear team")
     assert copy_selection(timeout=0.05) is None
-    assert presses(d) == [CTRL_C]
+    assert presses(d) == [CTRL_INSERT]
     assert d.clipboard == USERS_COPY and d.puts == 0  # never rewritten, so nothing of the user's copy can get lost
+
+
+def test_rflow_copies_with_ctrl_insert_so_ctrl_c_tools_stay_quiet(desktop):
+    # A translator on the owner's laptop answered two Ctrl+C in a second by putting a translation on the clipboard.
+    d = desktop("hello there")
+    d.select(0, 11)
+    assert copy_selection() == "hello there" and presses(d) == [CTRL_INSERT] and count(d, VK_C) == 0
+
+
+def test_an_app_without_ctrl_insert_is_copied_with_ctrl_c_when_text_is_known_to_be_selected(desktop):
+    d = desktop("hello there", insert_copies=False)
+    d.select(0, 11)
+    assert copy_selection(timeout=0.05) is None and presses(d) == [CTRL_INSERT]  # not asked to: no Ctrl+C
+    d.log.clear()
+    assert copy_selection(timeout=0.05, fallback=True) == "hello there" and presses(d) == [CTRL_INSERT, CTRL_C]
+    assert d.clipboard == RESTORED
+
+
+def test_select_last_works_in_an_app_without_ctrl_insert(desktop):
+    d = desktop("Notes: hello there ", insert_copies=False)
+    assert select_last("hello there ") and d.selected == "hello there "
 
 
 def test_line_breaks_come_back_as_newlines(desktop):
@@ -327,6 +353,16 @@ def test_paste_rich_pastes_text_and_html_then_puts_the_clipboard_back(desktop):
     assert "".join(d.units) == "Draft: Summary\n- one"
     assert d.log[0] == "wait" and presses(d) == [[(VK_CONTROL, False), (VK_V, False), (VK_V, True), (VK_CONTROL, True)]]
     assert d.clipboard == RESTORED
+
+
+def test_paste_rich_gives_the_app_a_moment_to_see_the_new_clipboard_before_ctrl_v(desktop, monkeypatch):
+    # An app that has just copied still answers Ctrl+V with its own copy until it hears the clipboard changed.
+    d = desktop("x")
+    d.select(0, 1)
+    monkeypatch.setattr(textaccess, "SETTLE_DELAY", 0.15)
+    monkeypatch.setattr(textaccess.time, "sleep", lambda s: d.log.append(("sleep", s)))
+    paste_rich("y")
+    assert d.log.index(("sleep", 0.15)) < d.log.index([(VK_CONTROL, False), (VK_V, False), (VK_V, True), (VK_CONTROL, True)])
 
 
 def test_paste_rich_without_html_pastes_only_text(desktop):

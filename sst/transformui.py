@@ -293,13 +293,18 @@ class TransformController(QObject):
 
     def _find(self, hwnd: int) -> Target | str:
         """The selected text, else the last text typed in this window (selected again); or why there is none."""
-        if self.access.window_class(hwnd) in TERMINALS:
+        cls = self.access.window_class(hwnd)
+        if cls in TERMINALS:
             return "Text Transform doesn't work in a terminal: Ctrl+C there would stop the running program."
         text = self.access.copy_selection()
         if text and text.strip():
+            log.info("Text Transform: %d characters selected in %s", len(text), cls)
             return Target(text, "selection", hwnd)
         last = self.last_typed
-        if last and last[2] == hwnd and time.monotonic() - last[1] < LAST_TEXT_SECONDS and self.access.select_last(last[0]):
+        if not last or last[2] != hwnd or time.monotonic() - last[1] >= LAST_TEXT_SECONDS:
+            log.info("Text Transform: nothing selected in %s, and no recent dictation there", cls)
+        elif self.access.select_last(last[0]):
+            log.info("Text Transform: the last dictation (%d characters) selected again in %s", len(last[0]), cls)
             return Target(last[0], "last", hwnd)
         return "Select some text first, then try again."
 
@@ -374,11 +379,17 @@ class TransformController(QObject):
         """Make sure the text read is selected again where it was, the moment before it is replaced: the user may have
         clicked elsewhere or switched windows while the menu was open or the model answered. Its window comes back to
         the front, and the text must be the selection, or be found right before the caret (as typed); else False."""
-        if self.access.foreground_window() != target.hwnd and not self.access.activate(target.hwnd):
-            return False
-        copied = self.access.copy_selection()
+        if self.access.foreground_window() != target.hwnd:
+            if not self.access.activate(target.hwnd):
+                log.info("Text Transform: its window couldn't be brought back")
+                return False
+            log.info("Text Transform: its window brought back")
+        copied = self.access.copy_selection(fallback=True)
         if copied is not None:  # something is selected: replace it only if it is still that text
+            if not same_text(copied, target.text):
+                log.info("Text Transform: other text is selected now (%d characters)", len(copied))
             return same_text(copied, target.text)
+        log.info("Text Transform: the text isn't selected any more; looking for it before the caret")
         return self.access.select_last(target.text)
 
     def _paste(self, target: Target, result, pasted: str) -> None:

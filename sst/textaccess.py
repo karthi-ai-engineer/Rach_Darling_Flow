@@ -54,11 +54,15 @@ kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
 kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
 kernel32.GlobalSize.restype = ctypes.c_size_t
 
-VK_C, VK_LEFT, VK_RIGHT = 0x43, 0x25, 0x27
+VK_C, VK_LEFT, VK_RIGHT, VK_INSERT = 0x43, 0x25, 0x27, 0x2D
 SW_RESTORE = 9
 CF_HTML = user32.RegisterClipboardFormatW("HTML Format")  # where browsers, Office, Teams and Slack look for formatted text
 _NO_HISTORY = (CF_EXCLUDE_FROM_HISTORY, b"\0" * 4)
 _CTRL_C = [(VK_CONTROL, False), (VK_C, False), (VK_C, True), (VK_CONTROL, True)]
+# Rflow copies with Ctrl+Insert, Windows' other copy key (browsers, Office, Qt, Electron, edit boxes): translators and
+# clipboard tools act on Ctrl+C, and two of them in a second ("Ctrl+C+C") make one rewrite the clipboard or open a window.
+_CTRL_INSERT = [(VK_CONTROL, False), (VK_INSERT, False), (VK_INSERT, True), (VK_CONTROL, True)]
+SETTLE_DELAY = 0.15  # seconds between putting the text on the clipboard and pressing Ctrl+V (paste_rich)
 _CTRL_V = [(VK_CONTROL, False), (VK_V, False), (VK_V, True), (VK_CONTROL, True)]
 _BATCH = 50  # Shift+Left presses per SendInput call: a long dictation would otherwise be one array of thousands of events
 _QUOTES = str.maketrans("\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f", "''''\"\"\"\"")
@@ -150,10 +154,11 @@ def _attach_input(thread: int, to: int, attach: bool) -> bool:
 
 # ---------------------------------------------------------------- reading the selection
 
-def copy_selection(timeout: float = 0.6) -> str | None:
-    """The text selected in the focused app, copied with Ctrl+C ("\\r\\n" becomes "\\n"). None when nothing was copied:
-    with no selection most apps leave the clipboard alone. Only whitespace counts as nothing too. Never raises for
-    clipboard trouble, and the user's clipboard is put back unless they copied something new meanwhile."""
+def copy_selection(timeout: float = 0.6, fallback: bool = False) -> str | None:
+    """The text selected in the focused app, copied with Ctrl+Insert ("\\r\\n" becomes "\\n"); with `fallback`, with
+    Ctrl+C too when that copied nothing (an app without Ctrl+Insert, where text is known to be selected). None when
+    nothing was copied: with no selection most apps leave the clipboard alone. Only whitespace counts as nothing too.
+    Never raises for clipboard trouble, and the user's clipboard is put back unless they copied something new meanwhile."""
     _wait_for_modifiers_released()  # Ctrl+C pressed while the user still holds Alt from the shortcut would be Ctrl+Alt+C
     try:
         with _clipboard():
@@ -161,12 +166,15 @@ def copy_selection(timeout: float = 0.6) -> str | None:
     except OSError as error:  # without a copy of the user's clipboard, Ctrl+C would lose it
         log.warning("Could not read the selection: %s", error)
         return None
-    send_keys(_CTRL_C)
-    deadline = time.monotonic() + timeout
-    while _sequence() == before:
-        if time.monotonic() >= deadline:
-            return None  # nothing copied, so the user's clipboard was never touched: no need to rewrite it
-        time.sleep(0.01)
+    for keys in (_CTRL_INSERT, _CTRL_C) if fallback else (_CTRL_INSERT,):
+        send_keys(keys)
+        deadline = time.monotonic() + timeout
+        while _sequence() == before and time.monotonic() < deadline:
+            time.sleep(0.005)
+        if _sequence() != before:
+            break
+    else:
+        return None  # nothing copied, so the user's clipboard was never touched: no need to rewrite it
     text = ours = None
     try:
         with _clipboard():  # waits while the app still holds the clipboard open to write it
@@ -212,9 +220,11 @@ def select_last(text: str) -> bool:
     # each code point; the second count is tried only when they differ and the first selected the wrong text.
     for steps in dict.fromkeys((_clusters(plain), len(plain))):
         select_back(steps)
-        copied = copy_selection(timeout=0.6 + steps / 500)  # the app first works through every Shift+Left
+        copied = copy_selection(timeout=0.6 + steps / 500, fallback=True)  # the app works through every Shift+Left
         if copied is not None and _loose(copied) == want:
             return True
+        log.info("The text typed last wasn't found before the caret (%d steps): %s", steps,
+                 "nothing copied" if copied is None else f"{len(copied)} characters copied, {len(plain)} expected")
         collapse_selection()
         if copied is None:
             break  # nothing copied: this app doesn't select or copy this way, and another count won't change that
@@ -255,6 +265,9 @@ def paste_rich(text: str, html: str | None = None) -> None:
         _put(items + [_NO_HISTORY])
     ours = _sequence()
     try:
+        # An app that has just copied (Text Transform's check) still owns the clipboard in its own eyes until it hears of
+        # the change: Ctrl+V at once would paste what it copied, over itself. A moment lets the news arrive.
+        time.sleep(SETTLE_DELAY)
         send_keys(_CTRL_V)
         time.sleep(RESTORE_DELAY)  # the app reads the clipboard when it handles Ctrl+V, a moment later
     finally:
