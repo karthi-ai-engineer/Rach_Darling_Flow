@@ -73,6 +73,7 @@ from sst.snippets import expand as expand_snippets
 from sst.snippets import load as load_snippets
 from sst.snippets import protect as protect_snippets
 from sst.transform import TRANSFORMS
+from sst.translate import LANGUAGES as TRANSLATE_LANGUAGES
 
 APP_NAME = "Rflow"
 ICON_FILE = Path(__file__).parent / "static" / "sst.ico"
@@ -83,6 +84,8 @@ REPO = "https://github.com/karthi-ai-engineer/Rach_flow"
 HOTKEY_CHOICES = [("Ctrl+Win (like Wispr Flow)", "ctrl+win"), ("Menu key", "menu"), ("Ctrl+Alt+D", "ctrl+alt+d")]
 # Text Transform's menu shortcut: not Ctrl+Win+... (that starts a dictation) and not a plain Ctrl+letter (apps use those).
 # A double tap of Ctrl is the easiest; PowerToys' "Find My Mouse" uses a double Ctrl too (Rflow's still works with it).
+# Translate's shortcut: a double copy (the app copies; Rflow reads it), or a shortcut after which Rflow copies.
+TRANSLATE_SHORTCUTS = [("Ctrl+C+C (press Ctrl+C twice)", "ctrl+c+c"), ("Ctrl+Alt+L", "ctrl+alt+l"), ("Off", "")]
 TRANSFORM_HOTKEYS = [("Double-tap Ctrl", "double ctrl"), ("Ctrl+Alt+T", "ctrl+alt+t"), ("F8", "f8"), ("Off", "")]
 
 log = logging.getLogger("sst.window")
@@ -93,7 +96,7 @@ GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanu
           "copy": "\ue8c8", "edit": "\ue70f", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
           "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
           "profile": "\ue77b", "speech": "\ue720", "warning": "\ue7ba", "cancel": "\ue711", "dot": "\ue915",
-          "transform": "\ue8ac", "snippets": "\ue70b"}
+          "transform": "\ue8ac", "snippets": "\ue70b", "translate": "\ue774"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
@@ -1888,6 +1891,112 @@ class TransformPage(Page):
         run_in_background(self, lambda: self.app.run_transform(sample, key), done)
 
 
+# ---------------------------------------------------------------- Translate
+
+class TranslatePage(Page):
+    """Translate (sst.translateui): the shortcut, the languages, the model, and a box to try it in."""
+
+    def __init__(self, app, go_to):
+        super().__init__("Translate", "Select text in any app and press Ctrl+C twice: a small window at the pointer shows "
+                                      "it translated, with the language at the top. Copy the translation, or Replace "
+                                      "the text with it. Names, numbers, dates and links stay as written.")
+        self.app = app
+        s = app.settings
+        frame, layout = card(10)
+        self.shortcut = QComboBox()
+        for label, value in TRANSLATE_SHORTCUTS:
+            self.shortcut.addItem(label, value)
+        if self.shortcut.findData(s.translate_shortcut) < 0:
+            self.shortcut.insertItem(self.shortcut.count() - 1, s.translate_shortcut, s.translate_shortcut)  # by hand
+        self.shortcut.setCurrentIndex(self.shortcut.findData(s.translate_shortcut))
+        self.shortcut.currentIndexChanged.connect(self._apply)
+        layout.addLayout(row(text("Shortcut", wrap=False), self.shortcut, stretch_at=2))
+        self.target = QComboBox()
+        self.target.addItems(list(TRANSLATE_LANGUAGES))
+        self.target.setCurrentText(s.translate_to)
+        self.target.currentIndexChanged.connect(self._apply)
+        layout.addLayout(row(text("Translate into", wrap=False), self.target, stretch_at=2))
+        self.second = QComboBox()
+        self.second.addItem("\u2014 (keep that language)", "")
+        for name in TRANSLATE_LANGUAGES:
+            self.second.addItem(name, name)
+        self.second.setCurrentIndex(max(0, self.second.findData(s.translate_second)))
+        self.second.currentIndexChanged.connect(self._apply)
+        layout.addLayout(row(text("Text already in that language: into", wrap=False), self.second, stretch_at=2))
+        self.how = text("", muted=True)
+        layout.addWidget(self.how)
+        self.add(frame)
+
+        model, layout = card(8)
+        layout.addWidget(text("AI model", "h2"))
+        self.model = text("", muted=True)
+        self.setup = button("Set up AI cleanup", lambda: go_to("cleanup"), link=True)
+        model_row = row(self.model, self.setup)
+        model_row.setStretch(0, 1)
+        layout.addLayout(model_row)
+        self.add(model)
+
+        trial, layout = card(8)
+        layout.addWidget(text("Try it", "h2"))
+        self.sample = QPlainTextEdit()
+        self.sample.setPlainText("Could you send me the updated report by Friday? The budget is $25,000.")
+        self.sample.setFixedHeight(70)
+        layout.addWidget(self.sample)
+        self.try_button = button("Translate", self._try, primary=True)
+        layout.addLayout(row(self.try_button, stretch_at=1))
+        self.result = QTextBrowser()
+        self.result.setFixedHeight(90)
+        self.result.hide()
+        layout.addWidget(self.result)
+        self.note = text("", muted=True)
+        self.note.hide()
+        layout.addWidget(self.note)
+        self.add(trial)
+        self.body.addStretch()
+
+    def refresh(self) -> None:
+        s, model = self.app.settings, self.app.transform_model()
+        second = f" (already in {s.translate_to}: into {s.translate_second})" if s.translate_second else ""
+        self.how.setText("Translate is off." if not s.translate_shortcut else
+                         f"Select text, press {self.shortcut.currentText().split(' (')[0]}: the window shows it in "
+                         f"{s.translate_to}{second}. Esc closes it; the language list at its top translates again.")
+        self.model.setText(f"Uses your AI cleanup model: {model}" if model else
+                           "Translate needs an AI model: choose a provider and a model in AI cleanup.")
+        self.setup.setVisible(not model)
+        self.try_button.setEnabled(bool(model))
+
+    def _apply(self, *_) -> None:
+        self.app.apply_settings(dataclasses.replace(self.app.settings, translate_shortcut=self.shortcut.currentData(),
+                                                    translate_to=self.target.currentText(),
+                                                    translate_second=self.second.currentData()))
+        self.refresh()
+
+    def _say(self, message: str) -> None:
+        self.note.setText(message)
+        self.note.setVisible(bool(message))
+
+    def _try(self) -> None:
+        sample = self.sample.toPlainText().strip()
+        if not sample:
+            self._say("Type or paste some text first.")
+            return
+        s = self.app.settings
+        self.try_button.setEnabled(False)
+        self._say(f"Translating into {s.translate_to}\u2026")
+
+        def done(result, error) -> None:
+            self.refresh()
+            if error:
+                self.result.hide()
+                self._say(f"Didn't work: {error}")
+                return
+            self.result.setPlainText(result.text)
+            self.result.show()
+            self._say(f"{result.target} in {result.seconds:.1f} s" + (": " + "; ".join(result.warnings)
+                                                                        if result.warnings else ""))
+        run_in_background(self, lambda: self.app.run_translation(sample, s.translate_to, s.translate_second), done)
+
+
 # ---------------------------------------------------------------- Settings
 
 class SettingsPage(Page):
@@ -2196,7 +2305,7 @@ class ProfilesPage(Page):
 
 NAV = [("home", "Home"), ("dictionary", "Dictionary"), ("snippets", "Snippets"), ("speech", "Speech recognition"),
        ("cleanup", "AI cleanup"),
-       ("transform", "Text Transform"),
+       ("transform", "Text Transform"), ("translate", "Translate"),
        ("reading", "Reading test"), ("settings", "Settings"), ("profiles", "Profiles")]
 
 
@@ -2262,7 +2371,7 @@ class MainWindow(QWidget):
 
         self.pages = {"home": HomePage(app), "dictionary": DictionaryPage(app, self.show_page), "snippets": SnippetsPage(app),
                       "speech": SpeechPage(app), "reading": ReadingTestPage(app), "cleanup": CleanupPage(app),
-                      "transform": TransformPage(app, self.show_page),
+                      "transform": TransformPage(app, self.show_page), "translate": TranslatePage(app, self.show_page),
                       "settings": SettingsPage(app),
                       "profiles": ProfilesPage(app), "welcome": WelcomePage(app, self.show_page)}
         self.stack = QStackedWidget()
@@ -2301,7 +2410,7 @@ class MainWindow(QWidget):
     def show_page(self, key: str) -> None:
         page = self.pages[key]
         self._show_profile()
-        if key in ("home", "dictionary", "snippets", "profiles", "speech", "cleanup", "transform"):
+        if key in ("home", "dictionary", "snippets", "profiles", "speech", "cleanup", "transform", "translate"):
             page.refresh()
         elif key == "welcome":
             page.refresh(self.ready)
@@ -2350,7 +2459,7 @@ class MainWindow(QWidget):
         """New dictation, words, settings or profile name: update what is on screen."""
         self._show_profile()
         current = self.current_page()
-        if current in ("home", "dictionary", "snippets", "profiles", "speech", "cleanup", "transform"):
+        if current in ("home", "dictionary", "snippets", "profiles", "speech", "cleanup", "transform", "translate"):
             self.pages[current].refresh()
         elif current == "welcome":
             self.pages[current].refresh(self.ready)
@@ -2516,6 +2625,15 @@ class PreviewApp:
 
     def transform_model(self) -> str:
         return self.settings.cleanup_model if self.gateway.address else ""
+
+    def translate_ready(self) -> bool:
+        return bool(self.transform_model())
+
+    def run_translation(self, text: str, target: str, second: str = ""):
+        from sst.translate import Translation
+        self.calls.append(("run_translation", target))
+        return Translation("¿Podrías enviarme el informe actualizado antes del viernes? El presupuesto es de $25,000.",
+                           target, text, 0.9)
 
     def run_transform(self, text: str, key: str):
         from sst.transform import TransformResult

@@ -532,3 +532,23 @@ def test_cf_html_offsets_are_utf8_bytes(fragment):
     assert data[fragment_start:fragment_end].decode("utf-8") == fragment
     assert data[:fragment_start].endswith(b"<!--StartFragment-->") and data[fragment_end:].startswith(b"<!--EndFragment-->")
     assert fragment_end - fragment_start == len(fragment.encode("utf-8"))
+
+
+# ---------------------------------------------------------------- reading what the user copied (Translate's Ctrl+C+C)
+
+def test_clipboard_text_reads_the_users_copy_without_pressing_anything(desktop):
+    d = desktop("x")
+    d.copy_by_user({CF_UNICODETEXT: utf16("line one\r\nline two")})
+    assert textaccess.clipboard_text() == "line one\nline two" and presses(d) == []
+    assert textaccess.clipboard_sequence() == d.seq
+
+
+def test_clipboard_text_of_nothing_or_whitespace_is_none(desktop, monkeypatch):
+    d = desktop("x")
+    d.copy_by_user({CF_UNICODETEXT: utf16("  \r\n ")})
+    assert textaccess.clipboard_text() is None
+
+    def busy():
+        raise OSError("the clipboard is busy (another app is holding it open)")
+    monkeypatch.setattr(textaccess, "_clipboard", busy)
+    assert textaccess.clipboard_text() is None

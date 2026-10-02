@@ -18,6 +18,11 @@ def test_round_trip(tmp_path):
                                            save_recordings=False)
 
 
+def test_translate_defaults():
+    s = Settings()
+    assert (s.translate_shortcut, s.translate_to, s.translate_second) == ("ctrl+c+c", "English", "")
+
+
 def test_snippets_round_trip_and_a_wrong_shape_is_dropped(tmp_path):
     path = tmp_path / "settings.json"
     snippets = [{"cue": "my email", "text": "xyz@gmail.com", "anywhere": False},

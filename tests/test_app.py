@@ -462,6 +462,17 @@ def test_the_tray_app_dictates_through_the_voice_pipeline(tray_app):
 
 
 
+def test_translate_starts_with_ctrl_c_c_and_follows_the_settings(tray_app):
+    app, _, _ = tray_app
+    controller = app.translator
+    assert controller.listener is not None and controller.listener.hotkey.text == "ctrl+c+c" and controller.double_copy
+    assert not app.translate_ready()  # no AI model yet
+    app.apply_settings(dataclasses.replace(app.settings, translate_shortcut=""))
+    assert controller.listener is None  # off
+    app.apply_settings(dataclasses.replace(app.settings, translate_shortcut="ctrl+alt+l"))
+    assert controller.listener.hotkey.text == "ctrl+alt+l" and not controller.double_copy
+
+
 def test_snippets_are_read_from_the_profile_at_each_dictation(tray_app):
     app, _, _ = tray_app
     assert app.snippets() == []

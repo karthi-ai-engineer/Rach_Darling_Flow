@@ -68,7 +68,8 @@ concise", or double-tap Ctrl for a menu, rewrites the selected text or the last 
 phrases), `sst/transformui.py` (flow, menu, putting the result back), `sst/transform.py` (prompts, `TransformGuard`) and
 `sst/textaccess.py` (copy, select, activate, rich paste; never Ctrl+C in a terminal); never paste where the text isn't.
 Snippets ("my email" types the user's email) are `sst/snippets.py`: found in the words heard, a placeholder through the
-AI, the user's text put in last and never sent to the AI. Settings, keys, history, stats and
+AI, the user's text put in last and never sent to the AI. Translate (select text, Ctrl+C+C, a popup) is
+`sst/translateui.py` (the shortcut, the copied text, the popup) and `sst/translate.py` (languages, prompt, check). Settings, keys, history, stats and
 reading tests belong to a profile (`Profiles` in `sst/settings.py`): read and write them through the profile's paths
 (`TrayApp.profile.settings_file`...), never the module's default paths. The Windows-only parts are `sst/app.py`, `sst/dictate.py`, `sst/hotkey.py`,
 `sst/paste.py`, `sst/settings.py` and `sst/gateway.py` (DPAPI). UI tests run Qt off-screen (`tests/test_app.py`,

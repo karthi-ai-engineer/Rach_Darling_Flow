@@ -65,6 +65,24 @@ def same_text(a: str, b: str) -> bool:
     return " ".join(a.split()) == " ".join(b.split())
 
 
+def place(access, text: str, hwnd: int) -> bool:
+    """Make sure `text` is selected again in window `hwnd`, the moment before it is replaced: the user may have clicked
+    elsewhere or switched windows while a menu or popup was open or the model answered. The window comes back to the
+    front, and the text must be the selection, or be found right before the caret (as typed); else False."""
+    if access.foreground_window() != hwnd:
+        if not access.activate(hwnd):
+            log.info("The text's window couldn't be brought back")
+            return False
+        log.info("The text's window brought back")
+    copied = access.copy_selection(fallback=True)
+    if copied is not None:  # something is selected: replace it only if it is still that text
+        if not same_text(copied, text):
+            log.info("Other text is selected now (%d characters)", len(copied))
+        return same_text(copied, text)
+    log.info("The text isn't selected any more; looking for it before the caret")
+    return access.select_last(text)
+
+
 class TransformMenu(QWidget):
     """A small panel at the mouse pointer: the source of the text, then one row per transform. It never takes focus."""
 
@@ -376,21 +394,7 @@ class TransformController(QObject):
         threading.Thread(target=self._paste, args=(target, result, pasted), name="transform-paste", daemon=True).start()
 
     def _place(self, target: Target) -> bool:
-        """Make sure the text read is selected again where it was, the moment before it is replaced: the user may have
-        clicked elsewhere or switched windows while the menu was open or the model answered. Its window comes back to
-        the front, and the text must be the selection, or be found right before the caret (as typed); else False."""
-        if self.access.foreground_window() != target.hwnd:
-            if not self.access.activate(target.hwnd):
-                log.info("Text Transform: its window couldn't be brought back")
-                return False
-            log.info("Text Transform: its window brought back")
-        copied = self.access.copy_selection(fallback=True)
-        if copied is not None:  # something is selected: replace it only if it is still that text
-            if not same_text(copied, target.text):
-                log.info("Text Transform: other text is selected now (%d characters)", len(copied))
-            return same_text(copied, target.text)
-        log.info("Text Transform: the text isn't selected any more; looking for it before the caret")
-        return self.access.select_last(target.text)
+        return place(self.access, target.text, target.hwnd)
 
     def _paste(self, target: Target, result, pasted: str) -> None:
         try:
