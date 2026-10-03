@@ -10,10 +10,14 @@ _Last updated: 2026-10-04_
 
 ## Start here (a new session, or the owner's other laptop)
 
-**Where things stand (2026-10-02):**
-- **Rflow 1.8.0 is released** (2026-10-02, GitHub Release `v1.8.0`, the website's download), on the owner's "RELEASE
-  IT": Snippets (phase 21: say "my email", your text is typed; PR #52) and Translate (phase 22: select text, Ctrl+C+C,
-  a popup with the translation; PR #54).
+**Where things stand (2026-10-04):**
+- **Rflow 1.9.0** (2026-10-04, the owner's "merge + release 1.9.0"): settings that change only on purpose (phase 23,
+  PR #58) and the fix for a dictation typed twice when its last part replaced the one before (PR #57, since 1.7.0).
+- **A new dev laptop:** a Surface Laptop 7, Snapdragon X Plus (ARM64), 16 GB. The installed x64 Rflow works there
+  under Windows' emulation (the owner dictates with it, Gemini for speech). The dev `.venv` is x64 Python 3.12 too,
+  because CTranslate2 (Whisper) has no ARM64 build: `uv venv --python cpython-3.12-windows-x86_64-none .venv`.
+- 1.8.0 (2026-10-02): Snippets (phase 21: say "my email", your text is typed; PR #52) and Translate (phase 22: select
+  text, Ctrl+C+C, a popup with the translation; PR #54).
 - 1.7.0 (the same day): Text Transform (phase 20: say "make it concise" or double-tap Ctrl; PR #50), the fix for text never said
   (PR #48) and the new names (Rach_flow, rachflow.vercel.app; PR #47). 1.6.0 brought the owner's voice
   pipeline (phase 19: parts transcribed while speaking, dictionary, formatting, a guarded AI cleanup, an always-on
@@ -104,13 +108,14 @@ _Last updated: 2026-10-04_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
-| 23 | **Settings that change only on purpose** (the owner's request): the wheel never changes a dropdown, long lists searchable, a Save per section with its state shown, API keys masked with a pen to change them, the model in use and the language at the top of Speech recognition | in review |
+| 23 | **Settings that change only on purpose** (the owner's request): the wheel never changes a dropdown, long lists searchable, a Save per section with its state shown, API keys masked with a pen to change them, the model in use and the language at the top of Speech recognition | done, on `main` (PR #58), released **v1.9.0** |
+| fix | A dictation typed twice when its last part replaced the one before: the result read the replacement too early | done, on `main` (PR #57), released **v1.9.0** |
 | 22 | **Translate** (the owner's idea, like DeepL): select text, Ctrl+C+C, a popup at the pointer shows it translated by the AI model, language at the top, Copy or Replace | done, on `main` (PR #54), released **v1.8.0** |
 | 21 | **Snippets** (the owner's idea): say "my email" and your email is typed; your own phrases and text (several lines), alone or inside a sentence, never sent to the AI | done, on `main` (PR #52), released **v1.8.0** |
 | 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | done, on `main` (PR #50, with #48), released **v1.7.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
-Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0 and v1.8.0 (GitHub Releases; there is no 1.2.0). Website: https://rachflow.vercel.app (Vercel project `rach_darling_flow-site`, team karthi-labs; the address was
+Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0, v1.8.0 and v1.9.0 (GitHub Releases; there is no 1.2.0). Website: https://rachflow.vercel.app (Vercel project `rach_darling_flow-site`, team karthi-labs; the address was
 added on 2026-10-01, and the old https://rachdarlingflow-site.vercel.app stays assigned: installed apps up to 1.6.0
 link there, so never remove it;
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
