@@ -203,15 +203,18 @@ class Session:
         """Wait for every chunk, then the text stages. Never raises: a failure becomes a FAILED FinalText."""
         stages: dict[str, str] = {}
         notes: list[str] = []
-        replaced = {c.replaces for c in self._chunks if c.replaces}  # a short rest sent again with the part before it
         try:
             t0 = time.perf_counter()
             try:
-                results = self._asr.wait(timeout)
+                results, failure = self._asr.wait(timeout), None
             except SessionFailed as e:
-                if not replaced or any(r.sequence not in replaced for r in e.failed):
-                    raise
-                results = e.results  # only a superseded part failed: its replacement holds the same words
+                results, failure = e.results, e
+            # Read only now: the app asks for the result the moment the recording ends, while its feeder thread may still
+            # be cutting the last part, the one that replaces the part before it. wait() returns after finish(), so every
+            # chunk is known here; read before it, both parts were typed (the owner's dictation, 2026-10-04).
+            replaced = {c.replaces for c in self._chunks if c.replaces}  # a short rest sent again with the part before it
+            if failure is not None and (not replaced or any(r.sequence not in replaced for r in failure.failed)):
+                raise failure  # else only a superseded part failed: its replacement holds the same words
             results = [r for r in results if r.sequence not in replaced]
             self._stage("asr_wait", t0)
             notes += [r.note for r in results if r.note]
