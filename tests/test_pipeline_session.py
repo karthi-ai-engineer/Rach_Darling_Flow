@@ -273,6 +273,30 @@ def test_a_short_last_part_is_sent_again_with_the_part_before_it():
     assert final.text == "never said: version installer commit" and final.stages["merged"] == final.text
 
 
+def test_a_replaced_part_is_dropped_when_the_result_is_awaited_before_the_last_part():
+    # The app's worker asks for the result the moment the recording ends, while the feeder thread is still cutting the
+    # last part, the one that replaces the part before it. The owner's dictation of 2026-10-04 came out twice.
+    backend = ScriptedBackend(["one two three four five six", "one two three four five six seven"])
+    audio = np.concatenate([silence(0.3), speech(6.0), silence(1.6), speech(0.5, seed=4), silence(0.4)])
+    session = pipeline(backend).start(RATE)
+    session.feed(audio)  # the first part is cut at the pause; the short rest waits for the key release
+    waiting, wait = threading.Event(), session._asr.wait
+
+    def asr_wait(timeout=None):
+        waiting.set()
+        return wait(timeout)
+
+    session._asr.wait = asr_wait
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(final=session.result()))
+    worker.start()
+    assert waiting.wait(5)  # result() is already waiting when the key-release part is cut
+    session.finish()
+    worker.join(5)
+    assert sorted(backend.calls) == [1, 2]
+    assert out["final"].text == "one two three four five six seven" and out["final"].metrics["chunks"] == 1
+
+
 def test_a_superseded_part_that_failed_doesnt_fail_the_dictation():
     backend = ScriptedBackend(["", "hello there and more words"], fail={1})
     audio = np.concatenate([silence(0.3), speech(6.0), silence(1.6), speech(0.5, seed=4), silence(0.4)])
