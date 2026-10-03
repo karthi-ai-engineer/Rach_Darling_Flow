@@ -135,7 +135,7 @@ def test_the_cleanup_page_saves_what_was_typed():
     page.model.setCurrentText("  typed-model ")  # any model name can be typed
     _button(page, "Save").click()
     assert app.calls[-1] == ("save_cleanup", True, "typed-model", "", GatewayConfig("https://gw.example/v1", "key-2", "vllm"))
-    assert "Active from the next dictation" in page.saved.text()
+    assert "Active from the next dictation" in page.bar.state.text()
 
 
 def test_a_new_install_has_no_endpoint_or_model_and_cleanup_off():
@@ -450,7 +450,8 @@ def test_the_speech_page_shows_the_model_in_use_and_what_comes_next():
     assert "In use" in parakeet.status.text() and parakeet.choose.isHidden() and parakeet.download.isHidden()
     assert parakeet.remove.isHidden()  # it comes with Rflow
     assert not whisper.download.isHidden() and "1.6 GB" in whisper.download.text()  # not downloaded yet
-    assert whisper.choose.isHidden() and whisper.language_row.isHidden()
+    assert whisper.choose.isHidden()
+    assert "In use: NVIDIA Parakeet" in page.in_use.title.text() and "hears English" in page.in_use.note.text()
     page.where["cloud"].click()
     assert page.groups.currentIndex() == list(w.WHERE).index("cloud")
     assert {"openai", "groq", "gemini"} <= set(page.models) and "Your voice is sent to OpenAI" in _labels(page)
@@ -477,9 +478,10 @@ def test_a_cloud_model_asks_first_then_keeps_its_key_and_model():
     assert ("use_cloud_speech", "groq", "whisper-large-v3") in app.calls
     assert app.gateway.key_for("groq") == "gsk-test" and app.settings.speech_model == "groq"
     page.refresh()
-    assert "In use" in groq.status.text() and groq.choose.isHidden()  # nothing to save
+    assert "In use" in groq.status.text() and not groq.choose.isEnabled()  # nothing to save
+    assert "In use: Groq" in page.in_use.title.text() and "whisper-large-v3" in page.in_use.detail.text()
     groq.model_box.setCurrentText("whisper-large-v3-turbo")
-    assert groq.choose.text() == "Save" and not groq.choose.isHidden()
+    assert groq.choose.text() == "Save" and groq.choose.isEnabled() and "Unsaved changes" in groq.bar.state.text()
     questions.clear()
     page.confirm = lambda question: questions.append(question) or True
     groq.choose.click()
@@ -537,14 +539,19 @@ def test_choosing_a_downloaded_speech_model_and_its_language(whisper_downloaded)
     page.refresh()
     whisper = page.models["whisper-turbo"]
     assert whisper.download.isHidden() and not whisper.choose.isHidden() and whisper.status.text() == "Downloaded"
-    assert not whisper.remove.isHidden() and not whisper.language_row.isHidden()
+    assert not whisper.remove.isHidden()
     whisper.choose.click()
     assert ("choose_speech_model", "whisper-turbo") in app.calls
     app.loading_speech = "whisper-turbo"
     page.refresh()
     assert whisper.status.text() == "Loading..." and whisper.remove.isHidden()  # the chosen model can't be removed
-    whisper.language.setCurrentIndex(whisper.language.findData("ta"))
-    assert ("set_speech_language", "ta") in app.calls and app.settings.speech_language == "ta"
+    assert "Switching to OpenAI Whisper" in page.in_use.title.text()
+    language = page.in_use.language
+    language.setCurrentIndex(language.findData("ta"))
+    assert not any(c[0] == "set_speech_language" for c in app.calls)  # chosen, not saved yet
+    assert "Unsaved changes" in page.in_use.bar.state.text() and page.unsaved()
+    page.in_use.bar.save.click()
+    assert ("set_speech_language", "ta") in app.calls and app.settings.speech_language == "ta" and not page.unsaved()
 
 
 def test_downloading_a_speech_model_shows_its_progress():
@@ -605,9 +612,9 @@ def test_the_server_card_starts_from_ai_cleanups_server_and_lists_its_speech_mod
     assert ("use_server_speech", "http://gateway.example/v1", "whisper-1") in app.calls
     assert app.gateway.speech_server() == ("http://gateway.example/v1", "gw-key") and app.gateway.service.key == "vllm"
     page.refresh()
-    assert "In use" in server.status.text() and server.choose.isHidden()
+    assert "In use" in server.status.text() and not server.choose.isEnabled()
     server.address.setText("http://localhost:8000/v1")
-    assert server.choose.text() == "Save" and not server.choose.isHidden()
+    assert server.choose.text() == "Save" and server.choose.isEnabled()
 
 
 def test_the_server_card_needs_an_address():
@@ -669,6 +676,107 @@ def test_without_parakeet_the_pages_offer_it_and_promise_no_fallback(no_parakeet
     assert parakeet.choose.isHidden() and parakeet.remove.isHidden() and "In use" not in parakeet.status.text()
     assert "Download Parakeet too" in page.models["openai"].privacy.text()
     assert "Download Parakeet too" in page.models["server"].note.text()
+
+
+# ---- settings that change only on purpose, with long lists searchable and the saved state shown (phase 23)
+
+def test_the_mouse_wheel_never_changes_a_dropdown_anywhere():
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QComboBox
+    window, _ = _window()
+    boxes = window.findChildren(QComboBox)
+    assert boxes and all(isinstance(box, w.Choice) for box in boxes)  # every page, every dropdown
+    box = window.pages["speech"].in_use.language
+    before = box.currentIndex()
+    wheel = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(box, wheel)
+    assert box.currentIndex() == before and not wheel.isAccepted()  # left to the page, which scrolls
+
+
+def test_a_long_list_has_a_search_box():
+    from PySide6.QtTest import QTest
+    window, _ = _window()
+    language = window.pages["speech"].in_use.language
+    language.showPopup()
+    popup = language._popup
+    assert popup.isVisible() and popup.search.hasFocus()
+    QTest.keyClicks(popup.search, "zzz")
+    assert not popup.empty.isHidden()  # "Nothing matches"
+    popup.search.clear()
+    QTest.keyClicks(popup.search, "tam")
+    QTest.keyClick(popup.search, Qt.Key.Key_Return)
+    assert language.currentText() == "Tamil" and not popup.isVisible()
+
+
+def test_a_model_list_filters_by_what_is_typed():
+    window, _ = _window()
+    completer = window.pages["speech"].models["openai"].model_box.completer()
+    completer.setCompletionPrefix("mini")  # in the middle of the name, any case
+    found = [completer.completionModel().index(i, 0).data() for i in range(completer.completionCount())]
+    assert found == ["gpt-4o-mini-transcribe"]
+
+
+def test_an_api_key_shows_masked_with_a_pen_to_change_it(monkeypatch):
+    key = w.KeyField("sk-abcdefghijkl1234")
+    assert key.view.text().endswith("1234") and "abcdefghijkl" not in key.view.text()
+    assert not key.editing and not key.edited() and key.text() == "sk-abcdefghijkl1234"
+    key.edit.click()
+    assert key.editing and key.field.echoMode() == w.QLineEdit.EchoMode.Password and not key.edited()
+    key.reveal.click()
+    assert key.field.echoMode() == w.QLineEdit.EchoMode.Normal
+    monkeypatch.setattr(w, "_clipboard_text", lambda: "  sk-pasted-key  ")
+    key.paste.click()
+    assert key.text() == "sk-pasted-key" and key.edited()
+    key.undo.click()
+    assert not key.editing and key.text() == "sk-abcdefghijkl1234" and not key.edited()
+    empty = w.KeyField()
+    assert empty.editing and empty.undo.isHidden()  # nothing saved: the box to paste one
+
+
+def test_the_cleanup_page_shows_what_isnt_saved_and_cancel_undoes_it():
+    window, app = _window(settings=Settings(welcomed=True, cleanup_model="model-a"),
+                          gateway=GatewayConfig("", "sk-saved-key-0000", "openai"))
+    page = window.pages["cleanup"]
+    assert not page.unsaved() and not page.bar.save.isEnabled() and page.bar.cancel.isHidden()
+    page.cleanup_on.setChecked(True)
+    assert page.unsaved() and page.bar.save.isEnabled() and "Unsaved changes" in page.bar.state.text()
+    page.bar.cancel.click()
+    assert not page.cleanup_on.isChecked() and not page.unsaved() and page.bar.state.text() == ""
+    page.provider.setCurrentIndex(page.provider.findData("groq"))
+    page.provider.setCurrentIndex(page.provider.findData("openai"))
+    assert not page.unsaved()  # there and back again is no change
+    page.model.setCurrentText("model-b")
+    page.bar.save.click()
+    assert app.settings.cleanup_model == "model-b" and not page.unsaved() and not page.bar.save.isEnabled()
+    assert "Saved" in page.bar.state.text() and page.api_key.text() == "sk-saved-key-0000"
+
+
+def test_a_cloud_card_cancel_brings_back_what_is_saved():
+    window, _ = _window(gateway=GatewayConfig(provider="openai", api_key="sk-openai-0000"))
+    openai = window.pages["speech"].models["openai"]
+    openai.key.setText("sk-typo")
+    openai.model_box.setCurrentText("whisper-1")
+    assert openai.edited() and not openai.bar.cancel.isHidden()
+    openai.bar.cancel.click()
+    assert not openai.edited() and openai.key.text() == "sk-openai-0000"
+    assert openai.model_box.currentText() == "gpt-4o-mini-transcribe"
+
+
+def test_leaving_a_page_with_unsaved_changes_asks_first():
+    window, _ = _window()
+    window.show_page("cleanup")
+    page = window.pages["cleanup"]
+    page.cleanup_on.setChecked(True)
+    asked = []
+    window.leave_unsaved = lambda title: asked.append(title) or False  # Stay
+    window.nav["home"].click()
+    assert asked == ["AI cleanup"] and window.current_page() == "cleanup" and window.nav["cleanup"].isChecked()
+    assert page.cleanup_on.isChecked()  # nothing lost
+    window.leave_unsaved = lambda title: True  # Discard changes
+    window.nav["home"].click()
+    assert window.current_page() == "home" and not page.unsaved() and not page.cleanup_on.isChecked()
 
 
 # ---- the voice pipeline's controls

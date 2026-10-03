@@ -19,11 +19,13 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QSortFilterProxyModel, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -96,7 +99,8 @@ GLYPHS = {"home": "\ue80f", "dictionary": "\ue82d", "reading": "\ue9d9", "cleanu
           "copy": "\ue8c8", "edit": "\ue70f", "check": "\ue73e", "delete": "\ue74d", "words": "\ue8d2", "speed": "\ue916",
           "streak": "\uecad", "week": "\ue787", "mic": "\ue720", "update": "\ue895", "profiles": "\ue716",
           "profile": "\ue77b", "speech": "\ue720", "warning": "\ue7ba", "cancel": "\ue711", "dot": "\ue915",
-          "transform": "\ue8ac", "snippets": "\ue70b", "translate": "\ue774"}
+          "transform": "\ue8ac", "snippets": "\ue70b", "translate": "\ue774", "view": "\ue890", "hide": "\ued1a",
+          "paste": "\ue77f"}
 
 # The website's colours (site/index.html), so the app and the site look like one product.
 THEMES = {
@@ -129,6 +133,7 @@ def stylesheet(theme: str) -> str:
     QLabel#glyph {{ color: {t['accent']}; }}
     QLabel#sentence {{ font-size: 17pt; }}
     QLabel#warning {{ color: {t['warn']}; }}
+    QLabel#ok {{ color: {t['ok']}; }}
     QPushButton#nav {{ text-align: left; padding: 9px 12px; border: none; border-radius: 8px; color: {t['muted']};
                        background: transparent; }}
     QPushButton#nav:hover {{ background: {t['hover']}; color: {t['text']}; }}
@@ -170,6 +175,14 @@ def stylesheet(theme: str) -> str:
     QComboBox QAbstractItemView {{ background: {t['surface']}; color: {t['text']}; border: 1px solid {t['line']};
                                    selection-background-color: {t['selected']}; selection-color: {t['text']}; }}
     QListWidget::item {{ padding: 4px 2px; }}
+    QLineEdit:read-only {{ background: {t['bg']}; color: {t['muted']}; }}
+    QFrame#searchPopup {{ background: {t['surface']}; border: 1px solid {t['line']}; }}
+    QListView {{ background: {t['surface']}; color: {t['text']}; border: 1px solid {t['line']}; border-radius: 6px;
+                 outline: none; }}
+    QFrame#searchPopup QListView {{ border: none; }}
+    QListView::item {{ padding: 5px 8px; border-radius: 6px; }}
+    QListView::item:hover {{ background: {t['hover']}; }}
+    QListView::item:selected {{ background: {t['selected']}; color: {t['text']}; }}
     QCheckBox {{ color: {t['text']}; spacing: 10px; background: transparent; }}
     QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {t['muted']}; border-radius: 4px;
                             background: {t['surface']}; }}
@@ -266,6 +279,240 @@ def clear(layout: QLayout) -> None:
             widget.deleteLater()
 
 
+# ---------------------------------------------------------------- form controls
+# A settings page must not change by accident, long lists must be searchable, and what is saved must be visible (the
+# owner, 2026-10-04: scrolling over a dropdown changed the model and the language, and nothing said what was saved).
+
+class Choice(QComboBox):
+    """A dropdown the mouse wheel never changes: over a closed list the wheel scrolls the page. `search` gives a long
+    list a search box at its top; an `editable` one filters its list by what is typed (any other name still goes)."""
+
+    def __init__(self, search: bool = False, editable: bool = False):
+        super().__init__()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # the wheel doesn't take the focus either
+        self._search = search
+        self._popup: _SearchPopup | None = None
+        if editable:
+            self.setEditable(True)
+            self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            completer = QCompleter(self.model(), self)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+            self.setCompleter(completer)
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()  # to the page, which scrolls
+
+    def showPopup(self) -> None:
+        if not self._search:
+            super().showPopup()
+            return
+        if self._popup is None:
+            self._popup = _SearchPopup(self)
+        self._popup.open()
+
+
+class _SearchPopup(QFrame):
+    """A long dropdown's list with a search box on top: type a few letters, then Enter (or a click) picks."""
+
+    def __init__(self, combo: QComboBox):
+        super().__init__(combo, Qt.WindowType.Popup)
+        self.setObjectName("searchPopup")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)  # else a window of its own isn't painted
+        self.combo = combo
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search...")
+        self.search.setClearButtonEnabled(True)
+        self.proxy = QSortFilterProxyModel(self)
+        self.proxy.setSourceModel(combo.model())
+        self.proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.view = QListView()
+        self.view.setModel(self.proxy)
+        self.view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.empty = text("Nothing matches", muted=True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+        for widget in (self.search, self.view, self.empty):
+            layout.addWidget(widget)
+        self.search.textChanged.connect(self._filter)
+        self.search.installEventFilter(self)  # arrows and Enter work while typing
+        self.view.clicked.connect(self.pick)
+        self.view.activated.connect(self.pick)
+
+    def open(self) -> None:
+        self.search.clear()
+        self._filter("")
+        width, height = max(self.combo.width(), 260), 320
+        below = self.combo.mapToGlobal(QPoint(0, self.combo.height() + 2))
+        screen = self.combo.screen().availableGeometry()
+        y = below.y() if below.y() + height <= screen.bottom() else self.combo.mapToGlobal(QPoint(0, 0)).y() - height - 2
+        self.setGeometry(below.x(), y, width, height)
+        self.show()
+        self.search.setFocus()
+
+    def _filter(self, value: str) -> None:
+        self.proxy.setFilterFixedString(value.strip())
+        if value.strip():
+            current = self.proxy.index(0, 0)  # Enter picks the best match
+        else:
+            current = self.proxy.mapFromSource(self.combo.model().index(self.combo.currentIndex(), 0))
+        self.view.setCurrentIndex(current)
+        self.view.scrollTo(current, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.empty.setVisible(not self.proxy.rowCount())
+
+    def pick(self, index=None) -> None:
+        index = index if index is not None and index.isValid() else self.view.currentIndex()
+        if index.isValid():
+            self.combo.setCurrentIndex(self.proxy.mapToSource(index).row())
+        self.hide()
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.search and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_PageDown, Qt.Key.Key_PageUp):
+                QGuiApplication.sendEvent(self.view, event)
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.pick()
+                return True
+            if key == Qt.Key.Key_Escape:
+                self.hide()
+                return True
+        return super().eventFilter(obj, event)
+
+
+def _clipboard_text() -> str:
+    return QGuiApplication.clipboard().text()  # apart, so the tests never touch the real clipboard
+
+
+def _masked(key: str) -> str:
+    return "•" * 8 + (f" {key[-4:]}" if len(key) >= 12 else "") if key else ""  # a short key shows nothing of it
+
+
+class KeyField(QWidget):
+    """An API key. Saved, it shows as dots and its last four characters, with a pen to change it; being changed, it's
+    a hidden field with Show, Paste and a cross back to the saved key. It's saved with the rest of its section, by
+    that section's Save. text() is the key as it would be saved; setText() types one."""
+
+    textChanged = Signal(str)
+
+    def __init__(self, saved: str = "", placeholder: str = ""):
+        super().__init__()
+        self.saved = saved
+        self.view = QLineEdit()
+        self.view.setReadOnly(True)
+        self.view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.view.setToolTip("Saved, encrypted on this computer")
+        self.field = QLineEdit()
+        self.field.setEchoMode(QLineEdit.EchoMode.Password)
+        self.field.setPlaceholderText(placeholder)
+        self.edit = icon_button("edit", "Change the key", lambda _=False: self.start_editing())
+        self.reveal = icon_button("view", "Show the key", lambda _=False: self._toggle_shown())
+        self.paste = icon_button("paste", "Paste a key", lambda _=False: self.setText(_clipboard_text().strip()))
+        self.undo = icon_button("cancel", "Keep the saved key", lambda _=False: self.show_saved())
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        for widget in (self.view, self.edit, self.field, self.reveal, self.paste, self.undo):
+            layout.addWidget(widget)
+        layout.setStretch(0, 1)
+        layout.setStretch(2, 1)
+        self.field.textChanged.connect(lambda _="": self.textChanged.emit(self.text()))
+        self.show_saved(saved)
+
+    @property
+    def editing(self) -> bool:
+        return not self.field.isHidden()
+
+    def text(self) -> str:
+        return self.field.text() if self.editing else self.saved
+
+    def setText(self, value: str) -> None:
+        self.start_editing()
+        self.field.setText(value)
+
+    def setPlaceholderText(self, value: str) -> None:
+        self.field.setPlaceholderText(value)
+
+    def edited(self) -> bool:
+        return self.text().strip() != self.saved
+
+    def show_saved(self, saved: str | None = None) -> None:
+        """Back to the saved key, or a new one saved meanwhile (e.g. on the other page); with none, the box to type it."""
+        if saved is not None:
+            self.saved = saved
+        self.view.setText(_masked(self.saved))
+        self._set_editing(not self.saved)
+        self.field.blockSignals(True)
+        self.field.setText(self.saved)
+        self.field.blockSignals(False)
+        self.textChanged.emit(self.text())
+
+    def start_editing(self) -> None:
+        if self.editing:
+            return
+        self._set_editing(True)
+        self.field.setFocus()
+        self.field.selectAll()  # typing or pasting replaces the saved key
+
+    def _set_editing(self, editing: bool) -> None:
+        for widget in (self.view, self.edit):
+            widget.setVisible(not editing)
+        for widget in (self.field, self.reveal, self.paste):
+            widget.setVisible(editing)
+        self.undo.setVisible(editing and bool(self.saved))
+        self.field.setEchoMode(QLineEdit.EchoMode.Password)
+        self.reveal.setText(GLYPHS["view"])
+        self.reveal.setToolTip("Show the key")
+
+    def _toggle_shown(self) -> None:
+        shown = self.field.echoMode() == QLineEdit.EchoMode.Password
+        self.field.setEchoMode(QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password)
+        self.reveal.setText(GLYPHS["hide" if shown else "view"])
+        self.reveal.setToolTip("Hide the key" if shown else "Show the key")
+
+
+class SaveBar(QWidget):
+    """A section's Save, Cancel while there are changes, and its state in words: unsaved changes, or saved."""
+
+    def __init__(self, on_save, on_cancel, label: str = "Save"):
+        super().__init__()
+        self.save = button(label, lambda _=False: on_save(), primary=True)
+        self.cancel = button("Cancel", lambda _=False: on_cancel())
+        self.cancel.hide()
+        self.state = text("")
+        mixed = QFont()  # the check mark comes from the icon font, the words from Segoe UI
+        mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+        self.state.setFont(mixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(self.save)
+        layout.addWidget(self.cancel)
+        layout.addWidget(self.state, 1)
+
+    def show_state(self, edited: bool, enabled: bool | None = None) -> None:
+        """After every change. Save is on when there is something to save (or `enabled` says otherwise)."""
+        self.save.setEnabled(edited if enabled is None else enabled)
+        self.cancel.setVisible(edited)
+        if edited:
+            self._say("Unsaved changes", "warning")
+        elif self.state.objectName() == "warning":
+            self._say("", "")
+
+    def saved(self, message: str) -> None:
+        self.cancel.hide()
+        self._say(f"{GLYPHS['check']}  {message}", "ok")
+
+    def _say(self, message: str, name: str) -> None:
+        self.state.setObjectName(name)
+        self.state.style().unpolish(self.state)  # the colour follows the new name
+        self.state.style().polish(self.state)
+        self.state.setText(message)
+
+
 def open_folder(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
@@ -327,7 +574,7 @@ class MicrophoneBox(QWidget):
 
     def __init__(self, current: str, microphones: list[str]):
         super().__init__()
-        self.combo = QComboBox()
+        self.combo = Choice()
         self.combo.addItem("Windows default", "")
         for name in microphones:
             self.combo.addItem(name, name)
@@ -1108,15 +1355,6 @@ class _ModelCard:
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(6)
         layout.addWidget(self.progress)
-        self.language_row = QWidget()
-        self.language = QComboBox()
-        for code, name in LANGUAGES.items():
-            self.language.addItem(name, code)
-        self.language.currentIndexChanged.connect(lambda _=0: self.app.set_speech_language(self.language.currentData()))
-        language = row(text("Language it listens for", wrap=False), self.language, stretch_at=2)
-        language.setContentsMargins(0, 0, 0, 0)
-        self.language_row.setLayout(language)
-        layout.addWidget(self.language_row)
         size = _size(model.download.size) if model.download else ""
         self.download = button(f"Download and use ({size})", lambda _=False: app.download_speech_model(model.key),
                                primary=True)
@@ -1152,10 +1390,6 @@ class _ModelCard:
         self.choose.setEnabled(not loading)
         # Only a download can be removed (not Parakeet next to an older Rflow's program).
         self.remove.setVisible(bool(model.download) and model.download.installed() and key not in (chosen, in_use))
-        self.language_row.setVisible(model.language_choice and installed)
-        self.language.blockSignals(True)  # showing the setting isn't changing it
-        self.language.setCurrentIndex(max(0, self.language.findData(app.settings.speech_language)))
-        self.language.blockSignals(False)
 
 
 class _CloudCard:
@@ -1179,42 +1413,41 @@ class _CloudCard:
         form = QFormLayout()
         form.setHorizontalSpacing(14)
         form.setVerticalSpacing(8)
-        self._saved_key = app.gateway.key_for(model.key)  # what the key box showed when it was last in step
-        self.key = QLineEdit(self._saved_key)
-        self.key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key.setPlaceholderText("Encrypted on this computer; AI cleanup uses the same key")
+        self.key = KeyField(app.gateway.key_for(model.key), "Paste your key: encrypted on this computer, shared with AI "
+                                                            "cleanup")
         key_link = button("Get a key", lambda _=False: QDesktopServices.openUrl(QUrl(provider.key_page)), link=True)
         key_row = row(self.key, key_link)
         key_row.setStretch(0, 1)
         form.addRow("API key", key_row)
-        self.model_box = QComboBox()
-        self.model_box.setEditable(True)  # one of the usual models, or any other name the provider knows
-        self.model_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model_box = Choice(editable=True)  # one of the usual models, or any other name the provider knows
         self.model_box.addItems(provider.models)
         self.model_box.setCurrentText(self._saved_model())
+        self.model_box.lineEdit().setPlaceholderText("Type to search, or any model name the provider knows")
         self.test = button("Test", self._test)
         model_row = row(self.model_box, self.test)
         model_row.setStretch(0, 1)
         form.addRow("Model", model_row)
-        self.language = QComboBox()
-        for code, name in LANGUAGES.items():
-            self.language.addItem(name, code)
-        self.language.currentIndexChanged.connect(lambda _=0: self.app.set_speech_language(self.language.currentData()))
-        form.addRow("Language", self.language)
         layout.addLayout(form)
         self.result = text("", muted=True)
         self.result.hide()  # until there is something to say: an empty line would leave a gap
         layout.addWidget(self.result)
-        self.choose = button("Use this model", self._use, primary=True)
-        layout.addLayout(row(self.choose, stretch_at=1))
+        self.bar = SaveBar(self._use, self.discard)
+        self.choose = self.bar.save  # "Use this model", or "Save" once it is the one in use
+        layout.addWidget(self.bar)
         self.key.textChanged.connect(lambda _="": self._show_buttons())
         self.model_box.currentTextChanged.connect(lambda _="": self._show_buttons())
 
     def _saved_model(self) -> str:
         return self.app.settings.speech_cloud_models.get(self.model.key) or CLOUD[self.model.key].models[0]
 
-    def _edited(self) -> bool:
-        return (self.key.text().strip(), self.model_box.currentText().strip()) != (self._saved_key, self._saved_model())
+    def edited(self) -> bool:
+        return self.key.edited() or self.model_box.currentText().strip() != self._saved_model()
+
+    def discard(self) -> None:
+        self.key.show_saved()
+        self.model_box.setCurrentText(self._saved_model())
+        self._say("")
+        self._show_buttons()
 
     def refresh(self) -> None:
         app, key = self.app, self.model.key
@@ -1222,9 +1455,8 @@ class _CloudCard:
         self.privacy.setText(f"{GLYPHS['warning']}   Your voice is sent to {name} each time you dictate. "
                              + _parakeet_takes_over(name))
         saved = app.gateway.key_for(key)
-        if self.key.text().strip() == self._saved_key and saved != self._saved_key:
-            self.key.setText(saved)  # changed in AI cleanup; a key being typed here is left alone
-        self._saved_key = saved
+        if not self.key.edited() and saved != self.key.saved:
+            self.key.show_saved(saved)  # changed in AI cleanup; a key being typed here is left alone
         if key == app.loading_speech:
             status = "Loading..."
         elif key == app.speech_in_use():
@@ -1232,16 +1464,12 @@ class _CloudCard:
         else:
             status = ""
         self.status.setText(status)
-        self.language.blockSignals(True)  # showing the setting isn't changing it
-        self.language.setCurrentIndex(max(0, self.language.findData(app.settings.speech_language)))
-        self.language.blockSignals(False)
         self._show_buttons()
 
     def _show_buttons(self) -> None:
-        chosen = self.model.key == self.app.settings.speech_model
+        chosen, edited = self.model.key == self.app.settings.speech_model, self.edited()
         self.choose.setText("Save" if chosen else "Use this model")
-        self.choose.setVisible(not chosen or self._edited())
-        self.choose.setEnabled(not self.app.loading_speech)
+        self.bar.show_state(edited, (edited or not chosen) and not self.app.loading_speech)
 
     def _say(self, message: str) -> None:
         self.result.setText(message)
@@ -1256,9 +1484,11 @@ class _CloudCard:
                 f"Use {name} for speech recognition?\n\nEach time you dictate, the recording of your voice is sent to "
                 f"{name}, which turns it into text. " + _parakeet_takes_over(name)):
             return
-        self._saved_key = api_key
         self.app.use_cloud_speech(self.model.key, api_key, model)
-        self._say("Saved. Active from the next dictation.")
+        self.key.show_saved(api_key)
+        self._say("")
+        self.page.refresh()  # the model in use, at the top of the page
+        self.bar.saved("Saved. Active from the next dictation.")
 
     def _test(self) -> None:
         name, api_key, model = CLOUD[self.model.key].name, self.key.text().strip(), self.model_box.currentText().strip()
@@ -1279,8 +1509,8 @@ class _ServerCard:
     server's speech models first), a Test, and "Use this model". The address and key are kept apart from AI
     cleanup's; a new card starts from AI cleanup's own server (e.g. a company gateway)."""
 
-    def __init__(self, app, model):
-        self.app, self.model = app, model
+    def __init__(self, page, app, model):
+        self.page, self.app, self.model = page, app, model
         self.frame, layout = card(8)
         mixed = QFont()  # the icons come from the icon font, the words from Segoe UI
         mixed.setFamilies(["Segoe UI", *ICON_FONTS])
@@ -1299,17 +1529,13 @@ class _ServerCard:
         self.address = QLineEdit(address)
         self.address.setPlaceholderText("e.g. http://localhost:8000/v1, or your company's AI gateway")
         form.addRow("Address", self.address)
-        self.key = QLineEdit(key)
-        self.key.setEchoMode(QLineEdit.EchoMode.Password)
-        self.key.setPlaceholderText("Only if your server needs one (encrypted on this computer)")
+        self.key = KeyField(key, "Only if your server needs one (encrypted on this computer)")
         self.load = button("Load models", self._load_models)
         key_row = row(self.key, self.load)
         key_row.setStretch(0, 1)
         form.addRow("API key", key_row)
-        self.model_box = QComboBox()
-        self.model_box.setEditable(True)  # one of the loaded models, or any name the server knows
-        self.model_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.model_box.lineEdit().setPlaceholderText("e.g. whisper-1 or openai/whisper-large-v3-turbo: Load models")
+        self.model_box = Choice(editable=True)  # one of the loaded models, or any name the server knows
+        self.model_box.lineEdit().setPlaceholderText("e.g. whisper-1: Load models, then type to search")
         if app.settings.speech_server_model:
             self.model_box.addItem(app.settings.speech_server_model)
         self.model_box.setCurrentText(app.settings.speech_server_model)
@@ -1317,19 +1543,16 @@ class _ServerCard:
         model_row = row(self.model_box, self.test)
         model_row.setStretch(0, 1)
         form.addRow("Model", model_row)
-        self.language = QComboBox()
-        for code, name in LANGUAGES.items():
-            self.language.addItem(name, code)
-        self.language.currentIndexChanged.connect(lambda _=0: self.app.set_speech_language(self.language.currentData()))
-        form.addRow("Language", self.language)
         layout.addLayout(form)
         self.result = text("", muted=True)
         self.result.hide()  # until there is something to say: an empty line would leave a gap
         layout.addWidget(self.result)
         if not self._saved[0] and address:
             self._say("Filled in from AI cleanup's server. Load models to see what it offers.")
-        self.choose = button("Use this model", self._use, primary=True)
-        layout.addLayout(row(self.choose, stretch_at=1))
+        self._shown = self._fields()  # what the card showed when it was last in step: changes are measured from it
+        self.bar = SaveBar(self._use, self.discard)
+        self.choose = self.bar.save  # "Use this model", or "Save" once it is the one in use
+        layout.addWidget(self.bar)
         for box in (self.address, self.key):
             box.textChanged.connect(lambda _="": self._show_buttons())
         self.model_box.currentTextChanged.connect(lambda _="": self._show_buttons())
@@ -1337,16 +1560,24 @@ class _ServerCard:
     def _fields(self) -> tuple[str, str, str]:
         return self.address.text().strip(), self.key.text().strip(), self.model_box.currentText().strip()
 
-    def _edited(self) -> bool:
-        return self._fields() != (*self._saved, self.app.settings.speech_server_model)
+    def edited(self) -> bool:
+        return self._fields() != self._shown
+
+    def discard(self) -> None:
+        address, key, model = self._shown
+        self.address.setText(address)
+        self.key.show_saved(key)
+        self.model_box.setCurrentText(model)
+        self._show_buttons()
 
     def refresh(self) -> None:
         app, key = self.app, self.model.key
         self.note.setText("Your voice goes to this server each time you dictate. " + _parakeet_takes_over("the server"))
         saved = app.gateway.speech_server()
-        if saved != self._saved and self._fields()[:2] == self._saved:
+        if saved != self._saved and saved[0] and not self.edited():
             self.address.setText(saved[0])  # changed elsewhere; what is being typed here is left alone
-            self.key.setText(saved[1])
+            self.key.show_saved(saved[1])
+            self._shown = self._fields()
         self._saved = saved
         if key == app.loading_speech:
             status = "Loading..."
@@ -1355,16 +1586,12 @@ class _ServerCard:
         else:
             status = ""
         self.status.setText(status)
-        self.language.blockSignals(True)  # showing the setting isn't changing it
-        self.language.setCurrentIndex(max(0, self.language.findData(app.settings.speech_language)))
-        self.language.blockSignals(False)
         self._show_buttons()
 
     def _show_buttons(self) -> None:
-        chosen = self.model.key == self.app.settings.speech_model
+        chosen, edited = self.model.key == self.app.settings.speech_model, self.edited()
         self.choose.setText("Save" if chosen else "Use this model")
-        self.choose.setVisible(not chosen or self._edited())
-        self.choose.setEnabled(not self.app.loading_speech)
+        self.bar.show_state(edited, (edited or not chosen) and not self.app.loading_speech)
 
     def _say(self, message: str) -> None:
         self.result.setText(message)
@@ -1381,9 +1608,13 @@ class _ServerCard:
     def _use(self) -> None:
         if self._ready():
             address, api_key, model = self._fields()
-            self._saved = (address, api_key)
             self.app.use_server_speech(address, api_key, model)
-            self._say("Saved. Active from the next dictation.")
+            self._saved = self.app.gateway.speech_server()
+            self.key.show_saved(api_key)
+            self._shown = self._fields()
+            self._say("")
+            self.page.refresh()  # the model in use, at the top of the page
+            self.bar.saved("Saved. Active from the next dictation.")
 
     def _busy(self, busy: bool, message: str = "") -> None:
         self.load.setEnabled(not busy)
@@ -1478,6 +1709,79 @@ class _ScanCard:
             self.lines.addWidget(line)
 
 
+class _InUseCard:
+    """The top of the Speech recognition page: the model in use, and the language you speak. It's one setting for every
+    model that can choose (Whisper, the cloud, your own server), so it's set here, once, not on each model's card."""
+
+    def __init__(self, page, app):
+        self.page, self.app = page, app
+        self.frame, layout = card(8)
+        mixed = QFont()  # the check mark comes from the icon font, the words from Segoe UI
+        mixed.setFamilies(["Segoe UI", *ICON_FONTS])
+        self.title = text("", "h2")
+        self.title.setFont(mixed)
+        self.detail = text("", muted=True)
+        layout.addWidget(self.title)
+        layout.addWidget(self.detail)
+        self.language = Choice(search=True)
+        self.language.setMinimumWidth(260)
+        for code, name in LANGUAGES.items():
+            self.language.addItem(name, code)
+        self.language.currentIndexChanged.connect(lambda _=0: self._show_state())
+        layout.addLayout(row(text("Language you speak", wrap=False), self.language, stretch_at=2))
+        self.note = text("", muted=True)
+        layout.addWidget(self.note)
+        self.bar = SaveBar(self._save, self.discard)
+        layout.addWidget(self.bar)
+        self._select(app.settings.speech_language)
+
+    def edited(self) -> bool:
+        return self.language.currentData() != self.app.settings.speech_language
+
+    def discard(self) -> None:
+        self._select(self.app.settings.speech_language)
+        self._show_state()
+
+    def _select(self, code: str) -> None:
+        self.language.blockSignals(True)  # showing the setting isn't changing it
+        self.language.setCurrentIndex(max(0, self.language.findData(code)))
+        self.language.blockSignals(False)
+        self._shown = self.language.currentData()  # what it showed when last in step with the setting
+
+    def refresh(self) -> None:
+        app = self.app
+        model = SPEECH_MODELS.get(app.speech_in_use())
+        if app.loading_speech in SPEECH_MODELS:
+            title, detail = f"Switching to {SPEECH_MODELS[app.loading_speech].name}...", "Dictation goes on meanwhile."
+        elif model is None:
+            title, detail = "No speech model yet", "Download NVIDIA Parakeet below, or choose a cloud model or your server."
+        else:
+            title = f"{GLYPHS['check']}  In use: {model.name}"
+            if model.where == "cloud":
+                detail = f"Cloud · {app.settings.speech_cloud_models.get(model.key) or CLOUD[model.key].models[0]}"
+            elif model.where == "server":
+                detail = f"Your own server · {app.settings.speech_server_model}"
+            else:
+                detail = "On this computer"
+        self.title.setText(title)
+        self.detail.setText(detail)
+        self.note.setText(f"{model.name} hears English; the language is for Whisper, the cloud models and your own "
+                          "server." if model is not None and not model.language_choice else "")
+        self.note.setVisible(bool(self.note.text()))
+        if self.language.currentData() == self._shown:
+            self._select(app.settings.speech_language)  # a language saved meanwhile shows; one being chosen stays
+        self._show_state()
+
+    def _show_state(self) -> None:
+        self.bar.show_state(self.edited())
+
+    def _save(self) -> None:
+        self.app.set_speech_language(self.language.currentData())
+        self._shown = self.language.currentData()
+        self._show_state()
+        self.bar.saved("Saved. Active from the next dictation.")
+
+
 class SpeechPage(Page):
     """Which model turns the voice into text: a building block of its own, chosen apart from the AI cleanup."""
 
@@ -1486,6 +1790,8 @@ class SpeechPage(Page):
                                                "the AI cleanup, so any speech model works with any cleanup model. Your "
                                                "words help every model.")
         self.app = app
+        self.in_use = _InUseCard(self, app)
+        self.add(self.in_use.frame)
         self.where: dict[str, QPushButton] = {}
         tabs = QHBoxLayout()
         tabs.setSpacing(6)
@@ -1519,7 +1825,8 @@ class SpeechPage(Page):
             layout.addWidget(text("The provider recognises your speech on its servers, with your API key: nothing to "
                                   "download, little memory, quick on any computer. Keys are shared with AI cleanup.",
                                   muted=True))
-        cards = {"cloud": lambda model: _CloudCard(self, self.app, model), "server": lambda model: _ServerCard(self.app, model)}
+        cards = {"cloud": lambda model: _CloudCard(self, self.app, model),
+                 "server": lambda model: _ServerCard(self, self.app, model)}
         for model in models:
             self.models[model.key] = cards.get(where, lambda model: _ModelCard(self.app, model))(model)
             layout.addWidget(self.models[model.key].frame)
@@ -1535,9 +1842,21 @@ class SpeechPage(Page):
         self.refresh()
 
     def refresh(self) -> None:
+        self.in_use.refresh()
         for model_card in self.models.values():
             model_card.refresh()
         self.scan.refresh()
+
+    def _editable(self) -> list:
+        return [self.in_use, *(c for c in self.models.values() if hasattr(c, "edited"))]
+
+    def unsaved(self) -> bool:
+        return any(part.edited() for part in self._editable())
+
+    def discard_changes(self) -> None:
+        for part in self._editable():
+            if part.edited():
+                part.discard()
 
     def confirm(self, question: str) -> bool:
         return QMessageBox.question(self, APP_NAME, question) == QMessageBox.StandardButton.Yes
@@ -1545,14 +1864,9 @@ class SpeechPage(Page):
 
 # ---------------------------------------------------------------- AI cleanup
 
-def _model_box(current: str, hint: str) -> QComboBox:
-    box = QComboBox()
-    box.setEditable(True)  # pick from the loaded list, or type any model name
-    box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+def _model_box(hint: str) -> Choice:
+    box = Choice(editable=True)  # pick from the loaded list (typing filters it), or type any model name
     box.lineEdit().setPlaceholderText(hint)
-    if current:
-        box.addItem(current)
-    box.setCurrentText(current)
     return box
 
 
@@ -1561,53 +1875,91 @@ class CleanupPage(Page):
         super().__init__("AI cleanup", "An AI model adds punctuation, removes filler words and spells your words right. "
                                        "Your voice stays on this computer; only the finished text goes to the provider.")
         self.app = app
-        settings, gateway = app.settings, app.gateway
-        # The (address, key, model, backup model) of each provider left on this page, so switching back loses nothing.
-        # The others come from app.gateway, where the Speech recognition page may also have saved a key.
-        self._memory: dict[str, tuple[str, str, str, str]] = {}
-        # Nothing chosen yet: start with the first provider in the list rather than an empty custom server.
-        self._provider = gateway.service.key if gateway.provider or gateway.base_url else next(iter(PROVIDERS))
         frame, layout = card(12)
         self.cleanup_on = QCheckBox("Clean up the text before typing it")
-        self.cleanup_on.setChecked(settings.cleanup)
         self.cleanup_on.setToolTip("If the model fails, the backup model is used; if the provider can't help in time, "
                                    "the text is typed as heard.")
         layout.addWidget(self.cleanup_on)
         self.form = QFormLayout()
         self.form.setHorizontalSpacing(14)
         self.form.setVerticalSpacing(10)
-        self.provider = QComboBox()
+        self.provider = Choice()
         for provider in PROVIDERS.values():
             self.provider.addItem(provider.name, provider.key)
-        self.provider.setCurrentIndex(self.provider.findData(self._provider))
         self.form.addRow("Provider", self.provider)
-        self.gateway_url = QLineEdit(gateway.base_url)
+        self.gateway_url = QLineEdit()
         self.form.addRow("Address", self.gateway_url)
-        self._saved_key = gateway.key_for(self._provider)  # what the key box showed when it was last in step
-        self.api_key = QLineEdit(self._saved_key)
-        self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key = KeyField()
         self.load_button = button("Load models", self._load_models)
-        self.form.addRow("API key", row(self.api_key, self.load_button))
+        key_row = row(self.api_key, self.load_button)
+        key_row.setStretch(0, 1)
+        self.form.addRow("API key", key_row)
         self.key_link = button("Get a key", self._open_key_page, link=True)
         self.key_note = text("", muted=True)
         self.key_row = row(self.key_link, self.key_note, stretch_at=2)
         self.form.addRow("", self.key_row)
-        self.model = _model_box(settings.cleanup_model, "")
+        self.model = _model_box("")
         self.test_button = button("Test", self._test)
         model_row = row(self.model, self.test_button)
         model_row.setStretch(0, 1)
         self.form.addRow("Model", model_row)
-        self.fallback = _model_box(settings.cleanup_fallback, "optional: used if the model fails")
+        self.fallback = _model_box("optional: used if the model fails")
         self.form.addRow("Backup model", self.fallback)
         layout.addLayout(self.form)
         self.test_result = text("", muted=True)
         layout.addWidget(self.test_result)
+        self.bar = SaveBar(self._save, self.discard_changes)
+        layout.addWidget(self.bar)
         self.add(frame)
-        self.saved = text("", muted=True)
-        self.add(row(button("Save", self._save, primary=True), self.saved, stretch_at=2))
         self.body.addStretch()
+        self.discard_changes()  # the fields as saved
         self.provider.currentIndexChanged.connect(self._provider_changed)
+        for changed in (self.cleanup_on.toggled, self.gateway_url.textChanged, self.api_key.textChanged,
+                        self.model.currentTextChanged, self.fallback.currentTextChanged):
+            changed.connect(lambda *_: self._show_state())
+
+    def discard_changes(self) -> None:
+        """The fields as saved: when the page is built, and Cancel."""
+        settings, gateway = self.app.settings, self.app.gateway
+        # The (address, key, model, backup model) of each provider left on this page, so switching back loses nothing.
+        # The others come from app.gateway, where the Speech recognition page may also have saved a key.
+        self._memory: dict[str, tuple[str, str, str, str]] = {}
+        # Nothing chosen yet: start with the first provider in the list rather than an empty custom server.
+        self._provider = gateway.service.key if gateway.provider or gateway.base_url else next(iter(PROVIDERS))
+        self.provider.blockSignals(True)
+        self.provider.setCurrentIndex(self.provider.findData(self._provider))
+        self.provider.blockSignals(False)
+        self.cleanup_on.setChecked(settings.cleanup)
+        self.gateway_url.setText(gateway.base_url)
+        self.api_key.show_saved(gateway.key_for(self._provider))
+        for box, value in ((self.model, settings.cleanup_model), (self.fallback, settings.cleanup_fallback)):
+            box.clear()
+            if value:
+                box.addItem(value)
+            box.setCurrentText(value)
+        self.test_result.setText("")
         self._show_provider()
+        self._saved = self._fields()
+        self._show_state()
+
+    def _fresh(self, key: str) -> tuple[str, str, str, str]:
+        """A provider's fields before any change here: its saved address and key."""
+        url, secret = self.app.gateway.entries().get(key, ("", ""))
+        return url or (PROVIDERS[key].url if PROVIDERS[key].own_server else ""), secret, "", ""
+
+    def _fields(self) -> tuple:
+        """What Save would change: the switch, the provider and its fields, and the address and key typed for another
+        provider (their models aren't kept)."""
+        others = tuple(sorted((key, value[:2]) for key, value in self._memory.items()
+                              if key != self._provider and value[:2] != self._fresh(key)[:2]))
+        return (self.cleanup_on.isChecked(), self._provider, self.gateway_url.text().strip(), self.api_key.text().strip(),
+                self.model.currentText().strip(), self.fallback.currentText().strip(), others)
+
+    def unsaved(self) -> bool:
+        return self._fields() != self._saved
+
+    def _show_state(self) -> None:
+        self.bar.show_state(self.unsaved())
 
     def _show_provider(self) -> None:
         """What the chosen provider needs: a key (cloud), an address (own server), or both."""
@@ -1625,27 +1977,31 @@ class CleanupPage(Page):
         new = self.provider.currentData()
         self._memory[self._provider] = (self.gateway_url.text().strip(), self.api_key.text().strip(),
                                         self.model.currentText().strip(), self.fallback.currentText().strip())
-        p = PROVIDERS[new]
-        saved_url, saved_key = self.app.gateway.entries().get(new, ("", ""))
-        url, key, model, fallback = self._memory.get(new, (saved_url or (p.url if p.own_server else ""), saved_key, "", ""))
+        url, key, model, fallback = self._memory.get(new, self._fresh(new))
         self._provider = new
-        self._saved_key = saved_key
         self.gateway_url.setText(url)
-        self.api_key.setText(key)
+        saved_key = self._fresh(new)[1]
+        self.api_key.show_saved(saved_key)
+        if key != saved_key:
+            self.api_key.setText(key)  # typed here before switching away: still a change, not the saved key
         for box, value in ((self.model, model), (self.fallback, fallback)):
             box.clear()
             box.setCurrentText(value)
         self.test_result.setText("")
         self._show_provider()
+        self._show_state()
 
     def _open_key_page(self) -> None:
         QDesktopServices.openUrl(QUrl(PROVIDERS[self._provider].key_page))
 
     def refresh(self) -> None:
+        clean = not self.unsaved()
         saved = self.app.gateway.key_for(self._provider)
-        if self.api_key.text().strip() == self._saved_key and saved != self._saved_key:
-            self.api_key.setText(saved)  # changed on the Speech recognition page; a key being typed is left alone
-        self._saved_key = saved
+        if not self.api_key.edited() and saved != self.api_key.saved:
+            self.api_key.show_saved(saved)  # changed on the Speech recognition page; a key being typed is left alone
+        if clean:
+            self._saved = self._fields()  # a key saved elsewhere isn't a change made here
+        self._show_state()
 
     def result(self) -> tuple[bool, str, str, GatewayConfig]:
         p = PROVIDERS[self._provider]
@@ -1659,7 +2015,10 @@ class CleanupPage(Page):
     def _save(self) -> None:
         on, model, fallback, gateway = self.result()
         self.app.save_cleanup(on, model, fallback, gateway)
-        self.saved.setText("Saved. Active from the next dictation." if on and model else "Saved. AI cleanup is off.")
+        self.api_key.show_saved(gateway.api_key)
+        self._saved = self._fields()
+        self._show_state()
+        self.bar.saved("Saved. Active from the next dictation." if on and model else "Saved. AI cleanup is off.")
 
     def _busy(self, busy: bool, message: str = "") -> None:
         self.load_button.setEnabled(not busy)
@@ -1749,7 +2108,7 @@ class TransformPage(Page):
 
         frame, layout = card(10)
         layout.addWidget(text("The menu", "h2"))
-        self.hotkey = QComboBox()
+        self.hotkey = Choice()
         for label, value in TRANSFORM_HOTKEYS:
             self.hotkey.addItem(label, value)
         if self.hotkey.findData(s.transform_shortcut) < 0:
@@ -1903,7 +2262,7 @@ class TranslatePage(Page):
         self.app = app
         s = app.settings
         frame, layout = card(10)
-        self.shortcut = QComboBox()
+        self.shortcut = Choice()
         for label, value in TRANSLATE_SHORTCUTS:
             self.shortcut.addItem(label, value)
         if self.shortcut.findData(s.translate_shortcut) < 0:
@@ -1911,12 +2270,12 @@ class TranslatePage(Page):
         self.shortcut.setCurrentIndex(self.shortcut.findData(s.translate_shortcut))
         self.shortcut.currentIndexChanged.connect(self._apply)
         layout.addLayout(row(text("Shortcut", wrap=False), self.shortcut, stretch_at=2))
-        self.target = QComboBox()
+        self.target = Choice(search=True)
         self.target.addItems(list(TRANSLATE_LANGUAGES))
         self.target.setCurrentText(s.translate_to)
         self.target.currentIndexChanged.connect(self._apply)
         layout.addLayout(row(text("Translate into", wrap=False), self.target, stretch_at=2))
-        self.second = QComboBox()
+        self.second = Choice(search=True)
         self.second.addItem("\u2014 (keep that language)", "")
         for name in TRANSLATE_LANGUAGES:
             self.second.addItem(name, name)
@@ -2007,7 +2366,7 @@ class SettingsPage(Page):
 
         dictation, layout = card()
         layout.addWidget(text("Dictation key", "h2"))
-        self.hotkey = QComboBox()
+        self.hotkey = Choice()
         for label, value in HOTKEY_CHOICES:
             self.hotkey.addItem(label, value)
         if self.hotkey.findData(s.hotkey) < 0:
@@ -2408,7 +2767,12 @@ class MainWindow(QWidget):
         self.setStyleSheet(stylesheet("dark" if dark_mode() else "light"))
 
     def show_page(self, key: str) -> None:
-        page = self.pages[key]
+        page, current = self.pages[key], self.stack.currentWidget()
+        if current is not page and getattr(current, "unsaved", lambda: False)():
+            if not self.leave_unsaved(current.title.text()):
+                self.nav[self.current_page()].setChecked(True)  # the sidebar button just clicked lets go again
+                return
+            current.discard_changes()
         self._show_profile()
         if key in ("home", "dictionary", "snippets", "profiles", "speech", "cleanup", "transform", "translate"):
             page.refresh()
@@ -2422,6 +2786,19 @@ class MainWindow(QWidget):
                 b.setAutoExclusive(False)
                 b.setChecked(False)
                 b.setAutoExclusive(True)
+
+    def leave_unsaved(self, page: str) -> bool:
+        """Leaving a page whose changes weren't saved: True to discard them, False to stay on it."""
+        box = QMessageBox(self)
+        box.setWindowTitle(APP_NAME)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(f"{page} has changes that aren't saved.")
+        box.setInformativeText("Stay to save them with Save, or discard them.")
+        stay = box.addButton("Stay", QMessageBox.ButtonRole.RejectRole)
+        discard = box.addButton("Discard changes", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(stay)
+        box.exec()
+        return box.clickedButton() is discard
 
     def _show_profile(self) -> None:
         self.profile_button.setText(f"{GLYPHS['profile']}   {self.app.profiles.current.label}")
