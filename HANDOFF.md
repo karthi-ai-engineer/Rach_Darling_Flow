@@ -6,14 +6,18 @@ package keeps its name, `sst`. **Never create a repository named Rach_Darling_Fl
 1.6.0 check for updates under the old name, which GitHub redirects only while that name stays free (checked after
 the rename: an installed 1.5.0 asking under the old name was offered 1.6.0).
 
-_Last updated: 2026-10-02_
+_Last updated: 2026-10-04_
 
 ## Start here (a new session, or the owner's other laptop)
 
-**Where things stand (2026-10-02):**
-- **Rflow 1.8.0 is released** (2026-10-02, GitHub Release `v1.8.0`, the website's download), on the owner's "RELEASE
-  IT": Snippets (phase 21: say "my email", your text is typed; PR #52) and Translate (phase 22: select text, Ctrl+C+C,
-  a popup with the translation; PR #54).
+**Where things stand (2026-10-04):**
+- **Rflow 1.9.0** (2026-10-04, the owner's "merge + release 1.9.0"): settings that change only on purpose (phase 23,
+  PR #58) and the fix for a dictation typed twice when its last part replaced the one before (PR #57, since 1.7.0).
+- **A new dev laptop:** a Surface Laptop 7, Snapdragon X Plus (ARM64), 16 GB. The installed x64 Rflow works there
+  under Windows' emulation (the owner dictates with it, Gemini for speech). The dev `.venv` is x64 Python 3.12 too,
+  because CTranslate2 (Whisper) has no ARM64 build: `uv venv --python cpython-3.12-windows-x86_64-none .venv`.
+- 1.8.0 (2026-10-02): Snippets (phase 21: say "my email", your text is typed; PR #52) and Translate (phase 22: select
+  text, Ctrl+C+C, a popup with the translation; PR #54).
 - 1.7.0 (the same day): Text Transform (phase 20: say "make it concise" or double-tap Ctrl; PR #50), the fix for text never said
   (PR #48) and the new names (Rach_flow, rachflow.vercel.app; PR #47). 1.6.0 brought the owner's voice
   pipeline (phase 19: parts transcribed while speaking, dictionary, formatting, a guarded AI cleanup, an always-on
@@ -104,12 +108,14 @@ _Last updated: 2026-10-02_
 | 16 | **Cloud speech models**: OpenAI, Groq, Google Gemini with the user's key, a warning, a Test, Parakeet as the fallback | done, on `main` (PR #39), released **v1.5.0** |
 | 17 | **Your own server for speech**: vLLM, the company gateway, any OpenAI-compatible transcription server; Load models, Test | done, on `main` (PR #41), released **v1.5.0** |
 | 18 | **Parakeet downloaded on demand**: a speech step in the welcome, the installer 90 MB instead of 571 MB; version 1.5.0 | done, on `main` (PR #43), released **v1.5.0** |
+| 23 | **Settings that change only on purpose** (the owner's request): the wheel never changes a dropdown, long lists searchable, a Save per section with its state shown, API keys masked with a pen to change them, the model in use and the language at the top of Speech recognition | done, on `main` (PR #58), released **v1.9.0** |
+| fix | A dictation typed twice when its last part replaced the one before: the result read the replacement too early | done, on `main` (PR #57), released **v1.9.0** |
 | 22 | **Translate** (the owner's idea, like DeepL): select text, Ctrl+C+C, a popup at the pointer shows it translated by the AI model, language at the top, Copy or Replace | done, on `main` (PR #54), released **v1.8.0** |
 | 21 | **Snippets** (the owner's idea): say "my email" and your email is typed; your own phrases and text (several lines), alone or inside a sentence, never sent to the AI | done, on `main` (PR #52), released **v1.8.0** |
 | 20 | **Text Transform** (the owner's idea): say "make it concise" (or double-tap Ctrl for a menu) and the selected text or the last dictation becomes Concise, Professional, Bullet points or Action items, checked, with undo; the text is found again if focus moved | done, on `main` (PR #50, with #48), released **v1.7.0** |
 | 19 | **The voice pipeline** (the owner's plan): always-on mic, chunks while speaking, parallel ASR, merge, dictionary, formatting, guarded LLM | done, on `main` (PR #46), released **v1.6.0** |
 
-Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0 and v1.8.0 (GitHub Releases; there is no 1.2.0). Website: https://rachflow.vercel.app (Vercel project `rach_darling_flow-site`, team karthi-labs; the address was
+Released: v1.0.0, v1.0.1, v1.1.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0, v1.8.0 and v1.9.0 (GitHub Releases; there is no 1.2.0). Website: https://rachflow.vercel.app (Vercel project `rach_darling_flow-site`, team karthi-labs; the address was
 added on 2026-10-01, and the old https://rachdarlingflow-site.vercel.app stays assigned: installed apps up to 1.6.0
 link there, so never remove it;
 `site/`). The in-app update path is verified end to end: the owner's installed 1.0.0 showed the banner and updated
@@ -1219,6 +1225,27 @@ These were scratch scripts, not in git. The findings:
   much. Research: `docs/research/notes/post_asr_and_evaluation.md` (whole-transcript LLM correction doubled word
   errors on Parakeet output in one study).
 
+## Settings that change only on purpose (phase 23, the owner's request of 2026-10-04)
+
+- **What the owner hit:** scrolling the Speech recognition page with the pointer over a dropdown changed the model or
+  the language (the language was saved at once); long lists had to be scrolled through; nothing said whether a
+  change was saved. The owner's direction: user experience first, the look later.
+- **The rules now** (`sst/window.py`, "form controls"):
+  - every dropdown is a `Choice`: the wheel never changes a closed one, it scrolls the page (a test checks that the
+    window has no other kind)
+  - a long list (the speech language, Translate's languages) opens with a search box: type, Enter picks the first
+    match; a model box filters its list by what is typed (anywhere in the name), and any name can still be typed
+  - a form has one `SaveBar`: Save is greyed out until something changes, then "Unsaved changes" with Cancel, then
+    "Saved"; leaving the page with changes asks (Stay / Discard changes)
+  - an API key is a `KeyField`: saved, it shows dots and its last four characters, with a pen; being changed, it's
+    hidden, with Show, Paste and a cross back to the saved key
+- **Speech recognition** starts with the model in use ("In use: Google Gemini · gemini-3.5-transcribe") and the
+  language you speak, set once there (it was repeated on every card, though one setting). The cards keep their key,
+  model, Test and "Use this model" (or Save for the one in use).
+- **AI cleanup**: the Save is in the card, with Cancel; switching providers and back is no change.
+- Toggles on Settings, Text Transform and Translate still apply at once (one click, one change); they got the wheel
+  fix only. The UX review of the other pages is in **Next steps**.
+
 ## Known limitations
 
 - Apps running as administrator don't receive the text, because Windows blocks input from normal programs into them.
@@ -1236,7 +1263,15 @@ These were scratch scripts, not in git. The findings:
 
 ## Next steps
 
-1. **Owner: update to 1.5.0 and try it** (released 2026-10-01; 91 MB, SHA-256 `c05c7c81...` checked by the updater):
+1. **The UX review of the other pages** (found while doing phase 23; the owner chooses the order):
+   - Snippets ("Add a snippet") and Translate ("Try it"): a large empty gap above the card's heading
+   - Text Transform: long phrase lists are cut off in one-line boxes
+   - Settings, Text Transform and Translate apply each toggle at once with no word that it was saved
+   - the speech language list has 17 languages plus Automatic; Whisper and the cloud models know about 99, and the
+     list is searchable now
+   - a long dictation with a cloud model waits ~6 s after the release: a short rest re-sends the whole part before it
+   - the log (`sst.log`) holds every dictation's text at INFO, even with the debug folder off
+2. **Owner: update to 1.5.0 and try it** (released 2026-10-01; 91 MB, SHA-256 `c05c7c81...` checked by the updater):
    - Open the installed 1.4.0: the banner offers 1.5.0 (or Settings → Check for updates) → Update now. Expected: no
      Parakeet download (it stays next to the program), the same settings, words and history.
    - Speech recognition → Whisper turbo → "Download and use (1.6 GB)"; dictate in English, and in Tamil with the
